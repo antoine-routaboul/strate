@@ -822,6 +822,18 @@ def test_cli_forecast_ledger_and_missing(tmp_path, monkeypatch, capsys):
         run_cli(monkeypatch, "forecast", "ledger")
 
 
+def test_cli_forecast_backtest_table_with_ci(tmp_path, monkeypatch, capsys):
+    row = {**BT["rows"][0], "r": None, "r_lo": None, "r_hi": None, "skill_lo": -0.01, "skill_hi": 0.02,
+           "r_niveau": 0.98, "r_niveau_lo": 0.97, "r_niveau_hi": 0.99}
+    monkeypatch.setattr(core, "DATA_DIR", tmp_path)
+    fake(monkeypatch, "forecast", backtest=lambda: {**BT, "rows": [row]})
+    run_cli(monkeypatch, "forecast", "backtest")
+    out = capsys.readouterr().out
+    assert "- [-, -]" in out  # naïf : pas de r sur les variations, affiché comme tel
+    assert "0.00 [-0.01, 0.02]" in out and "0.98 [0.97, 0.99]" in out
+    assert "variation réelle du log de la production" in out and "700" in out and "120" in out
+
+
 def test_cli_companies_refresh(monkeypatch, capsys):
     calls = []
     fake(monkeypatch, "companies", refresh=lambda **kw: calls.append(kw) or {"traitees": 3})
@@ -831,4 +843,16 @@ def test_cli_companies_refresh(monkeypatch, capsys):
     assert '"traitees": 3' in capsys.readouterr().out
     no_module(monkeypatch, "companies")
     with pytest.raises(SystemExit, match="indisponible"):
+        run_cli(monkeypatch, "companies", "refresh")
+
+
+def test_cli_companies_refresh_falls_back_to_update(monkeypatch, capsys):
+    """Ancien module sans refresh : update(limit=…) avec la même borne, au lieu d'un refus."""
+    calls = []
+    fake(monkeypatch, "companies", update=lambda **kw: calls.append(kw) or {"ok": 1})
+    run_cli(monkeypatch, "companies", "refresh", "--max-companies", "7")
+    run_cli(monkeypatch, "companies", "refresh")
+    assert calls == [{"limit": 7}, {}] and '"ok": 1' in capsys.readouterr().out
+    fake(monkeypatch, "companies")
+    with pytest.raises(SystemExit, match="ni refresh ni update"):
         run_cli(monkeypatch, "companies", "refresh")

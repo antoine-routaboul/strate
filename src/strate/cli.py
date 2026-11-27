@@ -212,6 +212,21 @@ def _ci(r: dict, k: str) -> str:
     return f"{_fmt(r.get(k))} [{_fmt(r.get(k + '_lo'))}, {_fmt(r.get(k + '_hi'))}]"
 
 
+def _print_backtest(res: dict) -> None:
+    """Tableau du rétro-test : une ligne par (modèle, horizon), chaque coefficient avec son IC 90 % et n."""
+    print(f"{'modèle':16s} h  {'r [IC 90 %]':22s} {'rho [IC 90 %]':22s} {'skill [IC 90 %]':22s} "
+          f"{'r niveau [IC 90 %]':22s} {'cov80':>6s} {'cov90':>6s} {'mines':>6s} {'points':>7s}")
+    for r in res.get("rows") or []:
+        print(f"{r.get('model')!s:16s} {r.get('horizon')!s:2s} {_ci(r, 'r'):22s} {_ci(r, 'rho'):22s} "
+              f"{_ci(r, 'skill'):22s} {_ci(r, 'r_niveau'):22s} {_fmt(r.get('couverture80')):>6s} "
+              f"{_fmt(r.get('couverture90')):>6s} {r.get('n_mines')!s:>6s} {r.get('n_points')!s:>7s}")
+    print("r, rho : variation prévue ↔ variation réelle du log de la production (période de test) ; « - » "
+          "quand le modèle ne prévoit aucune variation (naïf). r niveau : log des niveaux, dominé par les "
+          "écarts de taille entre mines. IC 90 % : bootstrap sur les mines.")
+    if res.get("retenu"):
+        print("retenu : " + ", ".join(f"h={h} → {m}" for h, m in res["retenu"].items()))
+
+
 def forecast_cmd(args) -> None:
     import json
 
@@ -233,21 +248,28 @@ def forecast_cmd(args) -> None:
         tmp.replace(path)
     res = res if isinstance(res, dict) else {}
     print(f"rétro-test {res.get('run_at') or ''} → {path}")
-    print(f"{'modèle':16s} h  {'r [IC 90 %]':22s} {'rho [IC 90 %]':22s} {'skill':>6s} {'cov90':>6s} "
-          f"{'mines':>6s} {'points':>7s}")
-    for r in res.get("rows") or []:
-        print(f"{r.get('model')!s:16s} {r.get('horizon')!s:2s} {_ci(r, 'r'):22s} {_ci(r, 'rho'):22s} "
-              f"{_fmt(r.get('skill')):>6s} {_fmt(r.get('couverture90')):>6s} {r.get('n_mines')!s:>6s} "
-              f"{r.get('n_points')!s:>7s}")
-    if res.get("retenu"):
-        print("retenu : " + ", ".join(f"h={h} → {m}" for h, m in res["retenu"].items()))
+    if not res.get("rows") and isinstance(res.get("raison"), str):
+        print(f"aucune mesure : {res['raison']}")
+    _print_backtest(res)
 
 
 def companies_cmd(args) -> None:
+    """refresh(max_companies=…) du module ; à défaut l'ancien update(limit=…), même borne."""
+    import importlib
     import json
 
-    kw = {} if args.max_companies is None else {"max_companies": args.max_companies}
-    res = _module_fn("companies", "refresh")(**kw)
+    try:
+        mod = importlib.import_module("strate.companies")
+    except Exception as e:  # module absent ou en panne
+        raise SystemExit(f"module strate.companies indisponible : {e}") from None
+    if callable(getattr(mod, "refresh", None)):
+        kw = {} if args.max_companies is None else {"max_companies": args.max_companies}
+        res = mod.refresh(**kw)
+    elif callable(getattr(mod, "update", None)):
+        kw = {} if args.max_companies is None else {"limit": args.max_companies}
+        res = mod.update(**kw)
+    else:
+        raise SystemExit("strate.companies n'a ni refresh ni update")
     print(json.dumps(res, ensure_ascii=False, indent=2, default=str))
 
 
