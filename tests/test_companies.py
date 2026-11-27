@@ -972,6 +972,22 @@ def test_refresh_checks_sic_before_reading_non_seed_filer(tmp_path):
     assert not any("CIK0009999999" in u for u in http.calls[n:])  # rejet mémorisé : plus de requête
 
 
+def test_stale_sec_facts_are_purged(tmp_path):
+    C.refresh(max_companies=500, **_refresh_kw(FakeHttp(_routes(), _sparql), tmp_path))
+    f = C.load("facts")
+    row = f.iloc[0].to_dict()
+    stale = pd.DataFrame([row | dict(company_id="regis", cik="0000716643"),  # REGIS CORP, ancienne règle
+                          row | dict(company_id="newmont", cik="0000000001"),  # CIK changé depuis
+                          row | dict(company_id="disparue_2", cik="0000000002"),  # identifiant réattribué
+                          row | dict(company_id="disparue_3", origine="wikidata", cik=None)])
+    C._write("facts", pd.concat([f, stale], ignore_index=True))
+    st = C.refresh(max_companies=500, **_refresh_kw(FakeHttp(_routes(), _sparql), tmp_path))
+    g = C.load("facts")
+    assert st["faits_purges"] == 4 and len(g) == len(f)
+    assert not ({"regis", "disparue_2", "disparue_3"} & set(g["company_id"]))
+    assert set(g.loc[g["company_id"] == "newmont", "cik"]) == {"0001164727"}
+
+
 def test_permanent_404_is_not_retried_every_day():
     st = {"sec": {"a": dict(at=C._now(), cik="1", ok=False, http=404),
                   "b": dict(at="2000-01-01T00:00:00Z", cik="2", ok=False, http=404),

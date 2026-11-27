@@ -1393,6 +1393,27 @@ def _replace_facts(new: pd.DataFrame, *, company_id: str | None = None, origine:
     _write("facts", df.reindex(columns=FACT_COLS))
 
 
+def purge_stale_facts(co: pd.DataFrame, state: dict | None = None) -> int:
+    """Retire les faits d'une société disparue (identifiant réattribué, catalogue changé) et les faits SEC
+    lus sous un autre CIK que l'actuel (règle de correspondance corrigée, CIK écarté par le SIC).
+    Retourne le nombre de faits retirés ; l'état SEC de ces sociétés est oublié pour une relecture propre."""
+    cur = dict(zip(co["id"], co["cik"], strict=True))
+    if state is not None:
+        per = state.get("sec", {})
+        for cid in [c for c, st in per.items() if not isinstance(cur.get(c), str) or st.get("cik") != cur[c]]:
+            if not str(per[cid].get("message", "")).startswith("CIK écarté"):
+                per.pop(cid)
+    f = load("facts")
+    if not _new_format(f, FACT_COLS):
+        return 0
+    keep = [c in cur and (o != "sec" or (isinstance(cur[c], str) and k == cur[c]))
+            for c, o, k in zip(f["company_id"], f["origine"], f["cik"], strict=True)]
+    n = int(len(f) - sum(keep))
+    if n:
+        _write("facts", f[keep].reindex(columns=FACT_COLS))
+    return n
+
+
 def _read_json(p: Path) -> dict:
     try:
         return json.loads(p.read_text("utf-8")) if p.exists() else {}
@@ -1500,6 +1521,7 @@ def refresh(max_companies: int = MAX_COMPANIES, *, http=None, force: bool = Fals
     co = reject_non_mining(co, sic)
     _write("companies", co)
     _write("mines", lk)
+    purged = purge_stale_facts(co, state)
     _write_json(STATE, state)
 
     queue = sec_queue(co, state, force)
@@ -1559,6 +1581,7 @@ def refresh(max_companies: int = MAX_COMPANIES, *, http=None, force: bool = Fals
     if rejected:
         co = reject_non_mining(co, sic)
         _write("companies", co)
+        purged += purge_stale_facts(co)
 
     if wikidata and (force or _age_days(state.get("wikidata_facts_at")) >= WIKIDATA_DAYS):
         q2c = {q: c for c, q in zip(co["id"], co["qid"], strict=True) if isinstance(q, str)}
@@ -1584,7 +1607,7 @@ def refresh(max_companies: int = MAX_COMPANIES, *, http=None, force: bool = Fals
         n_avec_mines=int((co["n_mines"] > 0).sum()), n_liens_mines=int(len(lk)),
         sec_lues_ce_lancement=done, sec_tentees_ce_lancement=tried, sec_restantes=rest,
         n_societes_avec_faits=int(facts["company_id"].nunique()) if len(facts) else 0,
-        n_faits=int(len(facts)), n_investissements=int(len(inv)),
+        n_faits=int(len(facts)), faits_purges=purged, n_investissements=int(len(inv)),
         requetes_sec=getattr(http, "requests", None),
         requetes_wikidata=getattr(http, "sparql_requests", None),
         erreurs=errors[-50:],
