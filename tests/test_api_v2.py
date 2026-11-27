@@ -176,8 +176,28 @@ def test_backtest_unreadable_file(client, env):
 
 
 # -- /api/forecast/site ---------------------------------------------------------------------------------
+QUAL = {
+    "model": "tendance",
+    "horizon": 1,
+    "r": 0.5,
+    "r_lo": 0.2,
+    "r_hi": 0.7,
+    "rho": 0.4,
+    "rho_lo": -0.01,
+    "rho_hi": 0.6,
+    "skill": np.float64(0.1),
+    "skill_lo": 0.02,
+    "skill_hi": 0.15,
+    "facteur_median": 1.3,
+    "couverture80": 0.8,
+    "couverture90": 0.9,
+    "n": np.int64(40),
+    "n_mines": 12,
+}
 SITE = {
+    "site_id": "kalgoorlie",
     "serie": "minerai extrait",
+    "derniere_annee": 2024,
     "historique": [{"year": 2019, "value": 1e6}, {"year": 2020, "value": np.nan}],
     "prevision": [
         {
@@ -188,34 +208,49 @@ SITE = {
             "hi80": 1.3e6,
             "lo90": 0.8e6,
             "hi90": float("inf"),
-        }
+        },
+        {"year": 2029, "model": "naif", "value": 1e6, "lo80": 1, "hi80": 2, "lo90": 1, "hi90": 3},
     ],
-    "qualite": {
-        "r": 0.5,
-        "rho": 0.4,
-        "skill": np.float64(0.1),
-        "facteur_median": 1.3,
-        "couverture90": 0.9,
-        "n": np.int64(40),
-    },
+    "qualite": QUAL,
+    "qualite_par_horizon": [
+        QUAL,
+        {**QUAL, "model": "naif", "horizon": 2, "r": None, "r_lo": None, "r_hi": None, "rho": None,
+         "r_niveau": 0.98, "r_niveau_lo": 0.97, "r_niveau_hi": 0.99},
+    ],
+    "suivi_site": {"n": 6, "facteur_median": 1.2, "modele": "tendance", "horizon": 1},
 }
 
 
-def test_forecast_site_ok(client, monkeypatch):
+def test_forecast_site_ok(client, env, monkeypatch):
+    write_bt(env)  # horizons 1 et 2 mesurés
     calls = []
     fake(monkeypatch, "forecast", forecast_site=lambda s: calls.append(s) or SITE)
     d = client.get("/api/forecast/site", params={"site": "kalgoorlie"}).json()
-    assert calls == ["kalgoorlie"]
+    assert calls == ["kalgoorlie"] and "message" not in d
     assert d["serie"] == "minerai extrait" and d["historique"][1] == {"year": 2020, "value": None}
-    assert d["prevision"][0]["hi90"] is None and d["prevision"][0]["model"] == "tendance"
-    assert d["qualite"] == {
-        "r": 0.5,
-        "rho": 0.4,
-        "skill": 0.1,
-        "facteur_median": 1.3,
-        "couverture90": 0.9,
-        "n": 40,
-    }
+    p0, p1 = d["prevision"]
+    assert p0["hi90"] is None and p0["model"] == "tendance"
+    assert (p0["horizon"], p0["mesure"]) == (2, True)  # 2026 − 2024 ; h = 2 mesuré dans le rétro-test
+    assert (p1["horizon"], p1["mesure"]) == (5, False)  # au-delà des horizons mesurés
+    q = d["qualite"]
+    assert set(q) == set(api.QUALITE)
+    assert (q["r"], q["r_lo"], q["r_hi"], q["rho_lo"], q["rho_hi"]) == (0.5, 0.2, 0.7, -0.01, 0.6)
+    assert (q["skill"], q["skill_lo"], q["skill_hi"], q["n"], q["n_mines"]) == (0.1, 0.02, 0.15, 40, 12)
+    assert (q["model"], q["horizon"], q["portee"]) == ("tendance", 1, "global")
+    assert "global" in q["note"].lower()
+    naif = d["qualite_par_horizon"][1]
+    assert naif["r"] is None and naif["r_niveau_lo"] == 0.97 and "aucune variation" in naif["note"]
+    assert d["suivi_site"] == {"model": "tendance", "horizon": 1, "n": 6, "facteur_median": 1.2,
+                               "portee": "mine"}
+    json.dumps(d, allow_nan=False)
+
+
+def test_forecast_site_module_horizon_and_mesure_win(client, env, monkeypatch):
+    row = {**SITE["prevision"][0], "horizon": 7, "mesure": False}
+    fake(monkeypatch, "forecast", forecast_site=lambda s: {**SITE, "prevision": [row]})
+    write_bt(env)
+    p = client.get("/api/forecast/site", params={"site": "x"}).json()["prevision"][0]
+    assert (p["horizon"], p["mesure"]) == (7, False)
 
 
 def test_forecast_site_tries_twin(client, monkeypatch):
@@ -224,6 +259,20 @@ def test_forecast_site_tries_twin(client, monkeypatch):
     assert (
         client.get("/api/forecast/site", params={"site": "greenstone"}).json()["serie"] == "minerai extrait"
     )
+
+
+def test_forecast_site_error_on_first_id_still_tries_twin(client, monkeypatch):
+    """Une exception sur l'id demandé ne doit pas empêcher d'essayer la jumelle."""
+    monkeypatch.setattr(screener, "twins", lambda: {"greenstone": "icmm-42"})
+
+    def fn(s):
+        if s == "greenstone":
+            raise KeyError("pas dans le panel")
+        return SITE
+
+    fake(monkeypatch, "forecast", forecast_site=fn)
+    d = client.get("/api/forecast/site", params={"site": "greenstone"}).json()
+    assert d["serie"] == "minerai extrait" and "indisponible" not in d.get("message", "")
 
 
 def test_forecast_site_no_series_is_null(client, monkeypatch):
@@ -247,13 +296,19 @@ def test_forecast_site_module_missing_or_failing(client, monkeypatch):
     assert client.get("/api/forecast/site", params={"site": "x"}).json()["message"]
 
 
-def test_forecast_site_never_runs_backtest_from_api(client, env, monkeypatch):
+def test_forecast_site_without_backtest_keeps_history(client, env, monkeypatch):
+    """forecast_site est en lecture seule : sans backtest.json il rend l'historique et un message ; l'API le
+    transmet au lieu d'une structure vide."""
     calls = []
-    fake(monkeypatch, "forecast", forecast_site=lambda s: calls.append(s) or SITE, load_backtest=lambda: None)
+    ro = {"serie": "minerai extrait", "historique": SITE["historique"], "prevision": [], "qualite": None,
+          "message": "Rétro-test pas encore lancé"}
+    fake(monkeypatch, "forecast", forecast_site=lambda s: calls.append(s) or ro)
     d = client.get("/api/forecast/site", params={"site": "x"}).json()
-    assert calls == [] and d["prevision"] == [] and "strate forecast backtest" in d["message"]
-    write_bt(env)
-    assert client.get("/api/forecast/site", params={"site": "x"}).json()["serie"] == "minerai extrait"
+    assert calls == ["x"] and len(d["historique"]) == 2 and d["prevision"] == []
+    assert d["qualite"] is None and d["message"] == "Rétro-test pas encore lancé"
+    fake(monkeypatch, "forecast", forecast_site=lambda s: {**ro, "message": None})
+    d = client.get("/api/forecast/site", params={"site": "x"}).json()
+    assert "strate forecast backtest" in d["message"]
 
 
 def test_forecast_site_note_as_message(client, env, monkeypatch):
@@ -262,7 +317,17 @@ def test_forecast_site_note_as_message(client, env, monkeypatch):
         "forecast",
         forecast_site=lambda s: {**SITE, "prevision": [], "note": "série trop ancienne"},
     )
+    write_bt(env)
     assert client.get("/api/forecast/site", params={"site": "x"}).json()["message"] == "série trop ancienne"
+
+
+def test_backtest_naive_rows_get_note(client, env):
+    row = {**BT["rows"][0], "r": None, "rho": None, "r_niveau": 0.98, "r_niveau_lo": 0.97,
+           "r_niveau_hi": 0.99, "skill_lo": 0.0, "skill_hi": 0.0}
+    write_bt(env, {**BT, "rows": [row]})
+    r = client.get("/api/forecast/backtest").json()["rows"][0]
+    assert r["r"] is None and r["r_niveau_lo"] == 0.97 and r["skill_hi"] == 0.0
+    assert "aucune variation" in r["note"]
 
 
 # -- /api/companies ---------------------------------------------------------------------------------------

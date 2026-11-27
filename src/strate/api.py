@@ -848,9 +848,30 @@ def _list(v) -> list:
 
 
 # -- prévisions --
+# r, ρ : variation prévue ↔ variation réelle du log de la production depuis la dernière valeur connue (null
+# pour un modèle qui ne prévoit aucune variation, le naïf) ; *_niveau : mêmes mesures sur le log des niveaux.
 BT_ROW = {"model": ("modele",), "horizon": ("h",), "n_mines": (), "n_points": ("n",), "r": (), "r_lo": (),
-          "r_hi": (), "rho": (), "rho_lo": (), "rho_hi": (), "skill": (), "facteur_median": (),
-          "bon_sens": (), "couverture80": (), "couverture90": ()}
+          "r_hi": (), "rho": (), "rho_lo": (), "rho_hi": (), "r_niveau": (), "r_niveau_lo": (),
+          "r_niveau_hi": (), "rho_niveau": (), "rho_niveau_lo": (), "rho_niveau_hi": (), "skill": (),
+          "skill_lo": (), "skill_hi": (), "facteur_median": (), "bon_sens": (), "couverture80": (),
+          "couverture90": (), "note": ()}
+QUALITE = {"model": ("modele",), "horizon": ("h",), "r": (), "r_lo": (), "r_hi": (), "rho": (), "rho_lo": (),
+           "rho_hi": (), "r_niveau": (), "r_niveau_lo": (), "r_niveau_hi": (), "rho_niveau": (),
+           "rho_niveau_lo": (), "rho_niveau_hi": (), "skill": (), "skill_lo": (), "skill_hi": (),
+           "couverture80": (), "couverture90": (), "facteur_median": (), "n": ("n_points",), "n_mines": (),
+           "portee": (), "note": ()}
+NOTE_NAIF = ("Le modèle ne prévoit aucune variation : r et ρ (variation prévue ↔ variation réelle) "
+             "n'existent pas ; r_niveau et ρ_niveau comparent les niveaux (log), dominés par les écarts de "
+             "taille entre mines.")
+NOTE_PORTEE = ("Score global du modèle retenu sur la période de test 2015–2021 (toutes les mines), pas la "
+               "précision propre à cette mine : voir suivi_site.")
+
+
+def _bt_row(r: dict) -> dict:
+    out = _shape(r, BT_ROW)
+    if out["note"] is None and out["r"] is None and out["r_niveau"] is not None:
+        out["note"] = NOTE_NAIF
+    return out
 
 
 def _backtest_file() -> tuple[dict | None, str | None]:
@@ -871,7 +892,7 @@ def _backtest_payload() -> dict:
     retenu = d.get("retenu") if isinstance(d.get("retenu"), dict) else {}
     out = {"run_at": _finite(d.get("run_at")),
            "periode": _finite(d["periode"]) if isinstance(d.get("periode"), dict) else dict(PERIODE),
-           "rows": [_shape(r, BT_ROW) for r in _rows(d.get("rows"))],
+           "rows": [_bt_row(r) for r in _rows(d.get("rows"))],
            "retenu": {str(k): _finite(v) for k, v in retenu.items()},
            "methode": d.get("methode") if isinstance(d.get("methode"), str) and d["methode"]
            else METHODE_FORECAST}
@@ -889,40 +910,87 @@ def forecast_backtest():
 
 
 def _empty_forecast(msg: str) -> dict:
-    return {"serie": None, "historique": [], "prevision": [], "qualite": None, "message": msg}
+    return {"serie": None, "historique": [], "prevision": [], "qualite": None, "qualite_par_horizon": [],
+            "suivi_site": None, "message": msg}
+
+
+def _measured_horizons() -> set[int]:
+    """Horizons mesurés hors échantillon dans le rétro-test publié (au moins un point de test)."""
+    d, _ = _backtest_file()
+    out = set()
+    for r in _rows((d or {}).get("rows")):
+        h, n = _pick(r, "horizon", "h"), _pick(r, "n_points", "n")
+        if isinstance(h, int) and not isinstance(h, bool) and (not isinstance(n, (int, float)) or n > 0):
+            out.add(h)
+    return out
+
+
+def _qualite(q) -> dict | None:
+    if not isinstance(q, dict):
+        return None
+    out = _shape(q, QUALITE)
+    out["portee"] = out["portee"] or "global"
+    if out["note"] is None:
+        naif = out["r"] is None and out["model"] is not None
+        out["note"] = NOTE_NAIF if naif else NOTE_PORTEE
+    return out
+
+
+def _prevision(rows: list[dict], last_year, measured: set[int]) -> list[dict]:
+    out = []
+    for r in rows:
+        p = _shape(r, {"year": ("annee", "target_year"), "horizon": ("h",), "mesure": (),
+                       "model": ("modele",), "value": ("valeur",), "lo80": (), "hi80": (), "lo90": (),
+                       "hi90": ()})
+        if not isinstance(p["horizon"], int) and isinstance(p["year"], int) and isinstance(last_year, int):
+            p["horizon"] = p["year"] - last_year
+        if not isinstance(p["mesure"], bool):  # mesuré = cet horizon a un score hors échantillon publié
+            p["mesure"] = isinstance(p["horizon"], int) and p["horizon"] in measured
+        out.append(p)
+    return out
 
 
 @app.get("/api/forecast/site")
 def forecast_site(site: str):
-    """Historique, prévision avec intervalles 80/90 % et qualité passée d'une mine ; null sans série."""
-    mod = _mod("forecast")
-    fn = _fn(mod, "forecast_site")
+    """Historique, prévision avec intervalles 80/90 % (horizon, mesuré ou non) et qualité du modèle retenu
+    (score global avec IC 90 %, et suivi propre à la mine) ; null sans série. forecast.forecast_site est en
+    lecture seule : sans rétro-test, l'historique est rendu avec un message."""
+    fn = _fn(_mod("forecast"), "forecast_site")
     if fn is None:
         return _empty_forecast("Prévision indisponible : module de prévision absent ou incomplet.")
-    if hasattr(mod, "load_backtest") and _backtest_file()[0] is None:  # sinon forecast_site lancerait
-        return _empty_forecast(_backtest_file()[1])  # tout le rétro-test (et l'écrirait) dans une lecture
-    d = None
+    d, err = None, None
     for sid in dict.fromkeys([site, *_site_ids(site)]):  # la mine, puis ses jumelles
         try:
             d = fn(sid)
-        except Exception as e:  # données absentes ou module en cours d'écriture
+        except Exception as e:  # données absentes ou module en cours d'écriture : on tente la jumelle
             log.warning("forecast_site(%s) : %s", sid, e)
-            return _empty_forecast(f"Prévision indisponible : {e}")
+            err = e
+            continue
         if d:
             break
     if not d or not isinstance(d, dict):
-        return None
-    q = d.get("qualite")
-    out = {"serie": _finite(d.get("serie")),
-            "historique": [_shape(r, {"year": ("annee",), "value": ("valeur",)})
-                           for r in _rows(d.get("historique"))],
-            "prevision": [_shape(r, {"year": ("annee", "target_year"), "model": ("modele",),
-                                     "value": ("valeur",), "lo80": (), "hi80": (), "lo90": (), "hi90": ()})
-                          for r in _rows(d.get("prevision"))],
-            "qualite": _shape(q, {"r": (), "rho": (), "skill": (), "facteur_median": (), "couverture90": (),
-                                  "n": ("n_points",)}) if isinstance(q, dict) else None}
-    if not out["prevision"] and isinstance(d.get("note"), str):
-        out["message"] = d["note"]
+        return _empty_forecast(f"Prévision indisponible : {err}") if err is not None else None
+    hist = [_shape(r, {"year": ("annee",), "value": ("valeur",)}) for r in _rows(d.get("historique"))]
+    last = _pick(d, "derniere_annee")
+    if not isinstance(last, int):
+        years = [h["year"] for h in hist if isinstance(h["year"], int) and h["value"] is not None]
+        last = max(years) if years else None
+    suivi = d.get("suivi_site")
+    out = {"site_id": _finite(d.get("site_id")), "nom": _finite(d.get("nom")),
+           "serie": _finite(d.get("serie")), "unite": _finite(d.get("unite")),
+           "derniere_annee": _finite(last), "historique": hist,
+           "prevision": _prevision(_rows(d.get("prevision")), last, _measured_horizons()),
+           "qualite": _qualite(d.get("qualite")),
+           "qualite_par_horizon": [q for q in map(_qualite, _rows(d.get("qualite_par_horizon"))) if q],
+           "suivi_site": {**_shape(suivi, {"model": ("modele",), "horizon": ("h",), "n": (),
+                                           "facteur_median": ()}), "portee": "mine"}
+           if isinstance(suivi, dict) else None,
+           "backtest_run_at": _finite(d.get("backtest_run_at"))}
+    msg = next((m for m in (d.get("message"), d.get("note")) if isinstance(m, str) and m), None)
+    if msg is None and _backtest_file()[0] is None:
+        msg = _backtest_file()[1]
+    if msg:
+        out["message"] = msg
     return out
 
 
