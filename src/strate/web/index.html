@@ -1633,10 +1633,30 @@ async function coList(){
 }
 
 // -- fiche société -----------------------------------------------------------------------------
-function coSeries(faits,keys){
+// Fait retenu par exercice : celui que le module marque « retenu » (une série par société et indicateur, SEC si la
+// société en déclare, sinon Wikidata). Serveur plus ancien sans ce drapeau : SEC d'abord, puis le premier venu.
+// Une série n'a qu'une devise, celle du fait retenu le plus récent ; les exercices dans une autre devise sont
+// écartés et comptés (jamais additionnés ni tracés sur le même axe).
+const ORIG_RANK=o=>o==='sec'?0:o==null?2:1;
+function coPick(faits,keys){
+  const c=faits.filter(f=>keys.includes(String(f.indicateur))&&num(f.annee)!=null&&num(f.valeur)!=null);
+  const flagged=c.some(f=>typeof f.retenu==='boolean'), pool=flagged?c.filter(f=>f.retenu===true):c;
   const by=new Map();
-  for(const f of faits) if(keys.includes(String(f.indicateur))&&num(f.annee)!=null&&num(f.valeur)!=null&&!by.has(f.annee)) by.set(f.annee,f);
+  for(const f of [...pool].sort((a,b)=>ORIG_RANK(a.origine)-ORIG_RANK(b.origine))) if(!by.has(f.annee)) by.set(f.annee,f);
   return [...by.values()].sort((a,b)=>a.annee-b.annee);
+}
+function coSeries(faits,keys){
+  const all=coPick(faits,keys), dev=[...all].reverse().find(f=>f.devise)?.devise??null;
+  const rows=dev?all.filter(f=>f.devise===dev):all;
+  const orig=[...new Set(rows.map(f=>f.origine).filter(Boolean).map(String))];
+  return {rows,dev,dropped:all.length-rows.length,orig};
+}
+const ORIGL={sec:'SEC EDGAR',wikidata:'Wikidata',rapport:'rapport annuel'};
+function coSeriesNote(S){
+  const o=S.orig.map(x=>Object.hasOwn(ORIGL,x)?ORIGL[x]:x);
+  const parts=[o.length?`source : ${o.map(esc).join(', ')}${o.length>1?' (sources mêlées)':''}`:'',
+    S.dropped?`${fmt(S.dropped,0)} ${plur(S.dropped,'exercice')} dans une autre devise non ${S.dropped>1?'tracés':'tracé'}`:''].filter(Boolean);
+  return parts.length?`<p class="meta" style="margin:6px 0 0">${parts.join(' · ')}</p>`:'';
 }
 function coBars(cv,rows,color,div){
   if(!cv||!rows.length) return;
@@ -1659,20 +1679,23 @@ async function coSheet(id){
     qid?`<a href="https://www.wikidata.org/wiki/${esc(qid)}" target="_blank" rel="noopener">Wikidata</a>`:''].filter(Boolean).join(' · ');
   // sous-titre en HTML : tickers échappés avant toute insertion (une balise insérée puis remplacée s'exécute quand même)
   setHead('societes',head(name,[esc(tk.join(' · ')),cik?'CIK '+esc(cik):'',links].filter(Boolean).join(' · ')||'Société du catalogue',true));
-  const skip=new Set(['id','name','nom','tickers','cik','qid']);
-  const PFL={aliases:'Autres noms',cik_source:'Source du CIK',sources:'Sources',watchlist:'Liste suivie',n_mines:'Mines',pays:'Pays',country:'Pays'};
+  // clés du profil de companies.company() ; les liens (sec_url, wikidata_url) sont déjà dans l'en-tête
+  const skip=new Set(['id','name','nom','tickers','cik','qid','sec_url','wikidata_url']);
+  const PFL={alias:'Autres noms',aliases:'Autres noms',cik_source:'Source du CIK',sources:'Sources',suivie:'Mine de la liste suivie',
+    watchlist:'Liste suivie',n_mines:'Mines',pays:'Pays',country:'Pays'};
   const kv=Object.entries(pf).filter(([k,v])=>!skip.has(k)&&v!=null&&v!==''&&typeof v!=='object'||Array.isArray(v)&&v.length&&!skip.has(k))
     .slice(0,10).map(([k,v])=>`<div>${esc(Object.hasOwn(PFL,k)?PFL[k]:k.replace(/_/g,' '))}</div><div>${esc(Array.isArray(v)?v.join(', '):typeof v==='boolean'?(v?'oui':'non'):v)}</div>`).join('');
-  const cap=coSeries(faits,['capex']), emp=coSeries(faits,['effectifs','employees']);
-  const capDev=cap.find(f=>f.devise)?.devise, capDiv=cap.some(f=>Math.abs(f.valeur)>=1e9)?1e9:1e6;
-  const latest=new Map(); for(const f of [...faits].sort((a,b)=>(num(b.annee)??0)-(num(a.annee)??0))) if(!latest.has(f.indicateur)) latest.set(f.indicateur,f);
+  const CS=coSeries(faits,['capex']), ES=coSeries(faits,['effectifs','employees']), cap=CS.rows, emp=ES.rows;
+  const capDev=CS.dev, capDiv=cap.some(f=>Math.abs(f.valeur)>=1e9)?1e9:1e6;
+  // dernier chiffre par indicateur : le fait retenu le plus récent (même règle que les graphiques)
+  const latest=new Map(); for(const k of [...new Set(faits.map(f=>String(f.indicateur)))]){ const r=coPick(faits,[k]).at(-1); if(r) latest.set(k,r); }
   const factRow=f=>{ const u=safeUrl(f.source);
     return `<tr><td>${esc(metL(f.indicateur))}</td><td class="n">${esc(f.annee??'—')}</td><td class="n">${factVal(f)}</td><td class="meta">${esc(f.formulaire||'—')}</td><td>${u?`<a href="${esc(u)}" target="_blank" rel="noopener">source</a>`:'—'}</td></tr>`; };
   const sortedF=[...faits].sort((a,b)=>String(a.indicateur).localeCompare(String(b.indicateur))||(num(b.annee)??0)-(num(a.annee)??0));
   el.innerHTML=`${kv?`<div class="kv" style="margin:0 0 8px">${kv}</div>`:''}
     <div class="grid2" style="margin-top:24px">
-      <div><h2 style="margin-top:0">CAPEX par exercice${capDev?` <span class="u">${capDiv===1e9?'Md':'M'} ${esc(capDev)}</span>`:''}</h2><div class="card">${cap.length?'<canvas id="co_cap" height="160"></canvas>':'<p class="meta" style="margin:0">Pas de CAPEX déclaré.</p>'}</div></div>
-      <div><h2 style="margin-top:0">Effectifs par exercice</h2><div class="card">${emp.length?'<canvas id="co_emp" height="160"></canvas>':'<p class="meta" style="margin:0">Pas d’effectifs déclarés.</p>'}</div></div>
+      <div><h2 style="margin-top:0">CAPEX par exercice${capDev?` <span class="u">${capDiv===1e9?'Md':'M'} ${esc(capDev)}</span>`:''}</h2><div class="card">${cap.length?'<canvas id="co_cap" height="160"></canvas>'+coSeriesNote(CS):'<p class="meta" style="margin:0">Pas de CAPEX déclaré.</p>'}</div></div>
+      <div><h2 style="margin-top:0">Effectifs par exercice</h2><div class="card">${emp.length?'<canvas id="co_emp" height="160"></canvas>'+coSeriesNote(ES):'<p class="meta" style="margin:0">Pas d’effectifs déclarés.</p>'}</div></div>
     </div>
     <h2>Ce que disent les chiffres de cette société</h2>
     ${cor.length?`<div class="panel" style="padding:4px 20px">${cor.map(cc=>ccRow(cc,'exercices')).join('')}</div>`:box('Pas assez d’exercices pour une corrélation propre à cette société ; voir les corrélations sur l’ensemble des sociétés dans CAPEX &amp; investissements.')}

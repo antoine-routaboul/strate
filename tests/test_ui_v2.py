@@ -382,6 +382,23 @@ const done=()=>fetches.forEach(f=>f.done=true);
       &&h.includes('&lt;b&gt;Plan')
       &&charts.some(c=>c.el===$el('#co_cap'))&&clean(h))||h;
   });
+  await check('company_sheet_uses_retained_fact',async()=>{
+    const F=(annee,valeur,devise,origine,retenu)=>({indicateur:'capex',annee,valeur,devise,origine,retenu});
+    const run=async(id,faits)=>{ done(); P.show('societes','fiche',id);
+      take('/api/company?id='+id).ok({profil:{name:'R',alias:['Rio'],sec_url:'https://x',suivie:true},mines:[],faits,
+        investissements:[],correlations:[]});
+      await flush(); return [charts.filter(c=>c.el===$el('#co_cap')).at(-1),$el('#co_sheet').innerHTML]; };
+    // le serveur marque le fait retenu : jamais le premier venu (ici Wikidata en EUR, rangé avant)
+    const [c1,h1]=await run('r1',[F(2024,9e9,'EUR','wikidata',false),F(2024,1e10,'USD','sec',true),
+      F(2023,8e9,'USD','sec',true),F(2022,5e9,'CAD','sec',true)]);
+    // serveur ancien sans drapeau : SEC d'abord
+    const [c2]=await run('r2',[F(2024,9e9,'EUR','wikidata'),F(2024,1e10,'USD','sec')]);
+    const d1=c1.cfg.data, d2=c2.cfg.data.datasets[0].data;
+    return (JSON.stringify(d1.labels)==='["2023","2024"]'&&JSON.stringify(d1.datasets[0].data)==='[8,10]'
+      &&h1.includes('1 exercice dans une autre devise non tracé')&&h1.includes('Md USD')
+      &&h1.includes('Autres noms')&&h1.includes('Mine de la liste suivie')&&!h1.includes('sec url')
+      &&JSON.stringify(d2)==='[10]')||JSON.stringify([d1,d2])+h1;
+  });
   await check('company_head_never_gets_raw_tickers',async()=>{
     done(); const el=$el('#co_sub'), seen=[]; let v='';
     Object.defineProperty(el,'innerHTML',{configurable:true,get:()=>v,
@@ -541,9 +558,10 @@ BOOT_SITE = r"""
 
 CHECKS = ["badge", "badge_never_upgrades_server_verdict", "routes", "one_view_at_a_time",
           "directory_empty_message", "directory_escapes_names", "directory_sorts_amounts_within_currency",
-          "company_sheet_with_badges", "company_head_never_gets_raw_tickers",
-          "company_corr_verdicts_per_coefficient", "capex_page_empty", "backtest_page", "backtest_empty",
-          "forecast_without_series", "forecast_with_series", "forecast_contract_quality_and_horizons",
+          "company_sheet_with_badges", "company_sheet_uses_retained_fact",
+          "company_head_never_gets_raw_tickers", "company_corr_verdicts_per_coefficient",
+          "capex_page_empty", "backtest_page", "backtest_empty", "forecast_without_series",
+          "forecast_with_series", "forecast_contract_quality_and_horizons",
           "forecast_naive_quality_in_levels", "all_correlations_fallback", "calibration_page"]
 
 
