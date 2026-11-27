@@ -1034,14 +1034,17 @@ NOT_INVEST = re.compile(
 # walks away from $49bn Anglo bid »), le mot pouvant être loin du montant ; un titre qui annonce aussi un
 # autre investissement est perdu, choix assumé : un faux montant d'abandon pèse plus qu'un investissement
 # manqué (en, fr, es, pt, de). « cut », « slash », « reduce », « slow » ne comptent que suivis d'un montant
-# ou d'un mot de dépense : « invests $500m to cut emissions » reste un investissement.
+# ou d'un mot de dépense : « invests $500m to cut emissions » reste un investissement. « abandoned » suivi
+# d'une mine, d'un puits ou d'un site (jusqu'à deux mots entre : « abandoned uranium mines ») décrit un
+# passif minier à réhabiliter, pas une offre retirée.
 _SPEND = (r"(?:capex|spending|investments?|budgets?|capital (?:spending|expenditures?|budgets?)|guidance|"
           r"outlays?)")
 _CUT = (r"(?:cut(?:s|ting)?|slash(?:es|ed|ing)?|trim(?:s|med|ming)?|reduc(?:e|es|ed|ing)|scal(?:e|es|ed|ing) "
         r"back)(?= (?:\S*\$|\d[\d.,]*\s?(?:bn|billions?|millions?|mn|mln|m|b)\b)|.{0,25}\b" + _SPEND + r"\b)|"
         r"slow(?:s|ed|ing)?(?: down)?(?=.{0,25}\b(?:" + _SPEND + r"|development|construction|works?)\b)")
 WITHDRAWN = re.compile(
-    r"\b(walk(?:s|ed|ing)? away|withdr[ae]w\w*|abandon(?:s|ing)?|abandoned (?!mines?|pits?|sites?)\w+|"
+    r"\b(walk(?:s|ed|ing)? away|withdr[ae]w\w*|abandon(?:s|ing)?|"
+    r"abandoned(?! (?:[a-z]+ ){0,2}(?:mines?|pits?|sites?|wells?|lands?|shafts?|workings)\b)|"
     r"scrapp(?:ed|ing)|(?:scraps|drop(?:s|ped)?)(?=.{0,30}\b(?:bid|offer|takeover|deal|plan|project)s?\b)|"
     r"call(?:s|ed)? off|cancel\w*|shelv\w*|"
     r"halt(?:s|ed|ing)?|suspen\w*|paus(?:e|es|ed|ing)|terminat(?:e|es|ed|ing|ion)|freez(?:e|es|ing)|froze|"
