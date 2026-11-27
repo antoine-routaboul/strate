@@ -64,7 +64,10 @@ METHODE_CORRELATIONS = (
     "devise). Production : moyenne, pondérée par la part détenue (1 si inconnue), des variations de la série "
     "principale de chaque mine (Jasansky et al. 2023). Emprise : surface nue Sentinel-2 (médiane des mois "
     "clairs) sur les mêmes mines les deux années. Décalage k : CAPEX(t) ↔ y(t+k). r de Pearson, ρ de "
-    "Spearman ; IC 90 % par bootstrap sur les sociétés (ensemble) ou sur les années (une société) ; "
+    "Spearman. Exercice rangé dans l'année civile qui en contient la plus grande part (clôture de janvier à "
+    "mai → année précédente) ; une clôture au 30 juin (BHP) est rangée l'année de clôture et reste décalée "
+    "de six mois sur la production civile. L'année civile en cours est exclue (emprise et production "
+    "partielles). IC 90 % par bootstrap sur les sociétés (ensemble) ou sur les années (une société) ; "
     "n sociétés, n points. « Démontré » seulement si l'IC 90 % de ρ exclut 0.")
 
 # Codes SIC (Standard Industrial Classification, champ « sic » de data.sec.gov/submissions) acceptés pour un
@@ -740,16 +743,35 @@ def _closes(facts: dict) -> dict[str, list[str]]:
     return {k: sorted(v) for k, v in out.items()}
 
 
+def fiscal_year(end: str) -> int:
+    """Année civile d'un exercice clos le `end` : celle qui en contient la plus grande part. Clôture de
+    janvier à mai → année précédente (exercice clos le 31 mars 2021 : avril 2020–mars 2021 → 2020 ; année
+    de 52 semaines close le 2 janvier 2022 → 2021). Clôture de juin à décembre → année de clôture ; pour
+    juin (BHP : juillet–juin, six mois de chaque côté) c'est une convention, la même que la SEC et
+    Compustat : l'exercice 2025 de BHP est rangé en 2025 et reste décalé de six mois sur l'année civile."""
+    y, m = int(end[:4]), int(end[5:7])
+    return y if m >= 6 else y - 1
+
+
 def _year_of(x: dict, closes: dict[str, list[str]], instant_ok: bool) -> int | None:
     if "start" in x:
-        return int(x["end"][:4]) if _full_year(x) else None
+        return fiscal_year(x["end"]) if _full_year(x) else None
     ends = closes.get(x["accn"], [])
     if x["end"] in ends:
-        return int(x["end"][:4])
+        return fiscal_year(x["end"])
     if not instant_ok:
         return None  # bilan trimestriel repris dans un rapport annuel : pas une clôture
     prior = [e for e in ends if e <= x["end"]]  # effectif daté après la clôture (page de garde)
-    return int(prior[-1][:4]) if prior else int(x["end"][:4])
+    return fiscal_year(prior[-1]) if prior else fiscal_year(x["end"])
+
+
+def closing_gap(fin_exercice) -> int | None:
+    """Écart en mois entre la clôture et le 31 décembre de l'année rangée (fiscal_year) : décembre → 0,
+    juin → 6 (avant), mars → 3 (après)."""
+    if not isinstance(fin_exercice, str) or len(fin_exercice) < 7 or not fin_exercice[5:7].isdigit():
+        return None
+    m = int(fin_exercice[5:7])
+    return 12 - m if m >= 6 else m
 
 
 def parse_companyfacts(facts: dict, company_id: str, cik: str) -> pd.DataFrame:
@@ -1152,7 +1174,7 @@ def _weights(lk: pd.DataFrame) -> pd.DataFrame:
 
 
 def mine_production_growth(cat: pd.DataFrame, prod: pd.DataFrame, sites: Iterable[str],
-                           twins: dict[str, str] | None = None) -> pd.DataFrame:
+                           twins: dict[str, str] | None = None, today: date | None = None) -> pd.DataFrame:
     """Variation log annuelle de la série principale de chaque mine (choix de screener.main_production,
     fixé une fois par mine pour ne jamais comparer minerai et métal), années consécutives seulement."""
     from strate import screener
@@ -1161,7 +1183,9 @@ def mine_production_growth(cat: pd.DataFrame, prod: pd.DataFrame, sites: Iterabl
     if prod.empty or cat.empty or "jasansky" not in cat:
         return pd.DataFrame(columns=cols)
     twins = twins or {}
-    by_fac = {k: g for k, g in prod[prod["value_tonnes"] > 0].groupby("facility_id")}
+    current = (today or date.today()).year  # une production annuelle de l'année en cours est partielle
+    by_fac = {k: g for k, g in prod[(prod["value_tonnes"] > 0) & (prod["year"] < current)]
+              .groupby("facility_id")}
     rows = []
     for sid in set(sites):
         cid = twins.get(sid, sid)
@@ -1205,8 +1229,11 @@ def _optical(site_id: str) -> pd.DataFrame:
 
 
 def mine_footprint_growth(sites: Iterable[str], reader: Callable[[str], pd.DataFrame] = _optical,
-                          min_quality: float = 0.5, min_months: int = 3) -> pd.DataFrame:
-    """Variation log annuelle de la surface nue (médiane des mois clairs, ≥ 3 mois par an)."""
+                          min_quality: float = 0.5, min_months: int = 3,
+                          today: date | None = None) -> pd.DataFrame:
+    """Variation log annuelle de la surface nue (médiane des mois clairs, ≥ 3 mois par an). L'année en
+    cours est exclue : ses mois clairs ne couvrent qu'une partie de l'année (saison, nuages)."""
+    current = (today or date.today()).year
     rows = []
     for sid in set(sites):
         d = reader(sid)
@@ -1216,6 +1243,7 @@ def mine_footprint_growth(sites: Iterable[str], reader: Callable[[str], pd.DataF
         if d.empty:
             continue
         yr = pd.to_datetime(d["date"]).dt.year
+        d, yr = d[yr < current], yr[yr < current]
         a = d.groupby(yr)["value"].agg(["median", "size"])
         a = a[a["size"] >= min_months]["median"]
         for y in a.index:

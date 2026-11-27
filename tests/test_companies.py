@@ -8,6 +8,7 @@ company_tickers_exchange).
 
 import json
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -474,6 +475,27 @@ def test_parse_companyfacts_rules_restatement_quarter_currency_and_dei():
     assert list(ppe["valeur"]) == [1000]
     emp = df[df["indicateur"] == "effectifs"].iloc[0]
     assert emp["annee"] == 2021 and emp["valeur"] == 3200 and emp["unite"] == "personnes"
+
+
+def test_fiscal_year_majority_rule_and_gap():
+    assert C.fiscal_year("2021-12-31") == 2021 and C.fiscal_year("2018-06-30") == 2018
+    assert C.fiscal_year("2021-03-31") == 2020  # avril 2020–mars 2021 : surtout 2020
+    assert C.fiscal_year("2022-01-01") == 2021  # année de 52 semaines
+    assert [C.closing_gap(d) for d in ("2021-12-31", "2018-06-30", "2021-03-31")] == [0, 6, 3]
+    facts = {"facts": {"us-gaap": {"PaymentsToAcquirePropertyPlantAndEquipment": {"units": {"USD": [
+        _fact("2021-03-31", 50, "2021-06-01", start="2020-04-01", accn="b-2021"),
+        _fact("2022-03-31", 60, "2022-06-01", start="2021-04-01", accn="b-2022")]}}}}}
+    cap = C.parse_companyfacts(facts, "j", "0000000003").set_index("annee")
+    assert list(cap.index) == [2020, 2021] and cap.at[2020, "fin_exercice"] == "2021-03-31"
+
+
+def test_growth_series_exclude_current_partial_year():
+    d = pd.DataFrame(dict(date=pd.to_datetime(["2025-01-01", "2025-02-01", "2025-03-01", "2026-01-01",
+                                               "2026-02-01", "2026-03-01"]),
+                          signal="bare_km2", value=[10, 10, 10, 20, 20, 20], quality=1.0))
+    g = C.mine_footprint_growth(["s"], reader=lambda s: d, today=date(2026, 11, 27))
+    assert g.empty  # 2026 n'est pas fini : pas de variation 2025 → 2026
+    assert list(C.mine_footprint_growth(["s"], reader=lambda s: d, today=date(2027, 1, 5))["annee"]) == [2026]
 
 
 # -- faits Wikidata -------------------------------------------------------------------------------------
