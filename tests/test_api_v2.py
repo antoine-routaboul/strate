@@ -247,6 +247,24 @@ def test_forecast_site_module_missing_or_failing(client, monkeypatch):
     assert client.get("/api/forecast/site", params={"site": "x"}).json()["message"]
 
 
+def test_forecast_site_never_runs_backtest_from_api(client, env, monkeypatch):
+    calls = []
+    fake(monkeypatch, "forecast", forecast_site=lambda s: calls.append(s) or SITE, load_backtest=lambda: None)
+    d = client.get("/api/forecast/site", params={"site": "x"}).json()
+    assert calls == [] and d["prevision"] == [] and "strate forecast backtest" in d["message"]
+    write_bt(env)
+    assert client.get("/api/forecast/site", params={"site": "x"}).json()["serie"] == "minerai extrait"
+
+
+def test_forecast_site_note_as_message(client, env, monkeypatch):
+    fake(
+        monkeypatch,
+        "forecast",
+        forecast_site=lambda s: {**SITE, "prevision": [], "note": "série trop ancienne"},
+    )
+    assert client.get("/api/forecast/site", params={"site": "x"}).json()["message"] == "série trop ancienne"
+
+
 # -- /api/companies ---------------------------------------------------------------------------------------
 TABLE = pd.DataFrame(
     [
@@ -469,6 +487,64 @@ def test_company_legacy_dossier(client, monkeypatch):
     assert d["investissements"][0]["titre"] == "t" and d["investissements"][0]["url"] == "u2"
 
 
+def test_company_wide_financials_employees_and_mine_names(client, monkeypatch):
+    monkeypatch.setattr(api, "_site_names", lambda ids: {"icmm1": "Mine Une"})
+    src = {"url": "https://www.sec.gov/a", "form": "20-F", "concept": "ifrs-full:Revenue"}
+    fake(
+        monkeypatch,
+        "companies",
+        dossier=lambda i: {
+            "company": {"id": i, "name": "BHP"},
+            "mines": [{"site": "icmm1", "roles": ["exploitant"], "share": 0.5}, {"site": "icmm2"}],
+            "financials": [
+                {
+                    "year": 2024,
+                    "revenue": 5e10,
+                    "capex": np.nan,
+                    "capex_revenue": 0.2,
+                    "capex_growth": -0.1,
+                    "capex_per_employee": 1e5,
+                    "currency": "USD",
+                    "sources": {"revenue": src},
+                }
+            ],
+            "employees": [
+                {
+                    "year": 2024,
+                    "employees": 9e4,
+                    "source_kind": "sec_dei",
+                    "source_url": "u",
+                    "accepted": True,
+                },
+                {"year": 2023, "employees": 9e9, "source_kind": "wikidata", "accepted": False},
+            ],
+        },
+    )
+    d = client.get("/api/company", params={"id": "bhp"}).json()
+    assert d["mines"] == [
+        {"site_id": "icmm1", "nom": "Mine Une", "part": 0.5},
+        {"site_id": "icmm2", "nom": None, "part": None},
+    ]
+    f = {x["indicateur"]: x for x in d["faits"]}
+    assert f["revenue"] == {
+        "indicateur": "revenue",
+        "annee": 2024,
+        "valeur": 5e10,
+        "unite": "USD",
+        "devise": "USD",
+        "source": "https://www.sec.gov/a",
+        "formulaire": "20-F",
+    }
+    assert "capex" not in f  # NaN : pas de fait
+    assert (f["capex_revenue"]["unite"], f["capex_growth"]["unite"], f["capex_per_employee"]["unite"]) == (
+        "ratio",
+        "variation",
+        "USD/salarié",
+    )
+    assert f["effectifs"]["valeur"] == 9e4 and f["effectifs"]["formulaire"] == "sec_dei"
+    assert sum(x["indicateur"] == "effectifs" for x in d["faits"]) == 1  # valeur refusée écartée
+
+
 # -- /api/companies/correlations ---------------------------------------------------------------------------
 CORR = [
     {
@@ -665,6 +741,15 @@ def test_summary_all_sources(client, env, monkeypatch):
     assert {r["type"] for r in pr} == {"r", "rho"}
     t2 = next(r for r in pr if "tendance" in r["x"] and r["type"] == "r")
     assert t2["verdict"].startswith("non démontré") and t2["n"] == 600 and "2 ans" in t2["x"]
+
+
+def test_summary_companies_label(client, monkeypatch):
+    row = {**CORR[0], "label": "Croissance du CAPEX ↔ croissance de la production (année suivante)"}
+    fake(monkeypatch, "companies", correlations=lambda: [row])
+    so = [r for r in client.get("/api/correlations/summary").json()["rows"] if r["domaine"] == "sociétés"]
+    assert (
+        so[0]["x"] == "Croissance du CAPEX" and so[0]["y"] == "croissance de la production (année suivante)"
+    )
 
 
 def test_summary_robust_without_data(client, monkeypatch):

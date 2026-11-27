@@ -895,9 +895,12 @@ def _empty_forecast(msg: str) -> dict:
 @app.get("/api/forecast/site")
 def forecast_site(site: str):
     """Historique, prévision avec intervalles 80/90 % et qualité passée d'une mine ; null sans série."""
-    fn = _fn(_mod("forecast"), "forecast_site")
+    mod = _mod("forecast")
+    fn = _fn(mod, "forecast_site")
     if fn is None:
         return _empty_forecast("Prévision indisponible : module de prévision absent ou incomplet.")
+    if hasattr(mod, "load_backtest") and _backtest_file()[0] is None:  # sinon forecast_site lancerait
+        return _empty_forecast(_backtest_file()[1])  # tout le rétro-test (et l'écrirait) dans une lecture
     d = None
     for sid in dict.fromkeys([site, *_site_ids(site)]):  # la mine, puis ses jumelles
         try:
@@ -910,7 +913,7 @@ def forecast_site(site: str):
     if not d or not isinstance(d, dict):
         return None
     q = d.get("qualite")
-    return {"serie": _finite(d.get("serie")),
+    out = {"serie": _finite(d.get("serie")),
             "historique": [_shape(r, {"year": ("annee",), "value": ("valeur",)})
                            for r in _rows(d.get("historique"))],
             "prevision": [_shape(r, {"year": ("annee", "target_year"), "model": ("modele",),
@@ -918,6 +921,9 @@ def forecast_site(site: str):
                           for r in _rows(d.get("prevision"))],
             "qualite": _shape(q, {"r": (), "rho": (), "skill": (), "facteur_median": (), "couverture90": (),
                                   "n": ("n_points",)}) if isinstance(q, dict) else None}
+    if not out["prevision"] and isinstance(d.get("note"), str):
+        out["message"] = d["note"]
+    return out
 
 
 # -- sociétés --
@@ -968,16 +974,75 @@ def companies_api(q: str | None = None, pays: str | None = None, limit: int = Qu
     return out
 
 
+FAIT = {"indicateur": ("metric", "concept"), "annee": ("year",), "valeur": ("value",), "unite": ("unit",),
+        "devise": ("currency",), "source": ("source_url",), "formulaire": ("form",)}
+RATIOS = {"capex_revenue", "capex_da"}
+
+
+def _unit(metric: str, devise) -> str | None:
+    """Unité d'une mesure du format large : montants dans la devise, ratios, croissances, par salarié."""
+    if metric in RATIOS:
+        return "ratio"
+    if metric.endswith("_growth"):
+        return "variation"
+    if metric.endswith("_per_employee"):
+        return f"{devise}/salarié" if devise else None
+    return devise
+
+
+def _faits(d: dict) -> list[dict]:
+    """Faits par exercice, en long. Accepte aussi le format large (une ligne par exercice, une colonne par
+    mesure, sources[mesure] = {url, form}) et les effectifs rangés à part (seules les valeurs acceptées)."""
+    out = []
+    for r in _rows(_pick(d, "faits", "financials")):
+        if any(k in r for k in ("indicateur", "metric", "valeur", "value")):
+            out.append(_shape(r, FAIT))
+            continue
+        year, dev = _pick(r, "annee", "year"), _pick(r, "devise", "currency")
+        src = r.get("sources") if isinstance(r.get("sources"), dict) else {}
+        for k, v in r.items():
+            if k in ("annee", "year", "devise", "currency", "sources") or isinstance(v, bool) \
+                    or not isinstance(v, (int, float)):
+                continue
+            s = src.get(k) if isinstance(src.get(k), dict) else {}
+            out.append({"indicateur": k, "annee": year, "valeur": v, "unite": _unit(k, dev), "devise": dev,
+                        "source": s.get("url"), "formulaire": s.get("form")})
+    for e in _rows(d.get("employees")):
+        if e.get("accepted") is False or e.get("employees") is None:
+            continue
+        out.append({"indicateur": "effectifs", "annee": e.get("year"), "valeur": e["employees"],
+                    "unite": "salariés", "devise": None, "source": e.get("source_url"),
+                    "formulaire": e.get("source_kind")})
+    return out
+
+
+def _site_names(ids: list[str]) -> dict[str, str]:
+    """Nom de chaque mine : liste suivie, sinon catalogue (vide si ni l'un ni l'autre ne se lit)."""
+    out: dict[str, str] = {}
+    try:
+        g = _graph().sites
+        out.update({i: g[i].name for i in ids if i in g})
+        cat = _cat()
+        rest = [i for i in ids if i not in out and i in cat.index]
+        if rest and "name" in cat:
+            out.update({i: n for i, n in cat.loc[rest, "name"].items() if isinstance(n, str)})
+    except Exception as e:  # catalogue absent : les ids restent
+        log.warning("noms des mines indisponibles : %s", e)
+    return out
+
+
 def _company_payload(d: dict) -> dict:
     prof = _pick(d, "profil", "company")
+    mines = [_shape(r, {"site_id": ("id", "site"), "nom": ("name", "site_name"), "part": ("share",)})
+             for r in _rows(d.get("mines"))]
+    if missing := [m["site_id"] for m in mines if m["nom"] is None and isinstance(m["site_id"], str)]:
+        names = _site_names(missing)
+        for m in mines:
+            m["nom"] = m["nom"] or names.get(m["site_id"])
     return {
         "profil": _finite(prof) if isinstance(prof, dict) else {},
-        "mines": [_shape(r, {"site_id": ("id",), "nom": ("name", "site_name"), "part": ("share",)})
-                  for r in _rows(d.get("mines"))],
-        "faits": [_shape(r, {"indicateur": ("metric", "concept"), "annee": ("year",), "valeur": ("value",),
-                             "unite": ("unit",), "devise": ("currency",), "source": ("source_url",),
-                             "formulaire": ("form",)})
-                  for r in _rows(_pick(d, "faits", "financials"))],
+        "mines": mines,
+        "faits": _faits(d),
         "investissements": [_shape(r, {"date": (), "montant": ("amount",), "devise": ("currency",),
                                        "categorie": ("category",), "titre": ("title",),
                                        "url": ("source_url",), "site_id": ()})
@@ -1010,28 +1075,30 @@ def company_api(id: str):
     return _company_payload(d)
 
 
-def _companies_corr() -> tuple[list[dict], str | None, str]:
+def _companies_corr() -> tuple[list[dict], str | None, str, list[dict]]:
+    """(lignes au format de la route, message, méthode, lignes brutes du module)."""
     mod = _mod("companies")
     fn = _fn(mod, "correlations")
     cands = (getattr(mod, n, None) for n in ("METHODE_CORRELATIONS", "METHODE"))
     methode = next((m for m in cands if isinstance(m, str) and m), METHODE_SOCIETES)
     if fn is None:
-        return [], "Module sociétés indisponible.", methode
+        return [], "Module sociétés indisponible.", methode, []
     try:
         res = fn()
     except Exception as e:
         log.warning("companies.correlations : %s", e)
-        return [], MSG_SOCIETES, methode
+        return [], MSG_SOCIETES, methode, []
     if isinstance(res, dict) and isinstance(res.get("methode"), str) and res["methode"]:
         methode = res["methode"]
-    rows = [_shape(r, CO_CORR) for r in _rows(res)]
-    return rows, None if rows else MSG_SOCIETES, methode
+    raw = _rows(res)
+    rows = [_shape(r, CO_CORR) for r in raw]
+    return rows, None if rows else MSG_SOCIETES, methode, raw
 
 
 @app.get("/api/companies/correlations")
 def companies_correlations():
     """Corrélations sociétés (CAPEX ↔ production, effectifs ↔ production, CAPEX ↔ emprise) : r, ρ, IC, n."""
-    rows, msg, methode = _companies_corr()
+    rows, msg, methode, _ = _companies_corr()
     out = {"rows": rows, "methode": methode}
     if msg:
         out["message"] = msg
@@ -1123,11 +1190,16 @@ def _veille_summary_rows() -> list[dict]:
 
 def _companies_summary_rows() -> list[dict]:
     out = []
-    for r in _companies_corr()[0]:
+    rows, _, _, raw = _companies_corr()
+    for r, b in zip(rows, raw, strict=True):
         lag = r.get("decalage")
         y = f"{r['y']} (décalage {lag:+d} an)" if isinstance(lag, int) and lag else str(r["y"])
+        x = str(r["x"])
+        if isinstance(b.get("label"), str) and b["label"]:  # libellé lisible du module (« CAPEX ↔ … »)
+            x, _, yl = b["label"].partition(" ↔ ")
+            y = yl or y
         for typ, k in (("r", "r"), ("rho", "rho")):
-            out.append(_sum_row("sociétés", str(r["x"]), y, r[k], typ, r[f"{k}_lo"], r[f"{k}_hi"],
+            out.append(_sum_row("sociétés", x, y, r[k], typ, r[f"{k}_lo"], r[f"{k}_hi"],
                                 r["n_points"], "data/companies", r.get("verdict")))
     return out
 
