@@ -639,10 +639,12 @@ def run_backtest(panel: pd.DataFrame, n_boot: int = N_BOOT, today: date | None =
             "Signaux satellite et actualité non utilisés : trop récents (2016+) pour un rétro-test "
             "2005–2021.",
             "Le modèle retenu est choisi sur la période de test dont on publie le skill (deux candidats "
-            "contre le naïf) : le gain affiché est un peu optimiste. Contrôle mesuré (choix sur une moitié "
-            "des mines, mesure sur l'autre) : voir controle_selection"
+            "contre le naïf) : un gain affiché serait un peu optimiste"
+            + (" (ici le naïf est retenu : aucun gain n'est affiché)" if modele == "naif" else "")
+            + ". Contrôle mesuré (choix sur une moitié des mines, mesure sur l'autre) : voir "
+            "controle_selection"
             + (f" ; écart moyen choix − autre moitié = {np.mean(ecarts):+.3f} de skill." if ecarts else
-               " ; le naïf y est retenu, pas d'écart à mesurer."),
+               " ; le naïf y est retenu sur chaque moitié, pas d'écart à mesurer."),
             "La série principale de chaque mine est choisie sur tout l'historique (dernière année et tonnage "
             f"jusqu'à {int(panel['year'].max())}) : pour {choix_serie['serie_differente']} mine(s) sur "
             f"{choix_serie['mines_avec_annees_reglage']} ayant des années ≤ {TUNE_END}, la même règle "

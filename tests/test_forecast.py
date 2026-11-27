@@ -187,6 +187,7 @@ def test_intervals_have_honest_coverage(trend_bt):
 def test_random_walk_keeps_naive():
     bt = fc.run_backtest(_panel("rw", n=60, seed=3), n_boot=100, today=TODAY)
     assert set(bt["retenu"].values()) == {"naif"}
+    assert any("aucun gain n'est affiché" in a for a in bt["avertissements"])
     n = _row(bt, "naif", 1)
     assert n["skill"] == 0 and n["r"] is None and n["note"] == fc.NOTE_IMMOBILE
     assert n["r_niveau_lo"] is not None and n["rho_niveau_hi"] is not None  # mesure de repli, avec IC
