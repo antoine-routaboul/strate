@@ -1646,8 +1646,8 @@ async function coSheet(id){
   const tk=tickers(pf.tickers), cik=/^\d{1,10}$/.test(String(pf.cik??''))?String(pf.cik):null, qid=/^Q\d+$/.test(String(pf.qid??''))?pf.qid:null;
   const links=[cik?`<a href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;CIK=${esc(cik)}" target="_blank" rel="noopener">SEC EDGAR</a>`:'',
     qid?`<a href="https://www.wikidata.org/wiki/${esc(qid)}" target="_blank" rel="noopener">Wikidata</a>`:''].filter(Boolean).join(' · ');
-  setHead('societes',head(name,[tk.join(' · '),cik?'CIK '+esc(cik):'',links].filter(Boolean).join(' · ')||'Société du catalogue',true));
-  if(tk.length) $('#co_sub').innerHTML=[esc(tk.join(' · ')),cik?'CIK '+esc(cik):'',links].filter(Boolean).join(' · ');
+  // sous-titre en HTML : tickers échappés avant toute insertion (une balise insérée puis remplacée s'exécute quand même)
+  setHead('societes',head(name,[esc(tk.join(' · ')),cik?'CIK '+esc(cik):'',links].filter(Boolean).join(' · ')||'Société du catalogue',true));
   const skip=new Set(['id','name','nom','tickers','cik','qid']);
   const PFL={aliases:'Autres noms',cik_source:'Source du CIK',sources:'Sources',watchlist:'Liste suivie',n_mines:'Mines',pays:'Pays',country:'Pays'};
   const kv=Object.entries(pf).filter(([k,v])=>!skip.has(k)&&v!=null&&v!==''&&typeof v!=='object'||Array.isArray(v)&&v.length&&!skip.has(k))

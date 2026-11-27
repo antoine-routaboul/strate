@@ -367,6 +367,16 @@ const done=()=>fetches.forEach(f=>f.done=true);
       &&h.includes('&lt;b&gt;Plan')
       &&charts.some(c=>c.el===$el('#co_cap'))&&clean(h))||h;
   });
+  await check('company_head_never_gets_raw_tickers',async()=>{
+    done(); const el=$el('#co_sub'), seen=[]; let v='';
+    Object.defineProperty(el,'innerHTML',{configurable:true,get:()=>v,
+      set:x=>{ seen.push(String(x)); v=String(x); }});
+    P.show('societes','fiche','t1');
+    take('/api/company?id=t1').ok({profil:{name:'T',tickers:['<img src=x onerror=alert(1)>'],cik:'1'},
+      mines:[],faits:[],investissements:[],correlations:[]});
+    await flush(); delete el.innerHTML; el.innerHTML=v;
+    return (seen.length>0&&seen.every(x=>!x.includes('<img'))&&v.includes('&lt;img'))||JSON.stringify(seen);
+  });
   await check('company_corr_verdicts_per_coefficient',async()=>{
     done(); P.PG.co=null; P.show('societes','capex');
     const base={x:'capex_glog',y:'prod_growth',r:0.5,r_lo:0.2,r_hi:0.7,rho:0.4,rho_lo:0.1,rho_hi:0.6,
@@ -516,6 +526,7 @@ BOOT_SITE = r"""
 
 CHECKS = ["badge", "badge_never_upgrades_server_verdict", "routes", "one_view_at_a_time",
           "directory_empty_message", "directory_escapes_names", "company_sheet_with_badges",
+          "company_head_never_gets_raw_tickers",
           "company_corr_verdicts_per_coefficient", "capex_page_empty", "backtest_page", "backtest_empty",
           "forecast_without_series", "forecast_with_series",
           "forecast_contract_quality_and_horizons", "forecast_naive_quality_in_levels",
