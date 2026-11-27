@@ -107,6 +107,7 @@ def test_metrics_perfect_and_naive():
     assert math.isnan(naive["r"]) and math.isnan(naive["r_lo"])  # aucune variation prévue : pas de r
     assert naive["skill"] == 0 and naive["bon_sens"] == 0.5
     assert naive["r_niveau"] > 0.9  # le niveau est trivialement corrélé
+    assert naive["r_niveau_lo"] > 0.8 and naive["note"] == fc.NOTE_IMMOBILE and "note" not in perfect
 
 
 def test_choose_requires_ci_above_zero():
@@ -186,7 +187,9 @@ def test_intervals_have_honest_coverage(trend_bt):
 def test_random_walk_keeps_naive():
     bt = fc.run_backtest(_panel("rw", n=60, seed=3), n_boot=100, today=TODAY)
     assert set(bt["retenu"].values()) == {"naif"}
-    assert _row(bt, "naif", 1)["skill"] == 0
+    n = _row(bt, "naif", 1)
+    assert n["skill"] == 0 and n["r"] is None and n["note"] == fc.NOTE_IMMOBILE
+    assert n["r_niveau_lo"] is not None and n["rho_niveau_hi"] is not None  # mesure de repli, avec IC
 
 
 def test_pull_and_single_settings():
@@ -241,7 +244,10 @@ def test_forecast_site(tmp_path):
     w = [x["hi90"] / x["lo90"] for x in r["prevision"]]
     assert all(b >= a - 1e-9 for a, b in zip(w, w[1:], strict=False))  # s'élargit avec l'horizon
     assert all(x["lo90"] <= x["lo80"] <= x["value"] <= x["hi80"] <= x["hi90"] for x in r["prevision"])
-    assert {"r", "r_lo", "r_hi", "rho", "skill", "facteur_median", "couverture90", "n"} <= set(r["qualite"])
+    keys = {"model", "horizon", "r", "r_lo", "r_hi", "rho", "rho_lo", "rho_hi", "skill", "skill_lo",
+            "skill_hi", "couverture80", "couverture90", "facteur_median", "n", "n_mines", "r_niveau",
+            "r_niveau_lo", "rho_niveau_hi", "note"}
+    assert keys <= set(r["qualite"]) and r["qualite"]["portee"] == "global"
     assert r["suivi_site"]["n"] > 0
     assert fc.forecast_site("J001", out=tmp_path, panel=p, today=TODAY)["site_id"] == "m001"
 

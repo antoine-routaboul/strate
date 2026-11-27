@@ -371,6 +371,10 @@ def _point(y, p, l0, pn, lo80, hi80, lo90, hi90) -> dict[str, float]:
 
 
 CI_KEYS = ("r", "rho", "r_niveau", "rho_niveau", "skill")
+NOTE_IMMOBILE = ("Ce modèle ne prévoit aucune variation (naïf, ou tendance réglée sur φ = 0) : r et ρ "
+                 "entre variation prévue et variation réelle ne sont pas définis. Mesures sur les niveaux : "
+                 "r_niveau et rho_niveau, avec leur IC 90 % (trivialement élevées : le niveau d'une mine "
+                 "change peu).")
 
 
 def metrics(d: pd.DataFrame, n_boot: int = N_BOOT, seed: int = 0) -> dict:
@@ -381,6 +385,10 @@ def metrics(d: pd.DataFrame, n_boot: int = N_BOOT, seed: int = 0) -> dict:
     out = {"n_mines": int(d["site_id"].nunique()), "n_points": int(len(d))}
     pt = _point(*a)
     out |= pt
+    if not np.isfinite(pt["r"]):
+        out["note"] = (NOTE_IMMOBILE if len(d) and np.all(np.abs(a[1] - a[2]) <= 1e-12) else
+                       "r et ρ non calculables (moins de 8 points ou aucune dispersion) ; voir les mesures "
+                       "sur les niveaux, r_niveau et rho_niveau, avec leur IC 90 %.")
     codes, uniq = pd.factorize(d["site_id"], sort=True)
     groups = [np.flatnonzero(codes == k) for k in range(len(uniq))]
     draws = {k: [] for k in CI_KEYS}
@@ -759,9 +767,13 @@ def forecast_site(site_id: str, out: Path | None = None, panel: pd.DataFrame | N
         r = next((x for x in rows if x["horizon"] == h and x["model"] == m), None)
         if r is None:
             return None
-        keys = ("r", "r_lo", "r_hi", "rho", "rho_lo", "rho_hi", "skill", "skill_lo", "skill_hi",
-                "facteur_median", "couverture80", "couverture90", "n_mines")
-        return {"model": m, "horizon": h, **{k: r.get(k) for k in keys}, "n": r.get("n_points")}
+        keys = ("r", "r_lo", "r_hi", "rho", "rho_lo", "rho_hi", "r_niveau", "r_niveau_lo", "r_niveau_hi",
+                "rho_niveau", "rho_niveau_lo", "rho_niveau_hi", "skill", "skill_lo", "skill_hi",
+                "facteur_median", "bon_sens", "couverture80", "couverture90", "n_mines")
+        note = r.get("note") or (NOTE_IMMOBILE if r.get("r") is None and m == "naif" else None)
+        return {"model": m, "horizon": h, **{k: r.get(k) for k in keys}, "n": r.get("n_points"),
+                "unite_n": "points (mine × année cible)", "portee": "global",
+                "periode": (bt.get("periode") or {}).get("test"), "note": note}
 
     q1 = qual(1)
     return _clean(ident | {
