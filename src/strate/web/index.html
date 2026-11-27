@@ -738,19 +738,29 @@ function calNote(){
   // Le modèle d'emprise a sa propre population (mines de minerai / de charbon, production médiane 2017–2020 :
   // calibrate.footprint_model), distincte des mines de la calibration satellite : chaque chiffre est attribué
   // à son échantillon, sinon la page présente deux études comme une seule.
+  // chaque coefficient cité en prose porte son IC 90 % et son n (ou dit qu'ils manquent) : jamais un chiffre nu
+  // trois décimales sous 0,01 : une borne à 0,005 ne s'affiche pas « 0 » (ce qui ferait lire un IC qui touche 0)
+  const c2=x=>{ const z=Math.abs(x); return z>0&&z<0.01?fmt(x,3):fmt(x,2); };
+  const ciP=(lo,hi,approx)=>num(lo)!=null&&num(hi)!=null?`IC 90 %${approx?' approché (Fisher z)':''} ${c2(lo)} à ${c2(hi)}`:'IC 90 % non publié';
   const mod=[['minerai','de minerai'],['charbon','de charbon']].map(([k,t])=>{const r=num(me[k]?.rho), m=num(me[k]?.n);
-    return r==null?null:`${fmt(r,2)}${m!=null?` sur ${fmt(m,0)} mines ${t}`:` (${k})`}`;}).filter(Boolean).join(', ');
+    if(r==null) return null; const [lo,hi]=m!=null?approxCI(r,m):[null,null];
+    return m!=null?`ρ = ${fmt(r,2)} sur ${fmt(m,0)} mines ${t}, ${ciP(lo,hi,true)}`:`ρ = ${fmt(r,2)} (${k}) sans n ni IC publiés`;}).filter(Boolean).join(' ; ');
   // sur l'échantillon de calibration : la taille seule de la fenêtre d'analyse, puis la part de sol nu
   // (ce que Sentinel-2 mesure vraiment), si la calibration les publie
-  const rfw=num(ta.fenetre_seule?.rho), nfw=num(ta.fenetre_seule?.mines);
-  const rfr=pick(ta.fraction_nue?.rho,CAL.fraction_nue?.rho);
+  const fs=ta.fenetre_seule||{}, fr=ta.fraction_nue||{};
+  const rfw=num(fs.rho), nfw=num(fs.mines);
+  const rfr=pick(fr.rho,CAL.fraction_nue?.rho), nfr=num(fr.rho)!=null?num(fr.mines):null;
+  const vci=Array.isArray(v.ic90)?v.ic90.map(num):[null,null], npa=num(CAL.paires_annees);
   const rv=num(v.rho), bs=num(firstOf(v.bon_sens)), prec=num(firstOf(a.precision)), base=num(a.taux_de_base);
+  const pci=Array.isArray(a.precision)?a.precision.map(num):[];
+  const nTxt=(k,u)=>k!=null?`, n = ${fmt(k,0)} ${u}`:', n non publié';
   const out=[`<b>Calibration satellite</b> sur ${n} mines à production réelle connue${fw}.`,
-    `L'échelle de production se lit sur la <b>taille de l'emprise</b>, pas sur une mesure propre au satellite${mod?` (modèle d'emprise, contours Maus, autre échantillon, production 2017–2020 : corrélation ${mod})`:''}.`,
-    `Sur les mines de la calibration satellite, ${rfw!=null?`la seule taille de la fenêtre d'analyse donne déjà une corrélation de ${fmt(rfw,2)}${nfw!=null?` (${fmt(nfw,0)} mines)`:''} ; `:''}la part de sol nu mesurée par Sentinel-2 ne suit la production que faiblement${rfr!=null?` (corrélation ${fmt(rfr,2)})`:''}.`];
-  if(rv!=null) out.push(`Les variations annuelles de la surface nue ne suivent pas celles de la production (corrélation ${fmt(rv,2)}${bs!=null?` ; sens correct dans ${pct(bs)} des cas`:''}).`);
-  // ce chiffre mesure une règle annuelle sur la surface nue, pas les alertes mensuelles affichées plus bas
-  if(prec!=null) out.push(`Une variation annuelle de plus de 10 % de la surface nue ne coïncide avec une vraie variation de production (&gt; 20 %) que dans ${pct(prec)} des cas${base!=null?`, contre ${pct(base)} au hasard`:''}.`);
+    `L'échelle de production se lit sur la <b>taille de l'emprise</b>, pas sur une mesure propre au satellite${mod?` (modèle d'emprise, contours Maus, autre échantillon, production 2017–2020 : corrélation de rang ${mod})`:''}.`,
+    `Sur les mines de la calibration satellite, ${rfw!=null?`la seule taille de la fenêtre d'analyse donne déjà une corrélation de rang de ${fmt(rfw,2)} (${ciP(fs.ic90_bas,fs.ic90_haut)}${nTxt(nfw,'mines')}) ; `:''}la part de sol nu mesurée par Sentinel-2 ne suit la production que faiblement${rfr!=null?` (ρ = ${fmt(rfr,2)}, ${ciP(fr.ic90_bas,fr.ic90_haut)}${nTxt(nfr,'mines')})`:''}.`];
+  // le verbe suit l'intervalle : un IC qui exclut 0 dit « très faiblement », pas « ne suivent pas »
+  if(rv!=null){ const ex=vci[0]!=null&&vci[1]!=null&&(vci[0]>0||vci[1]<0);
+    out.push(`Les variations annuelles de la surface nue ${ex?'ne suivent celles de la production que très faiblement':'ne suivent pas celles de la production de façon mesurable'} (ρ = ${fmt(rv,2)}, ${ciP(vci[0],vci[1])}${nTxt(npa,'paires d’années')}${bs!=null?` ; sens correct dans ${pct(bs)} des cas`:''}).`); }
+  if(prec!=null) out.push(`Une variation annuelle de plus de 10 % de la surface nue ne coïncide avec une vraie variation de production (&gt; 20 %) que dans ${pct(prec)} des cas${pci[1]!=null&&pci[2]!=null?` (IC 90 % ${pct(pci[1])} à ${pct(pci[2])})`:''}${base!=null?`, contre ${pct(base)} au hasard`:''}.`);
   out.push(`Les alertes mensuelles affichées ici (z saisonnier ≥ 2, persistant) n'ont <b>pas</b> été confrontées à la production.
     Ces courbes décrivent donc l'évolution physique du site (expansion, résidus, défrichement), pas sa production.`);
   return `<h2>Ce que valent ces signaux</h2><p class="calnote">${out.join('\n    ')}</p>${calBadges(true)}`;

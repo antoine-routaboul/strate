@@ -107,6 +107,18 @@ const clean=s=>!/undefined|NaN|null|\[object/.test(s);
       return 'chiffres du modèle dans la phrase calibration : '+first;
     return clean(t)||t;
   });
+  // chaque coefficient cité en prose porte son IC 90 % et son n (la page « Calibration » reprend ce texte)
+  await check('calnote_coefficients_have_ci_and_n',()=>{
+    P.setCAL(CALJSON); const t=P.calNote().split('</p>')[0];
+    const sents=t.split(/\.\s/).filter(x=>/ρ = |corrélation de rang de/.test(x));
+    const bad=sents.filter(x=>!/IC 90 %/.test(x)||!/n = |sur \d+ mines/.test(x));
+    // variation annuelle : IC 90 % [0,02 ; 0,18] exclut 0, le texte ne peut pas dire « ne suivent pas »
+    const v=CALJSON.variation, ex=v.ic90[0]>0||v.ic90[1]<0;
+    const wording=ex?t.includes('que très faiblement')&&!t.includes('ne suivent pas celles'):true;
+    // une borne sous 0,01 garde trois décimales : jamais « IC 90 % 0 à … » pour une borne de 0,005
+    return (sents.length>=3&&!bad.length&&wording&&t.includes('paires d’années')&&!/IC 90 % 0 à/.test(t))
+      ||JSON.stringify(bad)+t;
+  });
   await check('calnote_defensive',()=>{
     const cases=[{mines:12},{mines:12,modele_emprise:{minerai:{rho:0.5}}},
       {mines:12,taille:{fenetre_seule:{}}},
@@ -218,7 +230,8 @@ const clean=s=>!/undefined|NaN|null|\[object/.test(s);
 })();
 """
 
-CHECKS = ["calnote_populations", "calnote_defensive", "recent_months", "fresh_page_uses_today_months",
+CHECKS = ["calnote_populations", "calnote_coefficients_have_ci_and_n",
+          "calnote_defensive", "recent_months", "fresh_page_uses_today_months",
           "stale_page_offers_update", "recent_page_has_no_block", "watch_until_final_status",
           "analysed_page_busy_keeps_watching", "error_before_optical_shown_in_place",
           "launch_error_restores_label", "twin_redirect"]
