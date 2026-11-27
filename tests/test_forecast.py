@@ -210,6 +210,24 @@ def test_size_model_wins_when_mines_revert_to_footprint():
     assert bt["retenu"]["1"] == bt["retenu_modele"] == "tendance+taille"
 
 
+def test_selection_optimism_is_measured():
+    bt = fc.run_backtest(_panel("revert", n=80, seed=2), n_boot=50, today=TODAY)
+    ctl = bt["controle_selection"]
+    assert [c["choix_sur"] for c in ctl] == ["A", "B"]
+    assert all(c["n_mines_choix"] + c["n_mines_autre"] == _row(bt, "naif", 1)["n_mines"] for c in ctl)
+    assert all(c["modele"] == "tendance+taille" and c["skill_moyen_autre_moitie"] > 0 for c in ctl)
+    assert any("controle_selection" in a for a in bt["avertissements"])
+    assert bt["choix_serie"] == {"mines_avec_annees_reglage": 0, "serie_differente": 0}  # pas de colonne
+
+
+def test_series_choice_lookahead_is_counted():
+    p = _panel("trend", n=20)
+    p["serie_reglage"] = np.where(p["site_id"].isin(["m000", "m001"]), "or (métal)", p["serie"])
+    bt = fc.run_backtest(p, n_boot=30, today=TODAY)
+    assert bt["choix_serie"] == {"mines_avec_annees_reglage": 20, "serie_differente": 2}
+    assert any("2 mine(s) sur 20" in a for a in bt["avertissements"])
+
+
 def test_tuning_never_sees_test_period():
     p = _panel("trend", n=30, seed=5)
     a = fc.run_backtest(p, n_boot=50, today=TODAY)
@@ -374,4 +392,5 @@ def test_production_panel_main_series_dedup_and_emprise():
     assert s.loc["b", "serie"] == "or (métal)" and pd.isna(s.loc["b", "emprise_type"])
     assert s.loc["d", "serie"] == "charbon" and pd.isna(s.loc["d", "emprise_type"])  # souterraine
     assert (p.groupby("site_id").size() == 5).all()
+    assert s.loc["a", "serie_reglage"] == "minerai extrait"
     assert fc.production_panel(prod.iloc[:0], cat, underground=set()).empty

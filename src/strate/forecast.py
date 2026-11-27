@@ -81,7 +81,9 @@ METHODE = (
     "horizons) : le meilleur skill moyen sur les horizons mesurés (moyenne des skills par horizon, IC 90 % "
     "par bootstrap sur les mines), s'il a une borne basse > 0 ; sinon le naïf. Le modèle d'emprise "
     "est ré-estimé à chaque origine sur la coupe des productions de l'année d'origine (≤ t − h) ; les "
-    "prévisions d'avenir utilisent ce même ajustement, à l'année de la dernière valeur connue de la mine.")
+    "prévisions d'avenir utilisent ce même ajustement, à l'année de la dernière valeur connue de la mine. "
+    "Effets d'anticipation qui restent (emprise 2019, choix du modèle retenu sur la période de test, choix "
+    "de la série sur tout l'historique) : décrits et, quand c'est possible, mesurés dans avertissements.")
 
 
 # =============================================================================================
@@ -117,14 +119,17 @@ def production_panel(prod: pd.DataFrame | None = None, cat: pd.DataFrame | None 
     Une seule série par mine, choisie comme screener.main_production (minerai extrait > minerai traité >
     charbon > métal de la commodité principale > série la plus lourde). Un id Jasansky porté par plusieurs
     sites du catalogue ne compte qu'une fois (premier site). emprise_type n'est renseigné que si la série
-    est celle du modèle d'emprise et la mine n'est pas purement souterraine.
+    est celle du modèle d'emprise et la mine n'est pas purement souterraine. serie_reglage : la série que la
+    même règle aurait choisie avec les seules années ≤ TUNE_END (None sans donnée) — sert à mesurer l'effet
+    du choix de série fait sur tout l'historique.
     """
     from strate import catalog
     from strate.screener import commodity_groups, main_production
 
     cat = catalog.load() if cat is None else cat
     prod = catalog.all_production() if prod is None else prod
-    cols = ["site_id", "jasansky", "nom", "serie", "emprise_type", "footprint_km2", "year", "value"]
+    cols = ["site_id", "jasansky", "nom", "serie", "serie_reglage", "emprise_type", "footprint_km2", "year",
+            "value"]
     if cat is None or cat.empty or "jasansky" not in cat or prod is None or prod.empty:
         return pd.DataFrame(columns=cols)
     underground = _underground() if underground is None else underground
@@ -136,9 +141,12 @@ def production_panel(prod: pd.DataFrame | None = None, cat: pd.DataFrame | None 
         p = groups.get(r["jasansky"])
         if p is None:
             continue
-        serie = main_production(_series_last(p), commodity_groups(r.get("commodities")))[0]
+        groups_c = commodity_groups(r.get("commodities"))
+        serie = main_production(_series_last(p), groups_c)[0]
         if serie is None:
             continue
+        early = p[p["year"] <= TUNE_END]
+        serie_reglage = main_production(_series_last(early), groups_c)[0] if len(early) else None
         s = p[p["serie"] == serie].groupby("year", as_index=False)["value_tonnes"].sum()
         fp = r.get("footprint_km2")
         fp = float(fp) if fp is not None and pd.notna(fp) and float(fp) > 0 else np.nan
@@ -146,6 +154,7 @@ def production_panel(prod: pd.DataFrame | None = None, cat: pd.DataFrame | None 
         frames.append(pd.DataFrame({
             "site_id": str(r["id"]), "jasansky": str(r["jasansky"]),
             "nom": r.get("name") if isinstance(r.get("name"), str) else None, "serie": serie,
+            "serie_reglage": serie_reglage,
             "emprise_type": kind, "footprint_km2": fp,
             "year": s["year"].astype(int).to_numpy(), "value": s["value_tonnes"].astype(float).to_numpy()}))
     if not frames:
@@ -447,6 +456,27 @@ def path_skill(cases: pd.DataFrame, preds: dict[str, np.ndarray], horizons, n_bo
     return out
 
 
+def selection_control(cases: pd.DataFrame, preds: dict[str, np.ndarray], horizons, n_boot: int = 200,
+                      seed: int = 0) -> list[dict]:
+    """Optimisme du choix du modèle retenu, mesuré : les mines de test sont coupées en deux moitiés tirées
+    au hasard ; on choisit le modèle sur une moitié (même règle) et on mesure son skill moyen sur l'autre."""
+    sites = np.asarray(sorted(cases["site_id"].unique()))
+    if len(sites) < 4:
+        return []
+    perm = np.random.default_rng(seed).permutation(sites)
+    half = set(perm[: len(sites) // 2].tolist())
+    in_a = cases["site_id"].isin(half).to_numpy()
+    out = []
+    for name, m in (("A", in_a), ("B", ~in_a)):
+        pa = path_skill(cases[m], {k: v[m] for k, v in preds.items()}, horizons, n_boot, seed)
+        pb = path_skill(cases[~m], {k: v[~m] for k, v in preds.items()}, horizons, 0, seed)
+        mod = choose(pa)
+        out.append({"choix_sur": name, "modele": mod, "n_mines_choix": pa[mod]["n_mines"],
+                    "n_mines_autre": pb[mod]["n_mines"], "skill_moyen_choix": pa[mod]["skill_moyen"],
+                    "skill_moyen_autre_moitie": pb[mod]["skill_moyen"]})
+    return out
+
+
 def choose(path: dict[str, dict]) -> str:
     """Modèle retenu pour tout le chemin : meilleur skill moyen parmi ceux dont l'IC 90 % exclut 0, sinon
     le naïf."""
@@ -570,6 +600,15 @@ def run_backtest(panel: pd.DataFrame, n_boot: int = N_BOOT, today: date | None =
     modele = choose(chemin)
     retenu = {str(h): modele for h in mesures if h <= h_pub}
     petit = modele != "naif" and chemin[modele]["skill_moyen"] < 0.05
+    controle = selection_control(test_c, preds_test, chemin[modele]["horizons"], max(n_boot // 5, 100))
+    ecarts = [c["skill_moyen_choix"] - c["skill_moyen_autre_moitie"] for c in controle
+              if c["modele"] != "naif" and _finite(c["skill_moyen_choix"])
+              and _finite(c["skill_moyen_autre_moitie"])]
+    first = panel.drop_duplicates("site_id")
+    early = first["serie_reglage"] if "serie_reglage" in first else pd.Series(None, first.index, dtype=object)
+    known = early.notna()
+    choix_serie = {"mines_avec_annees_reglage": int(known.sum()),
+                   "serie_differente": int((known & (first["serie"] != early)).sum())}
     all_c = pd.concat([tune_c, test_c])  # diagnostic : quantiles bâtis sur toutes les erreurs ≤ 2021
     q_all = error_quantiles(_errors(all_c, predict(all_c, phi, kappa)))
     largeur = {m: {h: _width(q_all, m, h) / _width(q_tune, m, h) for h in mesures
@@ -599,10 +638,19 @@ def run_backtest(panel: pd.DataFrame, n_boot: int = N_BOOT, today: date | None =
             "surtout sur 2015–2019.",
             "Signaux satellite et actualité non utilisés : trop récents (2016+) pour un rétro-test "
             "2005–2021.",
+            "Le modèle retenu est choisi sur la période de test dont on publie le skill (deux candidats "
+            "contre le naïf) : le gain affiché est un peu optimiste. Contrôle mesuré (choix sur une moitié "
+            "des mines, mesure sur l'autre) : voir controle_selection"
+            + (f" ; écart moyen choix − autre moitié = {np.mean(ecarts):+.3f} de skill." if ecarts else
+               " ; le naïf y est retenu, pas d'écart à mesurer."),
+            "La série principale de chaque mine est choisie sur tout l'historique (dernière année et tonnage "
+            f"jusqu'à {int(panel['year'].max())}) : pour {choix_serie['serie_differente']} mine(s) sur "
+            f"{choix_serie['mines_avec_annees_reglage']} ayant des années ≤ {TUNE_END}, la même règle "
+            f"appliquée aux seules années ≤ {TUNE_END} aurait désigné une autre série.",
             *([] if not petit else [
                 "Gain moyen du modèle retenu sur le naïf inférieur à 5 % de MSE : la prévision reste "
                 "proche de « la dernière valeur connue »."])],
-        "diagnostic_tendance_brute": diag,
+        "diagnostic_tendance_brute": diag, "controle_selection": controle, "choix_serie": choix_serie,
         "today": today.isoformat()}
     return _clean(res)
 
