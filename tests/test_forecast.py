@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from datetime import UTC, date, datetime
 
@@ -18,17 +19,20 @@ def _panel(kind: str = "trend", n: int = 40, seed: int = 0, y0: int = 2000, y1: 
            noise: float = 0.05) -> pd.DataFrame:
     """Mines synthétiques ; production ≈ 10^(6 + 0,8·log10 emprise) au départ.
 
-    trend : croissance log-linéaire propre à chaque mine (± bruit) ; rw : marche aléatoire pure."""
+    trend : croissance log-linéaire propre à chaque mine (± bruit) ; rw : marche aléatoire pure ;
+    revert : écarts AR(1) autour de la taille donnée par l'emprise (rappel de 30 %/an)."""
     rng = np.random.default_rng(seed)
     rows = []
     for i in range(n):
         fp = 10 ** rng.uniform(-0.5, 2.0)
         base = math.log(10 ** (6 + 0.8 * math.log10(fp)))
         g = rng.uniform(-0.15, 0.15)
-        lv = base
+        lv = base + (rng.normal(0, 0.8) if kind == "revert" else 0.0)
         for y in range(y0, y1 + 1):
             if kind == "trend":
                 lv = base + g * (y - y0) + rng.normal(0, noise)
+            elif kind == "revert":
+                lv = base + 0.7 * (lv - base) + rng.normal(0, 0.2)
             else:
                 lv = lv + rng.normal(0, 0.2)
             rows.append({"site_id": f"m{i:03d}", "jasansky": f"J{i:03d}", "nom": f"Mine {i}",
@@ -132,11 +136,13 @@ def test_backtest_structure(trend_bt):
             "skill", "facteur_median", "bon_sens", "couverture80", "couverture90"}
     assert all(keys <= set(r) for r in bt["rows"])
     assert set(bt["retenu"]) == {"1", "2", "3"} and isinstance(bt["methode"], str)
+    assert [d["horizon"] for d in bt["diagnostic_tendance_brute"]] == [1, 2, 3]
+    assert bt["diagnostic_tendance_brute"][0]["skill"] > 0.3  # séries en tendance : φ = 1 aide aussi
 
 
 def test_trend_beats_naive_on_trending_mines(trend_bt):
     t = _row(trend_bt, "tendance", 1)
-    assert trend_bt["reglages"]["phi"]["1"] >= 0.8
+    assert trend_bt["reglages"]["phi"] >= 0.8 and isinstance(trend_bt["reglages"]["phi"], float)
     assert t["skill_lo"] > 0.3 and t["r"] > 0.5 and t["r_lo"] > 0.3 and t["bon_sens"] > 0.7
     assert trend_bt["retenu"]["1"] in ("tendance", "tendance+taille")
 
@@ -152,6 +158,24 @@ def test_random_walk_keeps_naive():
     bt = fc.run_backtest(_panel("rw", n=60, seed=3), n_boot=100, today=TODAY)
     assert bt["retenu"] == {"1": "naif", "2": "naif", "3": "naif"}
     assert _row(bt, "naif", 1)["skill"] == 0
+
+
+def test_pull_and_single_settings():
+    assert fc.pull(0.0, 5) == 0 and fc.pull(1.0, 1) == 1
+    assert fc.pull(0.5, np.array([1, 2])) == pytest.approx([0.5, 0.75])
+    c = pd.DataFrame({"h": [1, 2], "l0": [0.0, 0.0], "slope": [1.0, 1.0], "anchor": [10.0, np.nan]})
+    p = fc.predict(c, phi=0.5, kappa=0.1)
+    assert p["naif"].tolist() == [0, 0] and p["tendance"] == pytest.approx([0.5, 0.75])
+    assert p["tendance+taille"] == pytest.approx([0.5 + 0.1 * 9.5, 0.75])  # sans emprise : la tendance
+
+
+def test_size_model_wins_when_mines_revert_to_footprint():
+    bt = fc.run_backtest(_panel("revert", n=80, seed=2), n_boot=100, today=TODAY)
+    assert 0.15 <= bt["reglages"]["kappa"] <= 0.5
+    assert bt["reglages"]["rappel_par_horizon"]["2"] > bt["reglages"]["rappel_par_horizon"]["1"]
+    s = _row(bt, "tendance+taille", 1)
+    assert s["skill_lo"] > 0 and s["r_lo"] > 0 and s["rho"] > 0
+    assert bt["retenu"]["1"] == "tendance+taille"
 
 
 def test_tuning_never_sees_test_period():
@@ -218,6 +242,13 @@ def test_ledger_is_append_only(tmp_path):
     after = fc.read_ledger(tmp_path)
     assert len(after) == n1 + n2
     pd.testing.assert_frame_equal(after.iloc[:n1].reset_index(drop=True), first)  # rien de réécrit
+    bt = fc.load_backtest(tmp_path)  # intervalles élargis (nouveau rétro-test) : nouvelles lignes datées
+    for qs in bt["intervalles"]["avenir"].values():
+        for v in qs.values():
+            v["q"] = [x * 1.5 for x in v["q"]]
+    (tmp_path / "backtest.json").write_text(json.dumps(bt), "utf-8")
+    n3 = fc.write_ledger(out=tmp_path, panel=p2, today=TODAY, now=datetime(2026, 11, 30, tzinfo=UTC))
+    assert n3 == n1 and len(fc.read_ledger(tmp_path)) == n1 + n2 + n3
 
 
 # -- panel réel (structure) -------------------------------------------------------------------------

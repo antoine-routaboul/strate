@@ -7,9 +7,10 @@ jamais vue pendant le réglage.
 
 Modèles, du plus simple au plus riche (tout en log de la production) :
   naif             dernière valeur connue (production de l'an t − h) ;
-  tendance         + pente MCO des 5 dernières années × (φ + φ² + … + φ^h), φ réglé ;
-  tendance+taille  idem, rappelé de λ vers l'ordre de grandeur donné par l'emprise Maus (modèle
-                   log10 t = a + b·log10 km², par type « minerai » / « charbon »).
+  tendance         + pente MCO des 5 dernières années × (φ + φ² + … + φ^h), un seul φ réglé ;
+  tendance+taille  idem, rappelé vers l'ordre de grandeur donné par l'emprise Maus (modèle
+                   log10 t = a + b·log10 km², par type « minerai » / « charbon ») : part du chemin
+                   parcourue λ_h = 1 − (1 − κ)^h, un seul κ (rappel par an) réglé.
 
 Un modèle n'est « retenu » à un horizon que s'il bat le naïf hors échantillon : skill > 0 ET borne basse
 de son IC 90 % (bootstrap sur les mines) > 0. Sinon le naïf reste retenu. Aucune IA : règles et moindres
@@ -47,8 +48,8 @@ TUNE_END = 2014  # réglages ≤ 2014, évaluation 2015–2021
 HORIZONS = (1, 2, 3)  # horizons publiés dans le tableau du rétro-test
 H_MAX = 10  # erreurs empiriques jusqu'à 10 ans : intervalles des prévisions d'avenir
 WINDOW, MIN_WINDOW = 5, 3  # tendance : 5 dernières années, au moins 3 observées
-PHI_GRID = tuple(round(x, 2) for x in np.arange(0.0, 1.0001, 0.1))
-LAMBDA_GRID = (0.0, 0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0)
+PHI_GRID = tuple(round(float(x), 2) for x in np.arange(0.0, 1.0001, 0.05))
+KAPPA_GRID = (0.0, 0.005, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5, 1.0)
 MODELS = ("naif", "tendance", "tendance+taille")
 EMPRISE_TYPE = {"minerai extrait": "minerai", "charbon": "charbon"}  # séries où le modèle d'emprise vaut
 MIN_ANCHOR = 20  # mines minimales pour ré-estimer le modèle d'emprise à une origine
@@ -63,12 +64,14 @@ METHODE = (
     "données ≤ t − h servent (h = 1, 2, 3 ans). Réglages (amortissement φ, rappel λ vers l'emprise, "
     "quantiles des intervalles) choisis sur les cibles ≤ 2014 ; mesures sur 2015–2021, jamais vues. "
     "r (Pearson) et ρ (Spearman) comparent variation prévue et variation réelle du log de la production "
-    "depuis la dernière valeur connue (le naïf, qui ne prévoit aucune variation, n'a pas de r) ; "
+    "depuis la dernière valeur connue (le naïf, qui ne prévoit aucune variation, n'a pas de r ; un "
+    "modèle réglé sur φ = 0 non plus) ; "
     "*_niveau : mêmes mesures sur le log des niveaux. IC 90 % par bootstrap en tirant des MINES (leurs "
     "années ne sont pas indépendantes), appariés entre modèles. skill = 1 − MSE(modèle) / MSE(naïf) en "
     "log. facteur_median : erreur multiplicative médiane. bon_sens : part des variations réelles dont le "
     "sens est bien prévu (prévision immobile = ½). Couvertures : part des valeurs réelles 2015–2021 dans "
-    "les intervalles 80 % / 90 % bâtis avec les erreurs ≤ 2014 seulement. Un modèle n'est retenu que si "
+    "les intervalles 80 % / 90 % bâtis avec les erreurs ≤ 2014 seulement. Un seul φ et un seul κ, réglés "
+    "sur la moyenne des MSE relatives des horizons 1 à 3. Un modèle n'est retenu que si "
     "la borne basse de l'IC 90 % de son skill est > 0 ; sinon le naïf reste retenu. Le modèle d'emprise "
     "est ré-estimé à chaque origine sur les seules productions ≤ t − h ; les coefficients publiés dans "
     "calibration.json (ajustés sur 2017–2020) ne servent qu'aux prévisions d'avenir.")
@@ -243,41 +246,48 @@ def damping(phi: float, h) -> np.ndarray:
     return phi * (1 - phi ** h) / (1 - phi)
 
 
-def predict(cases: pd.DataFrame, phi: dict, lam: dict) -> dict[str, np.ndarray]:
-    """Prévisions (log) des trois modèles ; φ et λ par horizon (h au-delà du dernier réglé : le dernier)."""
-    h = cases["h"].to_numpy(int)
-    keys = sorted(int(k) for k in phi)
-    hk = np.minimum(h, keys[-1]) if keys else h
-    ph = np.array([phi.get(int(k), phi.get(str(k), 0.0)) for k in hk], float)
-    lm = np.array([lam.get(int(k), lam.get(str(k), 0.0)) for k in hk], float)
+def pull(kappa: float, h) -> np.ndarray:
+    """Part du chemin vers l'emprise parcourue en h ans : 1 − (1 − κ)^h."""
+    return 1.0 - (1.0 - kappa) ** np.asarray(h, float)
+
+
+def predict(cases: pd.DataFrame, phi: float, kappa: float) -> dict[str, np.ndarray]:
+    """Prévisions (log) des trois modèles pour un φ (amortissement) et un κ (rappel par an) uniques."""
+    h = cases["h"].to_numpy(float)
     l0, sl = cases["l0"].to_numpy(float), cases["slope"].to_numpy(float)
-    s = np.array([float(damping(p, x)) for p, x in zip(ph, h, strict=True)])
-    trend = l0 + sl * s
+    trend = l0 + sl * damping(phi, h)
     anc = cases["anchor"].to_numpy(float) if "anchor" in cases else np.full(len(cases), np.nan)
-    size = np.where(np.isfinite(anc), trend + lm * (anc - trend), trend)
+    size = np.where(np.isfinite(anc), trend + pull(kappa, h) * (anc - trend), trend)
     return {"naif": l0, "tendance": trend, "tendance+taille": size}
 
 
-def tune(cases: pd.DataFrame, horizons=range(1, H_MAX + 1)) -> tuple[dict[int, float], dict[int, float]]:
-    """φ puis λ minimisant la MSE (log) sur les cas fournis (la période de réglage, cibles ≤ 2014)."""
-    phi, lam = {}, {}
-    for h in horizons:
-        c = cases[cases["h"] == h]
-        if c.empty:
-            phi[h], lam[h] = (phi.get(h - 1, 0.0), lam.get(h - 1, 0.0))
-            continue
-        y, l0, sl = c["y"].to_numpy(float), c["l0"].to_numpy(float), c["slope"].to_numpy(float)
-        mse = [np.mean((y - l0 - sl * damping(p, h)) ** 2) for p in PHI_GRID]
-        phi[h] = float(PHI_GRID[int(np.argmin(mse))])
-        anc = c["anchor"].to_numpy(float) if "anchor" in c else np.full(len(c), np.nan)
-        m = np.isfinite(anc)
-        if m.sum() < MIN_ERR:
-            lam[h] = 0.0
-            continue
-        tr = l0[m] + sl[m] * damping(phi[h], h)
-        mse = [np.mean((y[m] - tr - x * (anc[m] - tr)) ** 2) for x in LAMBDA_GRID]
-        lam[h] = float(LAMBDA_GRID[int(np.argmin(mse))])
-    return phi, lam
+def _rel_mse(y: np.ndarray, p: np.ndarray, base: np.ndarray, h: np.ndarray) -> float:
+    """Moyenne, sur les horizons, de MSE(prévision) / MSE(naïf) : chaque horizon pèse autant."""
+    out = []
+    for k in np.unique(h):
+        m = h == k
+        b = np.mean((y[m] - base[m]) ** 2)
+        if b > 0:
+            out.append(np.mean((y[m] - p[m]) ** 2) / b)
+    return float(np.mean(out)) if out else math.inf
+
+
+def tune(cases: pd.DataFrame, horizons=HORIZONS) -> tuple[float, float]:
+    """φ puis κ minimisant la MSE relative (log) sur les cas fournis (période de réglage, cibles ≤ 2014)."""
+    c = cases[cases["h"].isin(list(horizons))]
+    if c.empty:
+        return 0.0, 0.0
+    y, l0, sl = c["y"].to_numpy(float), c["l0"].to_numpy(float), c["slope"].to_numpy(float)
+    h = c["h"].to_numpy(float)
+    phi = min(PHI_GRID, key=lambda p: (_rel_mse(y, l0 + sl * damping(p, h), l0, h), p))
+    anc = c["anchor"].to_numpy(float) if "anchor" in c else np.full(len(c), np.nan)
+    m = np.isfinite(anc)
+    if m.sum() < MIN_ERR:
+        return float(phi), 0.0
+    y, l0, h, anc = y[m], l0[m], h[m], anc[m]
+    tr = l0 + sl[m] * damping(phi, h)
+    kappa = min(KAPPA_GRID, key=lambda k: (_rel_mse(y, tr + pull(k, h) * (anc - tr), l0, h), k))
+    return float(phi), float(kappa)
 
 
 def error_quantiles(err: pd.DataFrame, h_max: int = H_MAX) -> dict[str, dict[int, dict]]:
@@ -432,6 +442,18 @@ def _bounds(p: np.ndarray, h: np.ndarray, quant: dict, model: str) -> list[np.nd
     return [out[:, 0], out[:, 1], out[:, 2], out[:, 3]]
 
 
+DIAG_KEYS = ("n_mines", "n_points", "r", "r_lo", "r_hi", "rho", "rho_lo", "rho_hi", "skill", "skill_lo",
+             "skill_hi", "bon_sens")
+
+
+def _eval_frame(c: pd.DataFrame, p: np.ndarray, p_naif: np.ndarray, bounds: list | None) -> pd.DataFrame:
+    """Cas évalués (log) pour metrics() ; bornes lo90, lo80, hi80, hi90 ou None (pas d'intervalle)."""
+    lo90, lo80, hi80, hi90 = bounds if bounds is not None else [np.full(len(c), np.nan)] * 4
+    return pd.DataFrame({"site_id": c["site_id"].to_numpy(), "target": c["target"].to_numpy(),
+                         "y": c["y"].to_numpy(float), "p": p, "l0": c["l0"].to_numpy(float),
+                         "p_naif": p_naif, "lo80": lo80, "hi80": hi80, "lo90": lo90, "hi90": hi90})
+
+
 def _calibration_emprise() -> dict:
     try:
         from strate.screener import calibration
@@ -454,29 +476,29 @@ def run_backtest(panel: pd.DataFrame, n_boot: int = N_BOOT, today: date | None =
     tune_c, test_c = cases[cases["target"] <= TUNE_END], cases[cases["target"] > TUNE_END]
     if tune_c.empty or test_c.empty:
         return base | {"statut": "insuffisant", "raison": "trop peu d'années pour un rétro-test"}
-    phi, lam = tune(tune_c)
-    preds_tune, preds_test = predict(tune_c, phi, lam), predict(test_c, phi, lam)
+    phi, kappa = tune(tune_c)
+    preds_tune, preds_test = predict(tune_c, phi, kappa), predict(test_c, phi, kappa)
     q_tune = error_quantiles(_errors(tune_c, preds_tune))  # intervalles du test : erreurs ≤ 2014 seulement
-    rows, rows_reglage = [], []
+    rows, rows_reglage, diag = [], [], []
+    raw = predict(test_c, 1.0, kappa)["tendance"]  # tendance brute (φ = 1) : ce que le réglage a écarté
     for h in HORIZONS:
         for label, c, preds, dst in (("test", test_c, preds_test, rows), ("reglage", tune_c, preds_tune,
                                                                            rows_reglage)):
             m = (c["h"] == h).to_numpy()
             if m.sum() < MIN_N:
                 continue
-            hh = c["h"].to_numpy(int)[m]
+            nb = n_boot if label == "test" else max(n_boot // 5, 100)
             for model in MODELS:
                 p = preds[model][m]
-                lo90, lo80, hi80, hi90 = _bounds(p, hh, q_tune, model)
-                d = pd.DataFrame({"site_id": c["site_id"].to_numpy()[m], "target": c["target"].to_numpy()[m],
-                                  "y": c["y"].to_numpy(float)[m], "p": p, "l0": c["l0"].to_numpy(float)[m],
-                                  "p_naif": preds["naif"][m], "lo80": lo80, "hi80": hi80, "lo90": lo90,
-                                  "hi90": hi90})
-                nb = n_boot if label == "test" else max(n_boot // 5, 100)
+                d = _eval_frame(c[m], p, preds["naif"][m], _bounds(p, c["h"].to_numpy(int)[m], q_tune, model))
                 dst.append({"model": model, "horizon": h, **metrics(d, nb, seed=h)})
+            if label == "test":
+                mt = metrics(_eval_frame(c[m], raw[m], preds["naif"][m], None), max(n_boot // 5, 100), seed=h)
+                diag.append({"model": "tendance (φ = 1)", "horizon": h, **{k: mt[k] for k in DIAG_KEYS}})
     retenu = choose(rows)
+    petit = [r for r in rows if retenu.get(str(r["horizon"])) == r["model"] != "naif" and r["skill"] < 0.05]
     all_c = pd.concat([tune_c, test_c])
-    q_all = error_quantiles(_errors(all_c, predict(all_c, phi, lam)))  # avenir : toutes les erreurs
+    q_all = error_quantiles(_errors(all_c, predict(all_c, phi, kappa)))  # avenir : toutes les erreurs
     cal = _calibration_emprise()
     emprise_avenir = {k: [v["intercept"], v["slope"], v.get("n"), math.log10(v["emprise_min_km2"]),
                           math.log10(v["emprise_max_km2"])] for k, v in cal.items()
@@ -484,7 +506,8 @@ def run_backtest(panel: pd.DataFrame, n_boot: int = N_BOOT, today: date | None =
     years = panel["year"].astype(int)
     res = base | {
         "statut": "ok", "rows": rows, "retenu": retenu, "rows_reglage": rows_reglage,
-        "reglages": {"phi": phi, "lambda": lam},
+        "reglages": {"phi": phi, "kappa": kappa,
+                     "rappel_par_horizon": {h: float(pull(kappa, h)) for h in range(1, H_MAX + 1)}},
         "intervalles": {"test": q_tune, "avenir": q_all, "quantiles": list(Q)},
         "emprise": {"par_origine": [[k, o, *v] for (k, o), v in sorted(coefs.items())],
                     "avenir": emprise_avenir, "source_avenir": "calibration.json (modele_emprise)"},
@@ -498,7 +521,12 @@ def run_backtest(panel: pd.DataFrame, n_boot: int = N_BOOT, today: date | None =
             "La base de production s'arrête en 2019–2020 (2021 presque vide) : la période de test porte "
             "surtout sur 2015–2019.",
             "Signaux satellite et actualité non utilisés : trop récents (2016+) pour un rétro-test "
-            "2005–2021."],
+            "2005–2021.",
+            *([] if not petit else [
+                "Gain du modèle retenu sur le naïf inférieur à 5 % de MSE (horizons "
+                + ", ".join(str(r["horizon"]) for r in petit) + ") : la prévision reste proche de "
+                "« l'an dernier »."])],
+        "diagnostic_tendance_brute": diag,
         "today": today.isoformat()}
     return _clean(res)
 
@@ -527,6 +555,12 @@ def load_backtest(out: Path | None = None) -> dict | None:
 # =============================================================================================
 # Prévisions d'avenir
 # =============================================================================================
+def _reglages(bt: dict) -> tuple[float, float]:
+    """(φ, κ) du rétro-test ; 0 (naïf) si absents ou d'un ancien format."""
+    reg = bt.get("reglages") or {}
+    return tuple(float(v) if _finite(v) else 0.0 for v in (reg.get("phi"), reg.get("kappa")))
+
+
 def _future_anchor(kind, lfp: float, bt: dict) -> float:
     coef = (bt.get("emprise") or {}).get("avenir", {}).get(kind) if isinstance(kind, str) else None
     if coef is None and isinstance(kind, str):  # pas de calibration : dernier ajustement disponible
@@ -552,8 +586,7 @@ def site_forecast_frame(g: pd.DataFrame, bt: dict, today: date | None = None) ->
     kind, fp = g["emprise_type"].iat[0], g["footprint_km2"].iat[0]
     lfp = math.log10(fp) if isinstance(kind, str) and np.isfinite(fp) else math.nan
     c = pd.DataFrame({"h": hs, "l0": l0, "slope": sl, "anchor": _future_anchor(kind, lfp, bt)})
-    reg = bt.get("reglages") or {}
-    preds = predict(c, reg.get("phi") or {}, reg.get("lambda") or {})
+    preds = predict(c, *_reglages(bt))
     quant = (bt.get("intervalles") or {}).get("avenir") or {}
     frames = []
     for model, p in preds.items():
@@ -597,8 +630,7 @@ def _site_track(g: pd.DataFrame, bt: dict, model: str) -> dict:
     c = add_anchor(make_cases(g, h_max=1), coefs)
     if c.empty:
         return {"n": 0}
-    reg = bt.get("reglages") or {}
-    e = np.abs(c["y"].to_numpy(float) - predict(c, reg.get("phi") or {}, reg.get("lambda") or {})[model])
+    e = np.abs(c["y"].to_numpy(float) - predict(c, *_reglages(bt))[model])
     return {"n": int(len(c)), "facteur_median": float(np.exp(np.median(e))), "modele": model, "horizon": 1}
 
 
@@ -683,9 +715,9 @@ def write_ledger(out: Path | None = None, panel: pd.DataFrame | None = None, tod
                  now: datetime | None = None) -> int:
     """Ajoute au registre data/forecast/ledger.parquet les prévisions d'avenir des trois modèles.
 
-    Append-only : une ligne écrite n'est jamais modifiée ni supprimée. Une prévision identique à la
-    dernière déjà enregistrée (même mine, série, année cible, modèle) n'est pas répétée — la première
-    datée fait foi. Retourne le nombre de lignes ajoutées.
+    Append-only : une ligne écrite n'est jamais modifiée ni supprimée. Une prévision identique (valeur et
+    bornes) à la dernière déjà enregistrée (même mine, série, année cible, modèle) n'est pas répétée — la
+    première datée fait foi. Retourne le nombre de lignes ajoutées.
     """
     out = OUT if out is None else out
     panel = _panel() if panel is None else panel
@@ -700,9 +732,12 @@ def write_ledger(out: Path | None = None, panel: pd.DataFrame | None = None, tod
         old = read_ledger(out)
         if len(old):
             last = old.sort_values("made_at", kind="stable").groupby(key, as_index=False).last()
-            m = new.merge(last[key + ["value"]], on=key, how="left", suffixes=("", "_old"))
-            same = np.isclose(m["value"].to_numpy(float), m["value_old"].to_numpy(float), rtol=1e-9,
-                              atol=0, equal_nan=False)
+            vals = ["value", "lo80", "hi80", "lo90", "hi90"]
+            m = new.merge(last[key + vals], on=key, how="left", suffixes=("", "_old"))
+            same = np.ones(len(m), bool)
+            for v in vals:  # bornes NaN des deux côtés = identiques ; valeur absente avant = nouvelle
+                a, b = m[v].to_numpy(float), m[f"{v}_old"].to_numpy(float)
+                same &= np.isclose(a, b, rtol=1e-9, atol=0, equal_nan=(v != "value"))
             new = new[~same]
         if new.empty:
             return 0
