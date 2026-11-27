@@ -84,8 +84,10 @@ def fake_catalog() -> pd.DataFrame:
 class FakeHttp:
     """Répond selon l'URL ou le texte SPARQL ; lève sur toute URL inconnue (aucun vrai réseau)."""
 
-    def __init__(self, routes: dict[str, object] | None = None, sparql=None):
+    def __init__(self, routes: dict[str, object] | None = None, sparql=None, none_status: int | None = None):
         self.routes = routes or {}
+        self.none_status = none_status  # code HTTP simulé quand une route répond None
+        self.last_status = None
         self.calls: list[str] = []
         self.sparql_calls: list[str] = []
         self.sparql_fn = sparql or (lambda q: [])
@@ -99,6 +101,7 @@ class FakeHttp:
             if k in url:
                 if isinstance(v, Exception):
                     raise v
+                self.last_status = 200 if v is not None else self.none_status
                 return v
         raise AssertionError(f"URL inattendue : {url}")
 
@@ -769,7 +772,7 @@ def test_refresh_bounded_resumable_and_api_shapes(monkeypatch, tmp_path):
     )
     st = C.refresh(max_companies=2, **kw)
     first = [u for u in http.calls if "companyfacts" in u]
-    assert len(first) == 2 and st["sec_lues_ce_lancement"] == 2 and st["sec_restantes"] > 0
+    assert len(first) == 2 and st["sec_tentees_ce_lancement"] == 2 and st["sec_restantes"] > 0
     assert st["requetes_sec"] == 3  # tickers + 2 companyfacts
     st2 = C.refresh(max_companies=500, **kw)
     second = [u for u in http.calls if "companyfacts" in u][2:]
@@ -842,6 +845,36 @@ def test_refresh_failure_of_one_company_is_isolated(tmp_path):
     state = json.loads(C.STATE.read_text("utf-8"))
     assert state["sec"]["newmont"]["ok"] is False and state["sec"]["bhp"]["ok"] is True
     assert "bhp" in set(C.load("facts")["company_id"])
+
+
+def _refresh_kw(http, tmp_path, **kw):
+    return dict(http=http, cat=fake_catalog(), twins={}, veille_db=tmp_path / "no.db", prod=pd.DataFrame(),
+                reader=lambda s: pd.DataFrame(), n_boot=20, wikidata=False) | kw
+
+
+def test_failed_sec_read_keeps_stored_facts_and_reports_error(tmp_path):
+    C.refresh(max_companies=500, **_refresh_kw(FakeHttp(_routes(), _sparql), tmp_path))
+    before = C.load("facts")
+    n_nem = int((before["company_id"] == "newmont").sum())
+    assert n_nem > 0
+    routes = _routes()
+    routes["CIK0001164727.json"] = None  # 403 (User-Agent refusé), 404 ou 5 échecs : get_json rend None
+    st = C.refresh(max_companies=500, force=True, **_refresh_kw(FakeHttp(routes, _sparql, 403), tmp_path))
+    after = C.load("facts")
+    assert int((after["company_id"] == "newmont").sum()) == n_nem  # rien d'effacé
+    assert any(e.startswith("newmont : companyfacts illisible (HTTP 403)") for e in st["erreurs"])
+    state = json.loads(C.STATE.read_text("utf-8"))
+    assert state["sec"]["newmont"]["ok"] is False and state["sec"]["newmont"]["n_faits"] == n_nem
+
+
+def test_permanent_404_is_not_retried_every_day():
+    st = {"sec": {"a": dict(at=C._now(), cik="1", ok=False, http=404),
+                  "b": dict(at="2000-01-01T00:00:00Z", cik="2", ok=False, http=404),
+                  "c": dict(at=C._now(), cik="3", ok=False, http=None)}}
+    co = pd.DataFrame(dict(id=["a", "b", "c"], cik=["1", "2", "3"]))
+    assert C.sec_queue(co, st) == ["b"]
+    st["sec"]["c"]["at"] = "2026-01-01T00:00:00Z"  # échec réseau ancien : retenté après RETRY_DAYS
+    assert set(C.sec_queue(co, st)) == {"b", "c"}
 
 
 def test_readers_empty_before_first_refresh():

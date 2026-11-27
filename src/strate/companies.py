@@ -50,6 +50,7 @@ SEC_TICKERS_URLS = ("https://www.sec.gov/files/company_tickers_exchange.json",
                     "https://www.sec.gov/files/company_tickers.json")
 REFRESH_DAYS = 14  # comptes annuels : relire une société au plus toutes les deux semaines
 RETRY_DAYS = 1
+ABSENT_DAYS = 30  # companyfacts en 404 : la société ne publie pas de XBRL, inutile de redemander chaque jour
 WIKIDATA_DAYS = 30
 TICKERS_DAYS = 7
 MAX_COMPANIES = 50
@@ -349,6 +350,7 @@ class Http:
         self.min_interval, self._last, self._lock = min_interval, 0.0, threading.Lock()
         self.requests = 0
         self.sparql_requests = 0
+        self.last_status: int | None = None  # code HTTP de la dernière réponse (None : aucune réponse)
 
     def _get(self, url: str):
         import httpx
@@ -375,6 +377,7 @@ class Http:
 
     def get_json(self, url: str) -> dict | None:
         r = self._get(url)
+        self.last_status = None if r is None else r.status_code
         if r is None or r.status_code != 200:
             return None
         try:
@@ -1334,7 +1337,8 @@ def sec_queue(co: pd.DataFrame, state: dict, force: bool = False) -> list[str]:
         if not isinstance(cik, str):
             continue
         st = per.get(cid, {})
-        wait = REFRESH_DAYS if st.get("ok") else RETRY_DAYS  # un échec est retenté plus tôt
+        # un échec est retenté plus tôt, sauf un 404 (pas de companyfacts publiés pour ce CIK)
+        wait = REFRESH_DAYS if st.get("ok") else ABSENT_DAYS if st.get("http") == 404 else RETRY_DAYS
         if force or st.get("cik") != cik or _age_days(st.get("at")) >= wait:
             todo.append(cid)
     return sorted(todo, key=lambda c: per.get(c, {}).get("at") or "")
@@ -1386,16 +1390,28 @@ def refresh(max_companies: int = MAX_COMPANIES, *, http=None, force: bool = Fals
     per = state.setdefault("sec", {})
     ciks = dict(zip(co["id"], co["cik"], strict=True))
     names = dict(zip(co["id"], co["nom"], strict=True))
-    done = 0
+    done = tried = 0
     for cid in queue[:max(0, max_companies)]:
         cik = ciks[cid]
+        tried += 1
         try:
             js = http.get_json(SEC_FACTS_URL.format(cik=cik))
-            fa = parse_companyfacts(js, cid, cik) if js else pd.DataFrame(columns=FACT_COLS)
+            code = getattr(http, "last_status", None)
+            if not isinstance(js, dict) or "facts" not in js:
+                # lecture ratée (403, 404, 5 échecs, JSON inattendu) : les faits déjà stockés restent
+                # intacts, l'échec est signalé et la société sera relue plus tard
+                why = f"HTTP {code}" if code else "pas de réponse exploitable"
+                per[cid] = dict(at=_now(), cik=cik, ok=False, http=code,
+                                n_faits=int(per.get(cid, {}).get("n_faits", 0) or 0),
+                                message=f"companyfacts illisible ({why}) : faits précédents conservés")
+                errors.append(f"{cid} : companyfacts illisible ({why})")
+                say(f"{names[cid]} : {per[cid]['message']}")
+                _write_json(STATE, state)
+                continue
+            fa = parse_companyfacts(js, cid, cik)
             _replace_facts(fa, company_id=cid, origine="sec")
-            per[cid] = dict(at=_now(), cik=cik, ok=js is not None, n_faits=int(len(fa)),
-                            message="companyfacts absent" if js is None
-                            else f"{fa['annee'].nunique()} exercices")
+            per[cid] = dict(at=_now(), cik=cik, ok=True, http=code, n_faits=int(len(fa)),
+                            message=f"{fa['annee'].nunique()} exercices")
             say(f"{names[cid]} : {per[cid]['message']}")
             done += 1
         except Exception as e:  # une société en échec n'arrête pas les autres
@@ -1426,7 +1442,7 @@ def refresh(max_companies: int = MAX_COMPANIES, *, http=None, force: bool = Fals
         n_societes=int(len(co)), n_avec_cik=int(co["cik"].notna().sum()),
         n_avec_qid=int(co["qid"].notna().sum()),
         n_avec_mines=int((co["n_mines"] > 0).sum()), n_liens_mines=int(len(lk)),
-        sec_lues_ce_lancement=done, sec_restantes=rest,
+        sec_lues_ce_lancement=done, sec_tentees_ce_lancement=tried, sec_restantes=rest,
         n_societes_avec_faits=int(facts["company_id"].nunique()) if len(facts) else 0,
         n_faits=int(len(facts)), n_investissements=int(len(inv)),
         requetes_sec=getattr(http, "requests", None),
