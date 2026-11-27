@@ -46,6 +46,7 @@ TICKERS_CACHE = OUT / "sec_tickers.json"
 DEFAULT_UA = "Strate/0.1 open-source research tool"
 SEC_MIN_INTERVAL = 1 / 8  # ≤ 10 requêtes/s exigé par la SEC : marge de sécurité
 SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 SEC_TICKERS_URLS = ("https://www.sec.gov/files/company_tickers_exchange.json",
                     "https://www.sec.gov/files/company_tickers.json")
 REFRESH_DAYS = 14  # comptes annuels : relire une société au plus toutes les deux semaines
@@ -65,6 +66,27 @@ METHODE_CORRELATIONS = (
     "clairs) sur les mêmes mines les deux années. Décalage k : CAPEX(t) ↔ y(t+k). r de Pearson, ρ de "
     "Spearman ; IC 90 % par bootstrap sur les sociétés (ensemble) ou sur les années (une société) ; "
     "n sociétés, n points. « Démontré » seulement si l'IC 90 % de ρ exclut 0.")
+
+# Codes SIC (Standard Industrial Classification, champ « sic » de data.sec.gov/submissions) acceptés pour un
+# CIK trouvé automatiquement (registre SEC par nom ou ticker, Wikidata P5531) ; la graine vérifiée passe
+# sans contrôle (Cleveland-Cliffs : sidérurgie, Albemarle : chimie).
+#   1000–1099  minerais métalliques (1000 metal mining, 1040 or et argent, 1090 autres minerais métalliques)
+#   1200–1299  charbon et lignite (1220, 1221)
+#   1400–1499  minéraux non métalliques hors combustibles (1400)
+#   3330–3339  première fusion et affinage des non-ferreux (3330, 3334 aluminium primaire)
+#   6795       négociants de redevances minières
+# Écartés par exemple : St. Joe Co (6500, immobilier), Cemex (3241, ciment), Halliburton (1389, services
+# pétroliers), Prologis (6798), International Paper (2621), Duke Energy (4931), Marathon Petroleum (2911).
+MINING_SIC = (range(1000, 1100), range(1200, 1300), range(1400, 1500), range(3330, 3340), range(6795, 6796))
+
+
+def sic_ok(code) -> bool:
+    try:
+        c = int(str(code).strip())
+    except (TypeError, ValueError):
+        return False
+    return any(c in r for r in MINING_SIC)
+
 
 # -- graine de CIK vérifiés ---------------------------------------------------------------------------
 # Grands miniers déposant à la SEC, CIK contrôlés sur data.sec.gov/submissions et company_tickers_exchange.
@@ -545,10 +567,38 @@ def _keep_best(out: dict, key: str, b: dict) -> None:
         cur["pays"] = cand["pays"]
 
 
+def sec_name_keys(names: list[str]) -> list[str]:
+    """Clés strictes utilisables pour chercher une société dans le registre SEC par son nom.
+
+    Refusés : un nom avec qualificatif entre parenthèses (« Cemex (United Kingdom) » est une filiale, pas
+    CEMEX SAB), une clé d'un seul mot (« Teck », « Regis »), et un alias qui n'est que le début d'un nom
+    plus long de la même société (« St. Joe » pour « St. Joe Minerals » donnerait ST JOE Co, immobilier)."""
+    full = {k for k in map(strict_key, names) if k}
+    out = []
+    for n in names:
+        k = strict_key(n)
+        if not k or "(" in n or len(k.split()) < 2:
+            continue
+        if any(o != k and o.startswith(k + " ") for o in full):
+            continue
+        out.append(k)
+    return list(dict.fromkeys(out))
+
+
+def _seeded(src) -> bool:
+    return isinstance(src, str) and src.startswith("graine")
+
+
 def assign_ids(co: pd.DataFrame, wd: dict[str, dict], tickers: list[dict]) -> pd.DataFrame:
-    """QID, pays et CIK : graine vérifiée > ticker US exact (SEC) > nom normalisé (SEC) > Wikidata P5531."""
+    """QID, pays et CIK : graine vérifiée > ticker US exact (SEC) > nom (SEC, règles de sec_name_keys) >
+    Wikidata P5531. Les tickers que la SEC associe au CIK trouvé sont ajoutés à ceux de la société."""
     co = co.copy()
     by_t, by_k = ticker_index(tickers)
+    by_cik: dict[str, list[str]] = {}
+    for t in tickers:
+        if t.get("ticker"):
+            by_cik.setdefault(t["cik"], []).append(f"{t['bourse']}:{t['ticker']}" if t.get("bourse")
+                                                   else t["ticker"])
     for i, r in co.iterrows():
         hit = wd.get(r["qid"]) if isinstance(r["qid"], str) else None
         if hit is None:
@@ -562,6 +612,7 @@ def assign_ids(co: pd.DataFrame, wd: dict[str, dict], tickers: list[dict]) -> pd
             if _QID.fullmatch(str(r["nom"])) and hit.get("label"):
                 co.at[i, "nom"], co.at[i, "cle"] = hit["label"], norm_key(hit["label"])
         if isinstance(r["cik"], str) and r["cik"]:
+            _add_tickers(co, i, by_cik.get(r["cik"], []))
             continue
         found = None
         for t in _split_list(r["tickers"]):
@@ -571,7 +622,7 @@ def assign_ids(co: pd.DataFrame, wd: dict[str, dict], tickers: list[dict]) -> pd
             if ex.upper() in US_EXCHANGES and us_row:
                 found = (row["cik"], f"SEC company_tickers (ticker {sym.upper()})")
                 break
-        keys = [k for k in map(strict_key, [r["nom"], *_split_list(r["alias"])]) if k in by_k]
+        keys = [k for k in sec_name_keys([r["nom"], *_split_list(r["alias"])]) if k in by_k]
         if found is None and keys:
             row = by_k[keys[0]]
             found = (row["cik"], f"SEC company_tickers (nom « {row['nom']} »)")
@@ -579,6 +630,28 @@ def assign_ids(co: pd.DataFrame, wd: dict[str, dict], tickers: list[dict]) -> pd
             found = (hit["cik"], f"Wikidata P5531 ({hit['qid']})")
         if found:
             co.at[i, "cik"], co.at[i, "cik_source"] = found
+            _add_tickers(co, i, by_cik.get(found[0], []))
+    return co
+
+
+def _add_tickers(co: pd.DataFrame, i, extra: list[str]) -> None:
+    have = _split_list(co.at[i, "tickers"])
+    syms = {t.partition(":")[2] or t for t in have}
+    new = [t for t in extra if (t.partition(":")[2] or t) not in syms]
+    if new:
+        co.at[i, "tickers"] = ";".join([*have, *new])
+
+
+def reject_non_mining(co: pd.DataFrame, sic: dict[str, dict]) -> pd.DataFrame:
+    """Retire un CIK trouvé automatiquement dont le code SIC connu n'est pas minier (MINING_SIC)."""
+    co = co.copy()
+    for i, cik, src in zip(co.index, co["cik"], co["cik_source"], strict=True):
+        got = sic.get(cik) if isinstance(cik, str) else None
+        if got is None or _seeded(src) or sic_ok(got.get("sic")):
+            continue
+        co.at[i, "cik"] = None
+        co.at[i, "cik_source"] = (f"CIK {cik} écarté : SIC {got.get('sic') or '?'} "
+                                  f"({got.get('description') or 'inconnu'}), hors mines, métaux, charbon")
     return co
 
 
@@ -1416,6 +1489,8 @@ def refresh(max_companies: int = MAX_COMPANIES, *, http=None, force: bool = Fals
             errors.append(f"Wikidata (identifiants) : {type(e).__name__}")
     co = assign_ids(co, wd, tick)
     co, lk = merge_by_qid(co, lk)
+    sic = state.setdefault("sic", {})
+    co = reject_non_mining(co, sic)
     _write("companies", co)
     _write("mines", lk)
     _write_json(STATE, state)
@@ -1423,12 +1498,32 @@ def refresh(max_companies: int = MAX_COMPANIES, *, http=None, force: bool = Fals
     queue = sec_queue(co, state, force)
     per = state.setdefault("sec", {})
     ciks = dict(zip(co["id"], co["cik"], strict=True))
+    seeded = {c for c, src in zip(co["id"], co["cik_source"], strict=True) if _seeded(src)}
     names = dict(zip(co["id"], co["nom"], strict=True))
+    rejected = False
     done = tried = 0
     for cid in queue[:max(0, max_companies)]:
         cik = ciks[cid]
         tried += 1
         try:
+            if cid not in seeded and cik not in sic:  # secteur du déposant, une fois par CIK
+                sub = http.get_json(SEC_SUBMISSIONS_URL.format(cik=cik))
+                if not isinstance(sub, dict) or "sic" not in sub:
+                    code = getattr(http, "last_status", None)
+                    per[cid] = dict(at=_now(), cik=cik, ok=False, http=code,
+                                    message=f"submissions illisible (HTTP {code}) : secteur inconnu")
+                    errors.append(f"{cid} : submissions illisible (HTTP {code})")
+                    _write_json(STATE, state)
+                    continue
+                sic[cik] = dict(sic=str(sub.get("sic") or ""), description=sub.get("sicDescription"),
+                                at=_now())
+            if cid not in seeded and not sic_ok(sic[cik]["sic"]):
+                per[cid] = dict(at=_now(), cik=cik, ok=False,
+                                message=f"CIK écarté : SIC {sic[cik]['sic']} ({sic[cik]['description']})")
+                say(f"{names[cid]} : {per[cid]['message']}")
+                rejected = True
+                _write_json(STATE, state)
+                continue
             js = http.get_json(SEC_FACTS_URL.format(cik=cik))
             code = getattr(http, "last_status", None)
             if not isinstance(js, dict) or "facts" not in js:
@@ -1453,6 +1548,10 @@ def refresh(max_companies: int = MAX_COMPANIES, *, http=None, force: bool = Fals
             per[cid] = dict(at=_now(), cik=cik, ok=False, message=f"{type(e).__name__}: {e}"[:300])
             errors.append(f"{cid} : {type(e).__name__}")
         _write_json(STATE, state)
+
+    if rejected:
+        co = reject_non_mining(co, sic)
+        _write("companies", co)
 
     if wikidata and (force or _age_days(state.get("wikidata_facts_at")) >= WIKIDATA_DAYS):
         q2c = {q: c for c, q in zip(co["id"], co["qid"], strict=True) if isinstance(q, str)}

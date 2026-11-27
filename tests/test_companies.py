@@ -331,6 +331,40 @@ def test_assign_ids_priority_seed_ticker_name_wikidata():
     assert "Wikidata P5531" in out.at["q", "cik_source"]
 
 
+def _co_row(cid, nom, alias="", tickers="", cik=None, src=None):
+    return dict(id=cid, nom=nom, cle=C.norm_key(nom), alias=alias, tickers=tickers, cik=cik, cik_source=src,
+                qid=None, pays=None, sources="", suivie=False, n_mines=1)
+
+
+def test_assign_ids_rejects_truncated_single_word_and_subsidiary_names():
+    tick = C.parse_sec_tickers(fixture("sec_tickers_exchange.json")) + [
+        dict(cik="0000745308", nom="ST JOE Co", ticker="JOE", bourse="NYSE"),
+        dict(cik="0001076378", nom="CEMEX SAB DE CV", ticker="CX", bourse="NYSE"),
+        dict(cik="0000000777", nom="Equinox Gold Corp.", ticker="EQX", bourse="NYSE")]
+    co = pd.DataFrame([_co_row("st_joe_minerals", "St. Joe Minerals", alias="St. Joe;St. Joe Minerals"),
+                       _co_row("cemex_uk", "Cemex (United Kingdom)", alias="Cemex (United Kingdom)"),
+                       _co_row("eqx", "Equinox Gold", alias="Equinox Gold"),
+                       _co_row("a", "Agnico Eagle Mines Limited")], columns=C.COMPANY_COLS)
+    out = C.assign_ids(co, {}, tick).set_index("id")
+    assert pd.isna(out.at["st_joe_minerals", "cik"])  # « St. Joe » n'est que le début du nom
+    assert pd.isna(out.at["cemex_uk", "cik"])  # filiale : pas le CIK de la maison mère
+    assert out.at["eqx", "cik"] == "0000000777"  # deux mots, nom complet : accepté
+    assert out.at["a", "tickers"] == "NYSE:AEM"  # ticker de la SEC recopié
+
+
+def test_sic_filter_rejects_non_mining_filers():
+    assert C.sic_ok("1040") and C.sic_ok(1221) and C.sic_ok("3334") and C.sic_ok("6795")
+    assert not any(map(C.sic_ok, ["6500", "3241", "1389", "6798", "2621", "4931", "2911", "", None]))
+    co = pd.DataFrame([_co_row("x", "X Holdings", cik="0000000001", src="SEC company_tickers (nom)"),
+                       _co_row("nem", "Newmont", cik="0001164727", src="graine vérifiée (SEC)")],
+                      columns=C.COMPANY_COLS)
+    sic = {"0000000001": dict(sic="6500", description="Real Estate"),
+           "0001164727": dict(sic="6500", description="test")}
+    out = C.reject_non_mining(co, sic).set_index("id")
+    assert pd.isna(out.at["x", "cik"]) and "SIC 6500" in out.at["x", "cik_source"]
+    assert out.at["nem", "cik"] == "0001164727"  # la graine vérifiée n'est pas filtrée
+
+
 def test_wikidata_lookup_keeps_company_with_cik_then_oldest_qid():
     def sparql(q):
         assert "wdt:P5531|wdt:P1128" in q  # seuls les éléments « société »
@@ -888,6 +922,27 @@ def test_failed_sec_read_keeps_stored_facts_and_reports_error(tmp_path):
     assert any(e.startswith("newmont : companyfacts illisible (HTTP 403)") for e in st["erreurs"])
     state = json.loads(C.STATE.read_text("utf-8"))
     assert state["sec"]["newmont"]["ok"] is False and state["sec"]["newmont"]["n_faits"] == n_nem
+
+
+def test_refresh_checks_sic_before_reading_non_seed_filer(tmp_path):
+    cat = pd.concat([fake_catalog(), pd.DataFrame([dict(id="icmm9", name="Vault", owner="Joe Holdings Ltd",
+                                                        operator=None, jasansky=None, commodities="gold")]
+                                                  ).set_index("id", drop=False)])
+    routes = _routes()
+    # réponses fabriquées pour le test : un déposant au nom identique, secteur immobilier
+    tick = fixture("sec_tickers_exchange.json")
+    tick["data"].append([9999999, "JOE HOLDINGS LTD", "JOEH", "NYSE"])
+    routes["company_tickers_exchange.json"] = tick
+    routes["submissions/CIK0009999999.json"] = {"sic": "6500", "sicDescription": "Real Estate"}
+    http = FakeHttp(routes, _sparql)
+    C.refresh(max_companies=500, **_refresh_kw(http, tmp_path, cat=cat))
+    assert any("submissions/CIK0009999999" in u for u in http.calls)
+    assert not any("companyfacts/CIK0009999999" in u for u in http.calls)
+    co = C.load("companies").set_index("id")
+    assert pd.isna(co.at["joe_holdings", "cik"]) and "SIC 6500" in co.at["joe_holdings", "cik_source"]
+    n = len(http.calls)
+    C.refresh(max_companies=500, force=True, **_refresh_kw(http, tmp_path, cat=cat))
+    assert not any("CIK0009999999" in u for u in http.calls[n:])  # rejet mémorisé : plus de requête
 
 
 def test_permanent_404_is_not_retried_every_day():
