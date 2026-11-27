@@ -61,8 +61,15 @@ US_EXCHANGES = {"NYSE", "NASDAQ", "NYSEAMERICAN", "AMEX", "NYSEARCA", "NYSEMKT",
 
 METHODE_CORRELATIONS = (
     "Variations annuelles en log (année t vs t−1, exercices consécutifs, même concept comptable et même "
-    "devise). Production : moyenne, pondérée par la part détenue (1 si inconnue), des variations de la série "
-    "principale de chaque mine (Jasansky et al. 2023). Emprise : surface nue Sentinel-2 (médiane des mois "
+    "devise). Production : moyenne, pondérée par la part détenue, des variations de la série principale de "
+    "chaque mine (Jasansky et al. 2023). Détention datée : une mine ne compte pour une société l'année t que "
+    "si celle-ci la détenait les années civiles entières t − 1 et t (périodes depuis/jusqu de sites.toml, "
+    "anciens propriétaires compris). Les liens du catalogue (Wikidata P127/P137, ICMM) n'ont pas de date : "
+    "ils sont exclus des corrélations, faute de quoi le propriétaire actuel recevrait la production des "
+    "années d'avant son rachat. Le CAPEX couvre tout le groupe, la production seulement ces mines datées. "
+    "Les exercices touchés par un rachat, une fusion ou une scission connus (liste PERIMETRE et bornes "
+    "de sites.toml) sont retirés des variations de CAPEX et d'effectifs : l'exercice de l'opération et le "
+    "suivant. Emprise : surface nue Sentinel-2 (médiane des mois "
     "clairs) sur les mêmes mines les deux années. Décalage k : CAPEX(t) ↔ y(t+k). r de Pearson, ρ de "
     "Spearman. Exercice rangé dans l'année civile qui en contient la plus grande part (clôture de janvier à "
     "mai → année précédente) ; une clôture au 30 juin (BHP) est rangée l'année de clôture et reste décalée "
@@ -223,7 +230,32 @@ def _unique(base: str, taken: set[str]) -> str:
 # -- entités ----------------------------------------------------------------------------------------------
 COMPANY_COLS = ["id", "nom", "cle", "alias", "tickers", "cik", "cik_source", "qid", "pays", "sources",
                 "suivie", "n_mines"]
-LINK_COLS = ["company_id", "site_id", "nom", "role", "part", "source"]
+LINK_COLS = ["company_id", "site_id", "nom", "role", "part", "source", "depuis", "jusqu", "pays"]
+
+
+def ownership_info() -> tuple[dict[tuple[str, str], tuple[str | None, str | None]], list[dict]]:
+    """Périodes de détention écrites dans sites.toml : ({(société, mine): (depuis, jusqu)}, anciens
+    propriétaires [{site, nom, share, depuis, jusqu}]). Dates AAAA-MM ; absentes : inconnues."""
+    import tomllib
+
+    try:
+        raw = tomllib.loads(entities.files("strate.data").joinpath("sites.toml").read_text("utf-8"))
+    except (OSError, ValueError) as e:
+        log.warning("sites.toml illisible (%s)", e)
+        return {}, []
+    periods, former = {}, []
+    for sid, site in raw.get("sites", {}).items():
+        for o in site.get("owners", []):
+            periods[(o["company"], sid)] = (_month(o.get("depuis")), _month(o.get("jusqu")))
+        for o in site.get("anciens", []):
+            if isinstance(o.get("nom"), str):
+                former.append(dict(site=sid, nom=o["nom"], share=o.get("share"),
+                                   depuis=_month(o.get("depuis")), jusqu=_month(o.get("jusqu"))))
+    return periods, former
+
+
+def _month(v) -> str | None:
+    return v if isinstance(v, str) and re.fullmatch(r"\d{4}-(0[1-9]|1[0-2])", v) else None
 
 
 def _twins() -> dict[str, str]:
@@ -236,13 +268,15 @@ def _twins() -> dict[str, str]:
         return {}
 
 
-def build_entities(cat: pd.DataFrame | None = None, graph=None, twins: dict[str, str] | None = None
-                   ) -> tuple[pd.DataFrame, pd.DataFrame]:
+def build_entities(cat: pd.DataFrame | None = None, graph=None, twins: dict[str, str] | None = None,
+                   ownership: tuple[dict, list[dict]] | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """(sociétés, liens société ↔ mine). Ordre d'autorité : liste suivie (identifiants fixes, parts
-    connues), graine SEC (alias de changement de nom), propriétaires/exploitants du catalogue."""
+    connues, périodes de détention), graine SEC (alias de changement de nom), anciens propriétaires datés
+    de sites.toml, propriétaires/exploitants du catalogue (sans date)."""
     from strate import catalog
 
     graph = graph or entities.load()
+    periods, former = ownership if ownership is not None else ownership_info()
     if cat is None:
         cat = catalog.load()
     if twins is None:
@@ -255,6 +289,7 @@ def build_entities(cat: pd.DataFrame | None = None, graph=None, twins: dict[str,
     by_qid: dict[str, str] = {}
     taken: set[str] = set()
     links: dict[tuple[str, str], dict] = {}
+    old_links: list[dict] = []
 
     def new(cid: str, name: str, **kw) -> dict:
         taken.add(cid)
@@ -283,16 +318,27 @@ def build_entities(cat: pd.DataFrame | None = None, graph=None, twins: dict[str,
         fs = fillers.get(cid, set())
         return cid if f == "" or f in fs or fs <= {""} else None
 
-    def link(cid: str, site: str, role: str, part: float | None, source: str) -> None:
-        site_name = None
+    def site_info(site: str) -> tuple[str | None, str | None]:
         if site in graph.sites:
-            site_name = graph.sites[site].name
-        elif not cat.empty and site in cat.index:
-            site_name = cat.at[site, "name"] if isinstance(cat.at[site, "name"], str) else None
+            return graph.sites[site].name, graph.sites[site].country
+        if not cat.empty and site in cat.index:
+            nm = cat.at[site, "name"] if "name" in cat else None
+            ct = entities.norm_country(cat.at[site, "country"]) if "country" in cat else None
+            return (nm if isinstance(nm, str) else None), ct
+        return None, None
+
+    def link(cid: str, site: str, role: str, part: float | None, source: str,
+             period: tuple[str | None, str | None] = (None, None)) -> None:
+        site_name, pays = site_info(site)
+        row = dict(company_id=cid, site_id=site, nom=site_name, role=role,
+                   part=np.nan if part is None else float(part), source=source, depuis=period[0],
+                   jusqu=period[1], pays=pays)
+        if period[1] is not None:  # détention terminée : un lien à part, jamais fusionné
+            old_links.append(row)
+            return
         cur = links.get((cid, site))
         if cur is None:
-            links[(cid, site)] = dict(company_id=cid, site_id=site, nom=site_name, role=role,
-                                      part=np.nan if part is None else float(part), source=source)
+            links[(cid, site)] = row
         else:
             if role not in cur["role"].split(" + "):
                 cur["role"] += f" + {role}"
@@ -305,7 +351,8 @@ def build_entities(cat: pd.DataFrame | None = None, graph=None, twins: dict[str,
         register(c.id, c.name)
     for s in graph.sites.values():
         for o in s.owners:
-            link(o.company, s.id, "propriétaire", o.share, "sites.toml")
+            link(o.company, s.id, "propriétaire", o.share, "sites.toml",
+                 periods.get((o.company, s.id), (None, None)))
 
     for sd in SEED:
         names = [sd["name"], *sd["aliases"]]
@@ -316,6 +363,18 @@ def build_entities(cat: pd.DataFrame | None = None, graph=None, twins: dict[str,
         e["tickers"] = list(dict.fromkeys([*e["tickers"], *sd["tickers"]]))
         for n in names:
             register(cid, n)
+
+    for f in former:
+        if f["site"] not in graph.sites:
+            continue
+        cid = find(f["nom"])
+        if cid is None:
+            cid = _unique(id_base(f["nom"]), taken)
+            new(cid, f["nom"])
+        register(cid, f["nom"])
+        comp[cid]["sources"].add("sites.toml (anciens propriétaires)")
+        link(cid, f["site"], "ancien propriétaire" if f["jusqu"] else "propriétaire", f["share"],
+             "sites.toml (anciens propriétaires)", (f["depuis"], f["jusqu"]))
 
     def named(raw: str, site: str, role: str) -> None:
         q = _QID.fullmatch(raw)
@@ -344,14 +403,19 @@ def build_entities(cat: pd.DataFrame | None = None, graph=None, twins: dict[str,
             for n in _split_list(opr):
                 named(n, sid, "exploitant")
 
-    lk = pd.DataFrame(list(links.values()), columns=LINK_COLS)
-    n_mines = lk.groupby("company_id")["site_id"].nunique() if len(lk) else pd.Series(dtype=int)
+    lk = pd.DataFrame([*links.values(), *old_links], columns=LINK_COLS)
+    n_mines = _current(lk).groupby("company_id")["site_id"].nunique() if len(lk) else pd.Series(dtype=int)
     rows = [dict(id=e["id"], nom=e["nom"], cle=norm_key(e["nom"]), alias=";".join(sorted(e["alias"])),
                  tickers=";".join(e["tickers"]), cik=e["cik"], cik_source=e["cik_source"], qid=e["qid"],
                  pays=e["pays"], sources=";".join(sorted(e["sources"])), suivie=e["suivie"],
                  n_mines=int(n_mines.get(e["id"], 0))) for e in comp.values()]
     co = pd.DataFrame(rows, columns=COMPANY_COLS)
     return _sorted(co), lk
+
+
+def _current(lk: pd.DataFrame) -> pd.DataFrame:
+    """Liens en cours (sans date de fin de détention)."""
+    return lk[lk["jusqu"].isna()] if "jusqu" in lk else lk
 
 
 def _sorted(co: pd.DataFrame) -> pd.DataFrame:
@@ -385,8 +449,9 @@ def merge_by_qid(co: pd.DataFrame, lk: pd.DataFrame) -> tuple[pd.DataFrame, pd.D
         return co, lk
     co = co[~co["id"].isin(remap)].copy()
     lk = lk.assign(company_id=lk["company_id"].replace(remap))
-    lk = lk.sort_values("part", na_position="last").drop_duplicates(["company_id", "site_id"])
-    co["n_mines"] = co["id"].map(lk.groupby("company_id")["site_id"].nunique()).fillna(0).astype(int)
+    lk = lk.sort_values("part", na_position="last").drop_duplicates(["company_id", "site_id", "jusqu"])
+    n_mines = _current(lk).groupby("company_id")["site_id"].nunique()
+    co["n_mines"] = co["id"].map(n_mines).fillna(0).astype(int)
     return _sorted(co), lk.reset_index(drop=True)
 
 
@@ -1135,14 +1200,19 @@ def investments(co: pd.DataFrame, lk: pd.DataFrame, db: Path | None = None) -> p
     for doc_id, site in _veille_query("SELECT doc_id, site_id FROM events", db=db):
         ev.setdefault(doc_id, []).append(site)
     idx = name_index(co) if len(co) else {}
-    owners: dict[str, list[str]] = {}
-    for cid, sid in (zip(lk["company_id"], lk["site_id"], strict=True) if len(lk) else []):
-        owners.setdefault(sid, []).append(cid)
+    owners: dict[str, list[tuple[str, str | None, str | None]]] = {}
+    if len(lk):
+        lk = lk.reindex(columns=LINK_COLS)
+        for cid, sid, a, b in zip(lk["company_id"], lk["site_id"], lk["depuis"], lk["jusqu"], strict=True):
+            owners.setdefault(sid, []).append((cid, _clean(a), _clean(b)))
     rows = []
     for doc_id, pub, fetched, url, domain, lang, title, orgs, hint in docs:
         got = extract_investment(title, domain)
         if got is None:
             continue
+        month = (pub or fetched or "")[:7]
+        holders = {s: [c for c, a, b in v if (a is None or not month or a <= month)
+                       and (b is None or not month or month < b)] for s, v in owners.items()}
         named = match_companies(title, idx)
         for o in _split_list(orgs):
             k = norm_key(o)
@@ -1151,11 +1221,11 @@ def investments(co: pd.DataFrame, lk: pd.DataFrame, db: Path | None = None) -> p
         sites = list(dict.fromkeys([*ev.get(doc_id, []), *([hint] if hint else [])]))
         targets: list[tuple[str | None, str | None, str]] = []
         for cid in named:
-            s = next((x for x in sites if cid in owners.get(x, [])), None)
+            s = next((x for x in sites if cid in holders.get(x, [])), None)
             targets.append((cid, s, "nom+mine" if s else "nom"))
         if not named:
             for s in sites:
-                cs = owners.get(s, [])
+                cs = holders.get(s, [])
                 targets += [(c, s, "mine") for c in cs] or [(None, s, "mine")]
         for cid, sid, how in targets:
             rows.append(dict(doc_id=doc_id, date=(pub or fetched or "")[:10] or None, titre=title, url=url,
@@ -1167,10 +1237,79 @@ def investments(co: pd.DataFrame, lk: pd.DataFrame, db: Path | None = None) -> p
 
 
 # -- production et satellite par société -------------------------------------------------------------------
-def _weights(lk: pd.DataFrame) -> pd.DataFrame:
-    w = lk[["company_id", "site_id", "part"]].copy()
-    w["w"] = w["part"].where(w["part"] > 0, 1.0).fillna(1.0)
-    return w
+# Changements de périmètre connus (rachats, fusions, scissions achevés), mois de clôture de l'opération.
+# Le CAPEX d'un groupe change alors de périmètre : ses variations de l'exercice qui contient l'opération et
+# de l'exercice suivant sont retirées des corrélations (s'y ajoutent les bornes de période de sites.toml).
+PERIMETRE: dict[str, list[tuple[str, str]]] = {
+    "newmont": [("2002-02", "Normandy Mining"), ("2019-04", "Goldcorp"), ("2023-11", "Newcrest")],
+    "barrick_mining": [("2019-01", "Randgold Resources")],
+    "agnico": [("2022-02", "Kirkland Lake Gold"), ("2023-03", "actifs canadiens de Yamana")],
+    "pan_american_silver": [("2023-03", "Yamana Gold")],
+    "freeport_mcmoran": [("2007-03", "Phelps Dodge")],
+    "rio_tinto": [("2007-10", "Alcan")],
+    "vale": [("2006-10", "Inco")],
+    "bhp": [("2005-06", "WMC Resources"), ("2015-05", "scission de South32"),
+            ("2022-06", "BHP Petroleum apporté à Woodside"), ("2023-05", "OZ Minerals")],
+    "sibanye_stillwater": [("2017-05", "Stillwater Mining"), ("2019-06", "Lonmin")],
+    "cleveland_cliffs": [("2020-03", "AK Steel"), ("2020-12", "ArcelorMittal USA")],
+    "hudbay_minerals": [("2023-06", "Copper Mountain Mining")],
+    "alcoa": [("2024-08", "Alumina Limited")],
+    "albemarle": [("2015-01", "Rockwood Holdings")],
+}
+
+
+def _full_years(depuis, jusqu) -> tuple[int, int]:
+    """(première, dernière) année civile entière de détention : l'année d'entrée n'est entière que si
+    l'opération date de janvier ; l'année de sortie ne l'est jamais."""
+    first, last = -10**4, 10**4
+    if isinstance(depuis, str):
+        y, m = int(depuis[:4]), int(depuis[5:7])
+        first = y if m == 1 else y + 1
+    if isinstance(jusqu, str):
+        last = int(jusqu[:4]) - 1
+    return first, last
+
+
+def dated_links(lk: pd.DataFrame) -> pd.DataFrame:
+    """Liens dont le début de détention est connu (sites.toml), avec leur poids et leurs années entières.
+    Les liens du catalogue (Wikidata P127/P137, ICMM) ne sont pas datés : ils n'entrent pas dans les
+    corrélations (sinon le propriétaire actuel serait crédité de la production des années d'avant)."""
+    cols = ["company_id", "site_id", "w", "premiere", "derniere"]
+    if lk.empty or "depuis" not in lk:
+        return pd.DataFrame(columns=cols)
+    d = lk[lk["depuis"].notna()].copy()
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    d["w"] = d["part"].where(d["part"] > 0, 1.0).fillna(1.0)
+    yrs = [_full_years(a, b) for a, b in zip(d["depuis"], _clean_col(d["jusqu"]), strict=True)]
+    d["premiere"], d["derniere"] = [a for a, _ in yrs], [b for _, b in yrs]
+    return d[cols].reset_index(drop=True)
+
+
+def _clean_col(s: pd.Series) -> list:
+    return [x if isinstance(x, str) else None for x in s]
+
+
+def perimeter_changes(lk: pd.DataFrame | None = None) -> dict[str, list[str]]:
+    """Société → mois (AAAA-MM) où son périmètre change : PERIMETRE et bornes des périodes datées."""
+    out = {c: [m for m, _ in v] for c, v in PERIMETRE.items()}
+    if lk is not None and len(lk) and "depuis" in lk:
+        for c, a, b in zip(lk["company_id"], lk["depuis"], lk["jusqu"], strict=True):
+            for m in (a, b):
+                if isinstance(m, str):
+                    out.setdefault(c, []).append(m)
+    return {c: sorted(set(v)) for c, v in out.items()}
+
+
+def _changed_years(months: list[str], close_month: int) -> set[int]:
+    """Exercices (rangés par fiscal_year) qui contiennent l'opération, et les suivants."""
+    out = set()
+    for mo in months:
+        y, m = int(mo[:4]), int(mo[5:7])
+        end_year = y if m <= close_month else y + 1
+        label = fiscal_year(f"{end_year:04d}-{close_month:02d}-28")
+        out |= {label, label + 1}
+    return out
 
 
 def mine_production_growth(cat: pd.DataFrame, prod: pd.DataFrame, sites: Iterable[str],
@@ -1206,11 +1345,13 @@ def mine_production_growth(cat: pd.DataFrame, prod: pd.DataFrame, sites: Iterabl
 
 
 def company_growth(lk: pd.DataFrame, mine_g: pd.DataFrame, col: str = "g") -> pd.DataFrame:
-    """Moyenne des variations des mines d'une société, pondérée par la part détenue (1 si inconnue)."""
+    """Moyenne des variations des mines d'une société, pondérée par la part détenue, sur les seules années
+    t où la société détenait la mine les années entières t − 1 et t (liens datés, dated_links)."""
     cols = ["company_id", "annee", "valeur", "n_mines"]
     if mine_g.empty or lk.empty:
         return pd.DataFrame(columns=cols)
-    d = _weights(lk).merge(mine_g, on="site_id")
+    d = dated_links(lk).merge(mine_g, on="site_id")
+    d = d[(d["annee"] - 1 >= d["premiere"]) & (d["annee"] <= d["derniere"])] if len(d) else d
     if d.empty:
         return pd.DataFrame(columns=cols)
     d["wg"] = d["w"] * d[col]
@@ -1252,9 +1393,12 @@ def mine_footprint_growth(sites: Iterable[str], reader: Callable[[str], pd.DataF
     return pd.DataFrame(rows, columns=["site_id", "annee", "g"])
 
 
-def fact_growth(facts: pd.DataFrame, indicateur: str) -> pd.DataFrame:
-    """Variation log d'un indicateur (exercices consécutifs, même concept, valeurs > 0)."""
-    cols = ["company_id", "annee", "valeur"]
+def fact_growth(facts: pd.DataFrame, indicateur: str,
+                changes: dict[str, list[str]] | None = None) -> pd.DataFrame:
+    """Variation log d'un indicateur (exercices consécutifs, même concept, valeurs > 0), sans les exercices
+    touchés par un changement de périmètre (`changes`, voir perimeter_changes). Colonne ecart_mois :
+    décalage de la clôture sur le 31 décembre (closing_gap)."""
+    cols = ["company_id", "annee", "valeur", "ecart_mois"]
     f = best_facts(facts)
     f = f[(f["indicateur"] == indicateur) & (f["valeur"] > 0)] if len(f) else f
     if f.empty:
@@ -1262,8 +1406,19 @@ def fact_growth(facts: pd.DataFrame, indicateur: str) -> pd.DataFrame:
     f = f.sort_values(["company_id", "annee"])
     g = f.groupby("company_id")
     ok = (f["annee"] - g["annee"].shift() == 1) & (f["concept"] == g["concept"].shift())
-    out = f.assign(valeur=np.log(f["valeur"] / g["valeur"].shift()))[ok]
+    out = f.assign(valeur=np.log(f["valeur"] / g["valeur"].shift()),
+                   ecart_mois=[closing_gap(x) for x in f["fin_exercice"]])[ok]
+    if changes and len(out):
+        close = {c: _close_month(x) for c, x in f.groupby("company_id")["fin_exercice"]}
+        drop = {c: _changed_years(m, close.get(c, 12)) for c, m in changes.items()}
+        out = out[[a not in drop.get(c, ()) for c, a in zip(out["company_id"], out["annee"], strict=True)]]
     return out[cols].reset_index(drop=True)
+
+
+def _close_month(ends: pd.Series) -> int:
+    """Mois de clôture le plus fréquent d'une société (12 si inconnu)."""
+    m = [int(x[5:7]) for x in ends if isinstance(x, str) and len(x) >= 7 and x[5:7].isdigit()]
+    return max(set(m), key=m.count) if m else 12
 
 
 # -- corrélations ----------------------------------------------------------------------------------------
@@ -1345,7 +1500,7 @@ def correlate(facts: pd.DataFrame, lk: pd.DataFrame, *, cat: pd.DataFrame | None
     from strate import catalog
 
     run_at = _now()
-    sites = set(lk["site_id"]) if len(lk) else set()
+    sites = set(dated_links(lk)["site_id"])  # seules les mines à détention datée entrent
     if cat is None:
         cat = catalog.load()
     if prod is None:
@@ -1356,8 +1511,9 @@ def correlate(facts: pd.DataFrame, lk: pd.DataFrame, *, cat: pd.DataFrame | None
             prod = pd.DataFrame()
     if twins is None:
         twins = _twins()
+    changes = perimeter_changes(lk)
     series = {
-        "CAPEX": fact_growth(facts, "capex"), "effectifs": fact_growth(facts, "effectifs"),
+        "CAPEX": fact_growth(facts, "capex", changes), "effectifs": fact_growth(facts, "effectifs", changes),
         "production (mines détenues)": company_growth(lk, mine_production_growth(cat, prod, sites, twins)),
         "emprise satellite (surface nue)": company_growth(lk, mine_footprint_growth(sites, reader)),
     }

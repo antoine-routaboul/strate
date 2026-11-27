@@ -762,7 +762,8 @@ def test_correlate_capex_production_lag_weighted_by_share():
             )
         for site, part, scale in ((f"m{c}", 1.0, 1.0), (f"n{c}", 0.01, -1.0)):
             links.append(
-                dict(company_id=f"c{c}", site_id=site, nom=site, role="propriétaire", part=part, source="x")
+                dict(company_id=f"c{c}", site_id=site, nom=site, role="propriétaire", part=part, source="x",
+                     depuis="2000-01")
             )
             cat.append(dict(id=site, jasansky=f"J{site}", commodities="gold"))
             vals = tonnes if scale > 0 else tonnes[::-1]  # mine minoritaire en sens inverse : poids 1 %
@@ -787,6 +788,59 @@ def test_correlate_capex_production_lag_weighted_by_share():
     assert sat["n_points"] == 0 and sat["verdict"].startswith("trop peu")
     per = out[(out["portee"] == "societe") & (out["decalage"] == 1) & (out["y"].str.startswith("production"))]
     assert len(per) == 6 and per["r"].notna().all()
+
+
+def test_ownership_periods_remove_look_ahead():
+    """Newmont ne détient Cadia que depuis novembre 2023 : les années d'avant ne lui sont pas créditées, ni
+    les mines du catalogue (non datées) ; Newcrest garde Cadia jusqu'en 2022."""
+    co, lk = C.build_entities(fake_catalog(), entities.load(), twins={})
+    cad = lk[lk["site_id"] == "cadia"].set_index("company_id")
+    assert cad.at["newmont", "depuis"] == "2023-11" and cad.at["newcrest_mining", "jusqu"] == "2023-11"
+    nem = co.set_index("id").loc["newmont"]
+    assert nem["n_mines"] == len(C._current(lk[lk["company_id"] == "newmont"]))  # anciens liens non comptés
+    mine_g = pd.DataFrame([dict(site_id=s, annee=y, g=0.1) for s in ("cadia", "boddington", "icmm2")
+                           for y in range(2018, 2026)])
+    g = C.company_growth(lk, mine_g)
+    n = g[g["company_id"] == "newmont"].set_index("annee")
+    assert list(n.index) == list(range(2018, 2026))  # Boddington, détenue à 100 % depuis 2009-06
+    assert (n.loc[2018:2024, "n_mines"] == 1).all() and n.at[2025, "n_mines"] == 2  # + Cadia en 2025
+    nc = g[g["company_id"] == "newcrest_mining"]
+    assert nc["annee"].max() == 2022  # sortie en novembre 2023 : 2023 n'est pas une année entière
+    assert "icmm2" not in set(C.dated_links(lk)["site_id"])  # lien du catalogue : jamais daté
+
+
+def test_fact_growth_drops_perimeter_change_years():
+    rows = [dict(company_id=c, indicateur="capex", annee=y, valeur=100.0 * (1.1 ** y - 2000), unite="monnaie",
+                 devise="USD", source="s", formulaire="10-K", concept="k", fin_exercice=f"{y}-{end}",
+                 depose=None, accn=None, cik=None, origine="sec")
+            for c, end in (("newmont", "12-31"), ("bhp", "06-30")) for y in range(2015, 2026)]
+    f = C.fact_growth(pd.DataFrame(rows, columns=C.FACT_COLS), "capex", C.perimeter_changes())
+    nem = set(f.loc[f["company_id"] == "newmont", "annee"])
+    assert not nem & {2019, 2020, 2023, 2024} and {2018, 2021, 2022, 2025} <= nem
+    bhp = f[f["company_id"] == "bhp"].set_index("annee")
+    # BHP, clôture au 30 juin : Woodside (juin 2022) touche les exercices 2022 et 2023, OZ (mai 2023) 2023
+    # et 2024, South32 (mai 2015) 2015 et 2016
+    assert set(bhp.index) == {2017, 2018, 2019, 2020, 2021, 2025} and (bhp["ecart_mois"] == 6).all()
+
+
+def test_investments_attach_to_owner_at_announcement_date(tmp_path):
+    co, lk = C.build_entities(fake_catalog(), entities.load(), twins={})
+    db = tmp_path / "v.db"
+    con = sqlite3.connect(db)
+    con.executescript("""
+        CREATE TABLE raw_docs (id TEXT, published_at TEXT, fetched_at TEXT, url TEXT, domain TEXT, lang TEXT,
+                               title TEXT, organizations TEXT, hint_site TEXT, status TEXT);
+        CREATE TABLE events (doc_id TEXT, site_id TEXT);""")
+    con.executemany("INSERT INTO raw_docs VALUES (?,?,?,?,?,?,?,?,?,?)", [
+        ("old", "2021-06-01", None, "u1", "x.com", "en", "Owner approves $500m expansion at the mine", None,
+         None, "done"),
+        ("new", "2025-06-01", None, "u2", "x.com", "en", "Owner approves $500m expansion at the mine", None,
+         None, "done")])
+    con.executemany("INSERT INTO events VALUES (?,?)", [("old", "cadia"), ("new", "cadia")])
+    con.commit()
+    con.close()
+    inv = C.investments(co, lk, db).groupby("doc_id")["company_id"].apply(set)
+    assert inv["old"] == {"newcrest_mining"} and inv["new"] == {"newmont"}
 
 
 def test_mine_footprint_growth_needs_three_clear_months():
