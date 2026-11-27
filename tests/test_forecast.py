@@ -298,6 +298,20 @@ def test_forecast_site_is_read_only(tmp_path):
     assert r["serie"] == "minerai extrait" and r["qualite"] == {"n": 0}
 
 
+def test_forecast_site_blames_backtest_not_series(tmp_path):
+    """backtest.json présent mais sans résultat : le message nomme le rétro-test, pas la série de la mine."""
+    p = _panel("trend", n=12, y1=2019)
+    for statut in ("insuffisant", "absent"):
+        bt = {"statut": statut, "raison": "trop peu d'années pour un rétro-test", "rows": [],
+              "run_at": "2026-11-27T00:00:00Z"}
+        (tmp_path / "backtest.json").write_text(json.dumps(bt), "utf-8")
+        r = fc.forecast_site("m001", out=tmp_path, panel=p, today=TODAY)
+        assert r["prevision"] == [] and r["qualite"] == {"n": 0} and r["suivi_site"] == {"n": 0}
+        assert statut in r["message"] and "trop peu d'années" in r["message"]
+        assert "série insuffisante" not in r["message"] and r["note"] == r["message"]
+        assert r["backtest_run_at"] == bt["run_at"] and len(r["historique"]) == 20
+
+
 def test_measured_needs_rows_and_unextrapolated_quantiles():
     rows = [{"model": m, "horizon": h, "n_points": 50} for m in fc.MODELS for h in (1, 2, 3)]
     rows += [{"model": m, "horizon": 4, "n_points": 3} for m in fc.MODELS]  # trop peu de cas de test

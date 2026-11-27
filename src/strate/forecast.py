@@ -762,6 +762,15 @@ def _resolve(site_id: str, panel: pd.DataFrame) -> pd.DataFrame:
     return g
 
 
+def _msg_backtest_ko(bt: dict) -> str:
+    """Message quand backtest.json existe sans statut « ok » (absent, insuffisant ou format inconnu)."""
+    statut, raison = bt.get("statut"), bt.get("raison")
+    statut = statut if isinstance(statut, str) and statut else "inconnu"
+    raison = raison if isinstance(raison, str) and raison else "raison non donnée"
+    return (f"Rétro-test sans résultat (statut « {statut} » : {raison}) : aucune prévision publiée tant "
+            "qu'il n'a pas mesuré la qualité hors échantillon.")
+
+
 def _site_track(g: pd.DataFrame, bt: dict, model: str) -> dict:
     """Bilan de la mine elle-même à h = 1, sur la seule période de test (cibles > TUNE_END) : les années de
     réglage ont servi à choisir φ et κ, elles ne disent rien de la qualité hors échantillon.
@@ -801,6 +810,11 @@ def forecast_site(site_id: str, out: Path | None = None, panel: pd.DataFrame | N
         return _clean(ident | {"prevision": [], "qualite": {"n": 0}, "qualite_par_horizon": [],
                                "suivi_site": {"n": 0}, "message": MSG_BACKTEST,
                                "note": MSG_BACKTEST, "backtest_run_at": None})
+    if bt.get("statut") != "ok":  # rétro-test écrit mais sans résultat : la cause est lui, pas la mine
+        msg = _msg_backtest_ko(bt)
+        return _clean(ident | {"prevision": [], "qualite": {"n": 0}, "qualite_par_horizon": [],
+                               "suivi_site": {"n": 0}, "message": msg, "note": msg,
+                               "backtest_run_at": bt.get("run_at")})
     fc = site_forecast_frame(g, bt, today)
     prev = []
     env = np.zeros(4)  # écarts log (lo90, lo80, hi80, hi90) : enveloppe qui ne rétrécit pas au changement
