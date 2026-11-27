@@ -211,7 +211,7 @@ const clean=s=>!/undefined|NaN|null|\[object/.test(s);
     for(const f of fetches) f.done=true;
     P.open('icmmT'); take('site=icmmT').ok(site('Mine suivie',{id:'watched',analyse:true})); await flush();
     const ok=pending('/api/dossier?site=watched')&&!pending('/api/dossier?site=icmmT')
-      &&P.cur()==='watched'&&loc.hash==='watched';
+      &&P.cur()==='watched'&&loc.hash==='/site/watched';
     return ok||`cur=${P.cur()} hash=${loc.hash} ${fetches.filter(f=>!f.done).map(f=>f.url)}`;
   });
   process.stdout.write(JSON.stringify(out));

@@ -3,233 +3,510 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Strate — Mines</title>
+<meta name="color-scheme" content="light dark">
+<title>Strate</title>
+<script>try{var t=localStorage.getItem('strate-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}</script>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
-:root{--bg:#0b0c0e;--panel:#14161a;--line:#262a31;--text:#e6e2d8;--dim:#8b8f98;--amber:#f2a93b;--red:#ff5d5d;--green:#4cc38a;--blue:#5fa8ff}
+/* Jetons : un fond, une encre, un accent (bleu cobalt) ; vert/rouge/ambre réservés au sens (bon, mauvais, alerte).
+   La sélection est toujours le même trait de 1 px dans l'accent, de la largeur du libellé. */
+:root{
+  --font:"Public Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --ground:#f4f4f2;--surface:#ffffff;--raised:#efefec;--active:#e7e7e3;
+  --border:#e0e0db;--rule:#ebebe7;--control:#c8c8c2;
+  --text:#151515;--muted:#55585c;--faint:#65686c;
+  --accent:#1f5fae;--accent-soft:#e6eef8;--accent-ink:#173f73;
+  --primary:#1d1f20;--on-primary:#ffffff;
+  --positive:#23794f;--negative:#c4242a;--warning:#8f5306;
+  --pos-bg:#dcf3e5;--pos-ink:#0f4a2c;--neg-bg:#fbe9e8;--neg-ink:#8a1d20;
+  --warn-bg:#fbf0dc;--warn-ink:#6f4105;--neu-bg:#ebebe7;--neu-ink:#3b3e42;
+  --tracked:#c4242a;--grid:#e4e4df;
+  --tiles:grayscale(1) contrast(.9) brightness(1.05);
+  --float:0 10px 28px rgba(20,20,20,.14);
+  --r-card:6px;--r-ctl:999px;--r-chip:4px;
+  --gap:24px;--pad:32px;--ctl:32px;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --ground:#171719;--surface:#131217;--raised:#212023;--active:#28272b;
+  --border:#2a292e;--rule:#222126;--control:#3d3d42;
+  --text:#f2f2f3;--muted:#a3a5ab;--faint:#909298;
+  --accent:#5f9be0;--accent-soft:#1c2a3b;--accent-ink:#a9c9f0;
+  --primary:#f2f2f3;--on-primary:#131217;
+  --positive:#5fc39c;--negative:#ef6f84;--warning:#dcab4e;
+  --pos-bg:#1b2828;--pos-ink:#6fcfa8;--neg-bg:#2c1a20;--neg-ink:#f08396;
+  --warn-bg:#2a2416;--warn-ink:#e0b25c;--neu-bg:#262529;--neu-ink:#c4c5c9;
+  --tracked:#ef6f84;--grid:#2a292e;
+  --tiles:grayscale(1) invert(1) brightness(.82) contrast(.92);
+  --float:0 12px 28px rgba(0,0,0,.45);
+}}
+:root[data-theme="dark"]{
+  --ground:#171719;--surface:#131217;--raised:#212023;--active:#28272b;
+  --border:#2a292e;--rule:#222126;--control:#3d3d42;
+  --text:#f2f2f3;--muted:#a3a5ab;--faint:#909298;
+  --accent:#5f9be0;--accent-soft:#1c2a3b;--accent-ink:#a9c9f0;
+  --primary:#f2f2f3;--on-primary:#131217;
+  --positive:#5fc39c;--negative:#ef6f84;--warning:#dcab4e;
+  --pos-bg:#1b2828;--pos-ink:#6fcfa8;--neg-bg:#2c1a20;--neg-ink:#f08396;
+  --warn-bg:#2a2416;--warn-ink:#e0b25c;--neu-bg:#262529;--neu-ink:#c4c5c9;
+  --tracked:#ef6f84;--grid:#2a292e;
+  --tiles:grayscale(1) invert(1) brightness(.82) contrast(.92);
+  --float:0 12px 28px rgba(0,0,0,.45);
+}
 *{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}
-header{display:flex;gap:16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line)}
-header b{color:var(--amber);letter-spacing:.15em}
-#cmd{flex:1;max-width:520px;background:#000;border:1px solid var(--line);color:var(--amber);padding:7px 10px;font:inherit;text-transform:uppercase}
-#cmd:focus{outline:1px solid var(--amber)}
-main{display:grid;grid-template-columns:minmax(320px,420px) 1fr;gap:1px;background:var(--line);min-height:calc(100vh - 50px)}
-section{background:var(--bg);padding:14px 16px;min-width:0}
-h2{font-size:11px;color:var(--dim);letter-spacing:.12em;text-transform:uppercase;margin:16px 0 8px}
-h2:first-child{margin-top:0}
-#map{height:380px;border:1px solid var(--line);background:#111}
-table{width:100%;border-collapse:collapse}
-td,th{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
-th{color:var(--dim);font-weight:normal;font-size:11px}
-tr.row{cursor:pointer} tr.row:hover,tr.sel{background:var(--panel)}
-.lvl{display:inline-block;min-width:22px;text-align:center;border-radius:3px;padding:0 5px;font-weight:bold}
-.l0{background:#1d2a23;color:var(--green)}.l1{background:#3a2c12;color:var(--amber)}.l2{background:#3d1717;color:var(--red)}
-.meta{color:var(--dim)} .meta a{color:var(--blue)}
-.title{font-size:20px;color:var(--amber);margin:0}
-.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
-.card{background:var(--panel);border:1px solid var(--line);padding:10px}
-.card h3{margin:0 0 6px;font-size:12px;font-weight:normal;color:var(--dim)}
-.imgs{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.imgs img{width:100%;aspect-ratio:1;object-fit:cover;background:#000;border:1px solid var(--line)}
-/* le cadre reste positionné quel que soit l'état (wait / none / chargée) : sinon le message se place contre la page */
-.imgs>div{position:relative}.imgs .wait::after{content:'Chargement de l’image satellite… (≈ 20 s la première fois)';position:absolute;left:12px;top:44px;color:var(--dim)}
-.imgs .none::after{content:'Pas d’image sans nuages ce mois-là';position:absolute;left:12px;top:44px;color:var(--dim)}
-select{background:#000;color:var(--text);border:1px solid var(--line);font:inherit;padding:3px}
-.alerts td:first-child{white-space:nowrap}
-.ev{color:var(--blue)}
-@media (max-width:860px){main{grid-template-columns:1fr}}
-.search{position:relative;flex:1;max-width:520px}.search #cmd{width:100%;max-width:none}
-#results{position:absolute;top:100%;left:0;right:0;background:#000;border:1px solid var(--line);z-index:1000;max-height:360px;overflow:auto;display:none}
-#results div{padding:6px 10px;cursor:pointer}#results div:hover,#results div.on{background:var(--panel)}
-.legend span{display:inline-block;margin-right:12px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
-button{background:var(--amber);color:#000;border:0;padding:8px 14px;font:inherit;font-weight:bold;cursor:pointer}button:disabled{opacity:.5;cursor:wait}
-.kv{display:grid;grid-template-columns:150px 1fr;gap:3px 12px}.kv div:nth-child(odd){color:var(--dim)}
-.tabs{display:flex;gap:4px}.tabs a{color:var(--dim);text-decoration:none;padding:6px 10px;border:1px solid var(--line);cursor:pointer}
-.tabs a.on{color:#000;background:var(--amber);border-color:var(--amber)}
-#view-screener{display:none;padding:14px 16px;min-height:calc(100vh - 50px)}
-.filters{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:end;margin-bottom:12px}
-.filters label{display:flex;flex-direction:column;gap:3px;color:var(--dim);font-size:11px}
-.filters input,.filters select{background:#000;color:var(--text);border:1px solid var(--line);font:inherit;padding:5px 7px}
-.filters input[type=number]{width:90px}.filters input[type=text]{width:180px}
-.filters .chk{flex-direction:row;align-items:center;gap:5px;font-size:12px;color:var(--text)}
-#scr th{cursor:pointer;white-space:nowrap;position:sticky;top:0;background:var(--bg)}#scr th.s::after{content:' ▾'}#scr th.s.asc::after{content:' ▴'}
-#scr td.n{text-align:right;white-space:nowrap}#scr th.n{text-align:right}
-.scrwrap{max-height:calc(100vh - 260px);overflow:auto;border:1px solid var(--line)}
-.pager{display:flex;gap:10px;align-items:center;margin-top:10px}
-.ghost{background:transparent;color:var(--amber);border:1px solid var(--amber)}
-a.btn{display:inline-block;padding:8px 14px;border:1px solid var(--amber);color:var(--amber);text-decoration:none}
-/* -- veille : onglet, fil, pipeline, corrélations, calque carte -- */
+html{background:var(--ground)}
+body{margin:0;background:var(--ground);color:var(--text);font:13px/1.5 var(--font);font-variant-numeric:tabular-nums;
+  -webkit-font-smoothing:antialiased}
 [hidden]{display:none!important}
-code{color:var(--amber)}
-.tdot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-left:5px;vertical-align:middle;background:var(--dim)}
-.tdot.on{background:var(--green)}.tdot.off{background:var(--red)}
-#view-veille{display:none;padding:14px 16px;min-height:calc(100vh - 50px)}
-.vhead{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;margin-bottom:10px}
-.beat{display:inline-flex;align-items:center;gap:7px}.beat i{width:8px;height:8px;border-radius:50%;background:var(--dim)}
-.beat.on i{background:var(--green);animation:beat 2s infinite}.beat.off i{background:var(--red)}
-@keyframes beat{0%{box-shadow:0 0 0 0 rgba(76,195,138,.55)}70%{box-shadow:0 0 0 8px rgba(76,195,138,0)}100%{box-shadow:0 0 0 0 rgba(76,195,138,0)}}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}h1[tabindex="-1"]:focus{outline:none}
+h1,h2,h3{font-weight:600;margin:0}
+h1{font-size:24px;line-height:1.2;letter-spacing:-.01em}
+h2{font-size:17px;font-weight:500;color:var(--text);margin:32px 0 12px}
+h3{font-size:13px;font-weight:600;margin:0 0 8px}
+p{margin:0 0 8px}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;background:var(--raised);padding:1px 5px;border-radius:var(--r-chip)}
+.meta,.sub{color:var(--muted)}.sub{font-size:13px;margin:4px 0 0}
+.note{color:var(--muted);font-size:12px;max-width:880px}
+.u{color:var(--muted);font-size:12px;margin-left:4px}
+abbr.flag{color:var(--warning);text-decoration:none;cursor:help;margin-left:2px}
+.num,td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+
+/* -- barre du haut ---------------------------------------------------------------------------------- */
+.top{position:sticky;top:0;z-index:1100;display:flex;align-items:center;gap:20px;height:52px;padding:0 var(--gap);
+  background:var(--ground);border-bottom:1px solid var(--border)}
+.brand{display:flex;align-items:center;gap:8px;color:var(--text);font-size:16px;font-weight:700;letter-spacing:-.01em}
+.brand:hover{text-decoration:none}.brand svg{display:block}
+.tabs{display:flex;align-items:stretch;height:100%;gap:2px}
+.menu{position:relative;display:flex}
+.menu-btn{position:relative;display:flex;align-items:center;gap:6px;height:100%;padding:0 10px;border:0;background:none;
+  color:var(--muted);font:inherit;font-size:13px;cursor:pointer}
+.menu-btn:hover,.menu-btn[aria-expanded="true"]{color:var(--text)}
+.menu-btn .chev{width:8px;height:8px;opacity:.7}
+.menu-btn.cur{color:var(--text)}
+.menu-btn.cur::after{content:'';position:absolute;left:10px;right:24px;bottom:-1px;height:1px;background:var(--accent)}
+.menu-list{position:absolute;top:calc(100% + 4px);left:0;min-width:248px;padding:6px;background:var(--surface);
+  border:1px solid var(--border);border-radius:var(--r-card);box-shadow:var(--float);z-index:1200}
+.menu-list a{display:block;padding:7px 10px;border-radius:4px;color:var(--text);font-size:13px}
+.menu-list a:hover,.menu-list a:focus-visible{background:var(--raised);text-decoration:none;outline:none}
+.menu-list a[aria-current="page"]{text-decoration:underline 1px var(--accent);text-underline-offset:5px}
+.menu-list a small{display:block;color:var(--muted);font-size:12px}
+.tdot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--faint)}
+.tdot.on{background:var(--positive)}.tdot.off{background:var(--negative)}
+.search{position:relative;flex:1;min-width:0;max-width:460px;margin-left:auto}
+.search input{width:100%;min-width:0;height:var(--ctl);padding:0 34px 0 12px;border:1px solid var(--control);border-radius:var(--r-ctl);
+  background:var(--surface);color:var(--text);font:inherit}
+.search input::placeholder{color:var(--faint)}
+.search kbd{position:absolute;right:10px;top:7px;font:11px/16px var(--font);color:var(--faint);border:1px solid var(--border);
+  border-radius:4px;padding:0 5px}
+#results{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--r-card);box-shadow:var(--float);z-index:1300;max-height:420px;overflow:auto;display:none;padding:4px}
+#results div{padding:6px 10px;border-radius:4px;cursor:pointer}
+#results div.rh{cursor:default;color:var(--muted);font-size:12px;padding:8px 10px 2px}
+#results div.on,#results div[data-id]:hover,#results div[data-href]:hover{background:var(--raised)}
+.tools{display:flex;align-items:center;gap:14px;white-space:nowrap}
+.icon-btn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;padding:0;border:1px solid var(--control);
+  border-radius:50%;background:var(--surface);color:var(--text);cursor:pointer}
+.icon-btn svg{width:16px;height:16px}
+.navtoggle{display:none}
+
+/* -- canevas, en-têtes, onglets ------------------------------------------------------------------- */
+.view{padding:28px var(--pad) 64px;min-height:calc(100vh - 52px)}
+.page-head{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:12px 24px;margin-bottom:20px}
+.page-head .actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.crumb{font-size:12px;color:var(--muted);margin-bottom:6px}.crumb a{color:var(--muted)}
+.subtabs{display:flex;gap:22px;border-bottom:1px solid var(--border);margin:0 0 24px;overflow-x:auto}
+.subtabs a{position:relative;padding:8px 0 10px;color:var(--muted);white-space:nowrap}
+.subtabs a:hover{color:var(--text);text-decoration:none}
+.subtabs a[aria-current="page"]{color:var(--text)}
+.subtabs a[aria-current="page"]::after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:1px;background:var(--accent)}
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);padding:20px}
+.panel>h2:first-child,.panel>h3:first-child{margin-top:0}
+.grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:var(--gap);align-items:start}
+.grid-7-5{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--gap);align-items:start}
+.empty{border:1px dashed var(--control);border-radius:var(--r-card);padding:12px 14px;color:var(--muted);margin:0 0 12px}
+.empty.err{border-style:solid}
+.notice{border:1px solid var(--border);background:var(--surface);border-radius:var(--r-card);padding:10px 14px;margin:0 0 16px}
+
+/* -- contrôles ------------------------------------------------------------------------------------- */
+button,.btn{display:inline-flex;align-items:center;gap:6px;height:var(--ctl);padding:0 14px;border:1px solid var(--control);
+  border-radius:var(--r-ctl);background:var(--surface);color:var(--text);font:inherit;font-weight:500;cursor:pointer;white-space:nowrap}
+button:hover,.btn:hover{border-color:var(--muted);text-decoration:none}
+.btn-primary,#go,#scr_go{background:var(--primary);color:var(--on-primary);border-color:var(--primary)}
+.btn-primary:hover,#go:hover,#scr_go:hover{opacity:.88}
+button:disabled{opacity:.6;cursor:wait}
+.btn-text{height:auto;padding:0;border:0;background:none;color:var(--accent);font-weight:500}
+.ghost{background:var(--surface)}
+input,select{font:inherit;color:var(--text)}
+select,input[type=text],input[type=number],input[type=search]{height:var(--ctl);padding:0 10px;border:1px solid var(--control);
+  border-radius:var(--r-chip);background:var(--surface)}
+.filters{display:flex;flex-wrap:wrap;gap:12px 14px;align-items:flex-end;margin-bottom:16px}
+.filters label{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:12px}
+.filters input[type=number]{width:104px}.filters input[type=text],.filters input[type=search]{width:190px}
+.filters .chk{flex-direction:row;align-items:center;gap:6px;height:var(--ctl);padding:0 12px;border:1px solid var(--control);
+  border-radius:var(--r-ctl);color:var(--text);font-size:13px;background:var(--surface);cursor:pointer}
+.filters .chk input{margin:0;accent-color:var(--accent)}
+input[type=range]{accent-color:var(--accent);width:150px}
+
+/* -- tableaux --------------------------------------------------------------------------------------- */
+table{width:100%;border-collapse:collapse}
+td,th{padding:9px 10px;border-bottom:1px solid var(--rule);text-align:left;vertical-align:top}
+th{color:var(--muted);font-weight:400;font-size:12px;white-space:nowrap;border-bottom-color:var(--border)}
+tr.row{cursor:pointer}tr.row:hover,tr.sel{background:var(--raised)}
+td a.nm,td .nm{color:var(--text);font-weight:500}
+.tablebox{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);overflow:auto}
+.tablebox td:first-child,.tablebox th:first-child{padding-left:14px}.tablebox td:last-child,.tablebox th:last-child{padding-right:14px}
+.tablebox tr:last-child td{border-bottom:0}
+.scrwrap{max-height:calc(100vh - 330px);min-height:240px;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card)}
+.scrwrap th{position:sticky;top:0;background:var(--surface);z-index:1}
+#scr th[data-s]{cursor:pointer}#scr th[data-s]:hover{color:var(--text)}
+#scr th.s{color:var(--text)}#scr th.s::after{content:' ↓'}#scr th.s.asc::after{content:' ↑'}
+.pager{display:flex;gap:10px;align-items:center;margin-top:12px}
+
+/* -- pastilles (état, verdict) ------------------------------------------------------------------- */
+.pill,.lvl{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:var(--r-ctl);font-size:12px;
+  font-weight:500;white-space:nowrap;flex:none;background:var(--neu-bg);color:var(--neu-ink)}
+.lvl{min-width:22px;justify-content:center}
+.l0,.p-pos{background:var(--pos-bg);color:var(--pos-ink)}.l1,.p-warn{background:var(--warn-bg);color:var(--warn-ink)}
+.l2,.p-neg{background:var(--neg-bg);color:var(--neg-ink)}.lz,.p-neu{background:var(--neu-bg);color:var(--neu-ink)}
+.p-acc{background:var(--accent-soft);color:var(--accent-ink)}
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text);white-space:nowrap}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;flex:none}
+.dot.ring{background:transparent;border:2px solid;width:10px;height:10px}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:12px}.legend span{display:inline-flex;align-items:center;gap:6px}
+
+/* -- badge de corrélation : coefficient, IC 90 %, n, verdict, bande de l'intervalle -------------------- */
+.cb{display:inline-grid;grid-template-columns:64px 84px 154px 150px minmax(0,max-content);align-items:center;gap:4px 10px;font-size:12px;line-height:20px}
+.cb .pill{justify-self:start;white-space:normal;height:auto;min-height:20px;line-height:16px;padding:2px 8px}
+.cb-v{font-weight:600;font-size:13px;color:var(--text)}.cb-v i{font-style:normal;font-weight:400;color:var(--muted);margin-right:3px}
+.cb svg{display:block;width:84px;height:12px;flex:none}
+.cb-ci,.cb-n{color:var(--muted)}
+.cblist{display:flex;flex-direction:column}
+.panel{container-type:inline-size}
+.cbrow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,750px);gap:6px 24px;align-items:center;padding:12px 0;border-bottom:1px solid var(--rule)}
+@container (max-width:1080px){.cbrow{grid-template-columns:1fr}}
+@container (max-width:600px){.cb{display:flex;flex-wrap:wrap}}
+.cbrow:last-child{border-bottom:0}
+.cbrow.stack{grid-template-columns:1fr}.cbrow.stack .cb{display:flex;flex-wrap:wrap}.cbrow .rel{min-width:0}.cbrow .rel b{font-weight:500;overflow-wrap:anywhere}
+.cbrow .rel small{display:block;color:var(--muted);font-size:12px}
+
+/* -- carte et fiche d'une mine ---------------------------------------------------------------------- */
+.mapgrid{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:var(--gap);align-items:start}
+.mapcol{min-width:0}.mapcol .legend{margin:10px 0 6px}
+#view-veille{display:none;padding:28px var(--pad) 64px;min-height:calc(100vh - 52px)}
+#map{height:calc(100vh - 230px);min-height:420px;border:1px solid var(--border);border-radius:var(--r-card);background:var(--raised)}
+.leaflet-tile-pane{filter:var(--tiles)}
+.leaflet-container{font:12px/1.45 var(--font);background:var(--raised)}
+.leaflet-tooltip{background:var(--surface);color:var(--text);border:1px solid var(--border);box-shadow:var(--float)}
+.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:var(--surface);color:var(--text);border-radius:var(--r-card);box-shadow:var(--float)}
+.leaflet-popup-content{font:12px/1.45 var(--font);margin:12px 14px}
+.leaflet-bar a,.leaflet-control-attribution{background:var(--surface)!important;color:var(--text)!important}
+.leaflet-control-attribution a{color:var(--muted)!important}
+#detail{display:none;min-width:0}
+.radarcol{min-width:0}.radarcol h2:first-child{margin-top:0}
+#view-map.is-site .map-head,#view-map.is-site .radarcol{display:none}
+#view-map.is-site #detail{display:block;grid-column:1;grid-row:1}
+#view-map.is-site .mapcol{grid-column:2;grid-row:1;position:sticky;top:76px}
+#view-map.is-site #map{height:340px;min-height:0}
+.title{font-size:24px;font-weight:600;margin:0}
+.kv{display:grid;grid-template-columns:150px 1fr;gap:6px 16px;margin-top:16px}
+.kv>div{min-width:0;overflow-wrap:anywhere}.kv>div:nth-child(odd){color:var(--muted)}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);padding:16px}
+.card h3{font-weight:500;color:var(--muted);font-size:12px}
+.estim{font-size:20px;font-weight:600;margin:0 0 6px}
+.calnote{border-left:1px solid var(--accent);padding-left:14px;color:var(--muted);max-width:880px}
+.imgs{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.imgs img{width:100%;aspect-ratio:1;object-fit:cover;background:var(--raised);border-radius:var(--r-card);display:block;margin-top:8px}
+/* le cadre reste positionné quel que soit l'état (wait / none / chargée) : sinon le message se place contre la page */
+.imgs>div{position:relative}.imgs .wait::after{content:'Chargement de l’image satellite… (≈ 20 s la première fois)';position:absolute;left:12px;top:52px;color:var(--muted)}
+.imgs .none::after{content:'Pas d’image sans nuages ce mois-là';position:absolute;left:12px;top:52px;color:var(--muted)}
+.alerts td:first-child{white-space:nowrap}
+.ev{color:var(--accent)}
+.lgd{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin:0 0 8px}
+.lgd i{display:inline-block;width:14px;height:0;border-top:2px solid;vertical-align:middle;margin-right:5px}
+.lgd i.dash{border-top-style:dashed}.lgd i.box{height:9px;border:0;border-radius:2px}
+
+/* -- veille --------------------------------------------------------------------------------------- */
+.beat{display:inline-flex;align-items:center;gap:7px}.beat i{width:8px;height:8px;border-radius:50%;background:var(--faint)}
+.beat.on i{background:var(--positive);animation:beat 2s ease-in-out infinite}.beat.off i{background:var(--negative)}
+@keyframes beat{50%{opacity:.35}}
 /* barre de 60 s : montre sans minuteur JS quand arrive la prochaine actualisation */
-.vbar{height:2px;background:var(--line);position:relative;overflow:hidden;margin-bottom:12px}
-.vbar i{position:absolute;inset:0;background:var(--amber);opacity:.7;transform-origin:left;animation:vbar 60s linear forwards}
+.vbar{height:1px;background:var(--border);position:relative;overflow:hidden;margin:-8px 0 20px}
+.vbar i{position:absolute;inset:0;background:var(--accent);transform-origin:left;animation:vbar 60s linear forwards}
 @keyframes vbar{from{transform:scaleX(0)}to{transform:scaleX(1)}}
-.pipe{display:grid;grid-template-columns:1fr 34px 1fr 34px 1fr;margin-bottom:12px}
+.pipe{display:grid;grid-template-columns:1fr 28px 1fr 28px 1fr;margin-bottom:8px}
 .pipe .arrow{position:relative}
-.pipe .arrow::before{content:'';position:absolute;left:4px;right:8px;top:50%;height:1px;background:var(--line)}
-.pipe.live .arrow::before{background:repeating-linear-gradient(90deg,var(--amber) 0 5px,transparent 5px 10px);background-size:10px 1px;animation:flow .9s linear infinite}
-.pipe .arrow::after{content:'▸';position:absolute;right:0;top:50%;transform:translateY(-52%);color:var(--dim)}
-@keyframes flow{to{background-position:10px 0}}
-.stage{background:var(--panel);border:1px solid var(--line);border-top:2px solid var(--dim);padding:10px 12px;min-width:0}
-.stage.ok{border-top-color:var(--green)}.stage.err{border-top-color:var(--red)}.stage.late{border-top-color:var(--amber)}
-.stage h3{display:flex;justify-content:space-between;gap:8px;margin:0 0 4px;font-size:12px;font-weight:normal;letter-spacing:.1em;text-transform:uppercase;color:var(--amber)}
-.stage .st{font-size:11px;letter-spacing:0;text-transform:none;color:var(--dim)}
-.stage.ok .st{color:var(--green)}.stage.err .st{color:var(--red)}.stage.late .st{color:var(--amber)}
-.stage .role{color:var(--dim);font-size:11px}.stage .msg{font-size:12px;margin:6px 0;min-height:1.45em;overflow-wrap:anywhere}
-.stage .when{color:var(--dim);font-size:11px;margin-top:6px}
-.cnt{display:grid;grid-template-columns:1fr auto;gap:1px 10px;font-size:12px}
-.cnt span:nth-child(odd){color:var(--dim)}.cnt span:nth-child(even){text-align:right;font-variant-numeric:tabular-nums}
-.totals{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin-bottom:12px}
-.totals div{background:var(--bg);padding:8px 10px}.totals b{display:block;font-size:20px;font-weight:normal;font-variant-numeric:tabular-nums}
-.totals span{color:var(--dim);font-size:11px}
-.vempty{border-left:2px solid var(--amber);padding:6px 10px;color:var(--amber);margin:0 0 12px}
-.vgrid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:16px}
-.vcols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
-.feed{max-height:680px;overflow:auto;border:1px solid var(--line)}
-.fi{display:grid;grid-template-columns:96px 1fr;gap:2px 10px;padding:8px 10px;border-bottom:1px solid var(--line);border-left:2px solid var(--c,var(--dim))}
-.fi.fresh{animation:fresh 3s ease-out}@keyframes fresh{from{background:#3a2c12}to{background:transparent}}
-.fi .side{display:flex;flex-direction:column;gap:3px;align-items:flex-start}.fi time{color:var(--dim);font-size:11px}
-.fi .t a,.vsite a.lk{color:var(--text);text-decoration:none}.fi .t a:hover,.vsite a.lk:hover{color:var(--amber);text-decoration:underline}
-.fi .m{grid-column:2;color:var(--dim);font-size:11px;display:flex;flex-wrap:wrap;gap:3px 12px;align-items:center}
-.badge{display:inline-block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:0 5px;border:1px solid currentColor;border-radius:2px;white-space:nowrap}
-a.mine{color:var(--amber);text-decoration:none}a.mine:hover{text-decoration:underline}
-.cf{display:inline-block;width:38px;height:4px;background:var(--line);margin-right:5px;vertical-align:middle}.cf i{display:block;height:100%;background:var(--amber)}
-.tm{padding:4px 0}.tmn{display:flex;justify-content:space-between;gap:8px}.tmn span{color:var(--dim);font-variant-numeric:tabular-nums}
-.tm>i{display:block;height:3px;background:var(--amber);opacity:.65;margin-top:3px}
+.pipe .arrow::before{content:'';position:absolute;left:4px;right:6px;top:50%;height:1px;background:var(--control)}
+.pipe.live .arrow::before{background:var(--accent)}
+.stage{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);padding:14px 16px;min-width:0}
+.stage h3{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:0 0 4px;font-size:13px}
+.stage .st{background:var(--neu-bg);color:var(--neu-ink)}
+.stage.ok .st{background:var(--pos-bg);color:var(--pos-ink)}.stage.err .st{background:var(--neg-bg);color:var(--neg-ink)}
+.stage.late .st{background:var(--warn-bg);color:var(--warn-ink)}
+.stage .role{color:var(--muted);font-size:12px}.stage .msg{font-size:12px;margin:8px 0;min-height:1.5em;overflow-wrap:anywhere}
+.stage .when{color:var(--muted);font-size:12px;margin-top:8px}
+.cnt{display:grid;grid-template-columns:1fr auto;gap:2px 10px;font-size:12px}
+.cnt span:nth-child(odd){color:var(--muted)}.cnt span:nth-child(even){text-align:right}
+.totals{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card)}
+.totals div{padding:14px 16px;border-right:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.totals div:nth-child(4n){border-right:0}.totals div:nth-last-child(-n+4){border-bottom:0}
+.totals b{display:block;font-size:20px;font-weight:500}.totals span{color:var(--muted);font-size:12px}
+.vempty{border:1px solid var(--border);background:var(--surface);border-radius:var(--r-card);padding:10px 14px;margin:0 0 20px}
+.vgrid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:var(--gap)}
+.vgrid h2:first-child,.vgrid>div>h2:first-child{margin-top:0}
+.vcols{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.feed{max-height:720px;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card)}
+.fi{display:grid;grid-template-columns:104px 1fr;gap:2px 12px;padding:10px 14px;border-bottom:1px solid var(--rule)}
+.fi:last-child{border-bottom:0}
+.fi.fresh{animation:fresh 3s ease-out}@keyframes fresh{from{background:var(--accent-soft)}to{background:transparent}}
+.fi .side{display:flex;flex-direction:column;gap:3px;align-items:flex-start}.fi time{color:var(--muted);font-size:12px}
+.fi .t a,.vsite a.lk{color:var(--text)}.fi .t a:hover,.vsite a.lk:hover{color:var(--accent)}
+.fi .m{grid-column:2;color:var(--muted);font-size:12px;display:flex;flex-wrap:wrap;gap:3px 12px;align-items:center}
+a.mine{color:var(--accent)}
+.cf{display:inline-block;width:38px;height:3px;background:var(--rule);margin-right:5px;vertical-align:middle;border-radius:2px}
+.cf i{display:block;height:100%;background:var(--muted);border-radius:2px}
+.tm{padding:5px 0}.tmn{display:flex;justify-content:space-between;gap:8px}.tmn span{color:var(--muted)}
+.tm>i{display:block;height:2px;background:var(--muted);margin-top:4px;border-radius:1px}.tm:first-child>i{background:var(--text)}
 .vnone{margin:6px 0 0}
-.vcorr{display:grid;grid-template-columns:minmax(0,auto) minmax(260px,1fr);gap:14px;align-items:start}
+.vcorr{display:grid;grid-template-columns:minmax(0,auto) minmax(300px,1fr);gap:var(--gap);align-items:start}
 .hmwrap{overflow:auto;max-width:100%}
+#v_cdet:empty{display:none}.vcorr:has(#v_cdet:empty){grid-template-columns:minmax(0,1fr)}
 .hm{border-collapse:separate;border-spacing:2px;width:auto}
-.hm td{min-width:58px;height:26px;padding:0 4px;text-align:center;font-size:11px;border:0;cursor:pointer;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hm td{min-width:58px;height:28px;padding:0 4px;text-align:center;font-size:12px;border:0;cursor:pointer;white-space:nowrap;border-radius:3px;color:var(--text)}
 .hm td:hover{outline:1px solid var(--text);outline-offset:-1px}
-.hm td.demo{outline:1px solid var(--green);outline-offset:-1px;color:#fff}
-.hm td.few{color:#59606b;background:repeating-linear-gradient(45deg,#15171b 0 4px,#101215 4px 8px)}.hm td.na{cursor:default}
-.hm td.nd{color:#8b8f98;background:#15171b;border:1px dotted #3a3f47}.hm td.xp{font-style:italic}
-.hm th.main{color:var(--amber)}
-.hm th{font-size:10px;border:0;text-align:center;padding:2px 4px}.hm th.rl{text-align:right;white-space:nowrap;padding-right:8px}
-.vnote{border-left:2px solid var(--amber);padding-left:10px;max-width:980px}
-.vsite td{vertical-align:top}.vsite .meta{font-size:11px}
+.hm td.demo{outline:1px solid var(--text);outline-offset:-1px;font-weight:600}
+.hm td.few{color:var(--faint);background:var(--raised) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='6'%3E%3Cpath d='M0 6L6 0' stroke='%23888' stroke-opacity='.35'/%3E%3C/svg%3E")}
+.hm td.na{cursor:default}
+.hm td.nd{color:var(--muted);background:var(--raised);outline:1px dashed var(--control);outline-offset:-1px}.hm td.xp{font-style:italic}
+.hm th.main{color:var(--text);font-weight:600}
+.hm th{font-size:12px;font-weight:400;border:0;text-align:center;padding:2px 4px}.hm th.rl{text-align:right;white-space:nowrap;padding-right:10px}
+.vnote{border-left:1px solid var(--accent);padding-left:14px;max-width:920px;margin-top:20px}
+.vsite td{vertical-align:top}.vsite .meta{font-size:12px}
 .vtog{display:inline-flex;gap:6px;align-items:center;cursor:pointer;color:var(--text)}
 .vicon{background:none;border:0}
-.vev{display:block;position:relative;border-radius:50%;background:var(--c);border:1px solid #000;box-shadow:0 0 6px var(--c)}
+.vev{display:block;position:relative;border-radius:50%;background:var(--c);border:1px solid var(--surface)}
 .vev.new::after{content:'';position:absolute;inset:-2px;border-radius:50%;border:2px solid var(--c);animation:ping 1.8s ease-out infinite}
 @keyframes ping{from{transform:scale(1);opacity:.9}to{transform:scale(3.4);opacity:0}}
-.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:2px}
-.leaflet-popup-content{font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;margin:10px 12px}
-.leaflet-popup-content a{color:var(--blue)}.leaflet-popup-content a.mine{color:var(--amber)}
-.vpop ul{margin:6px 0 0;padding:0;list-style:none}.vpop li{padding:3px 0;border-top:1px solid var(--line)}
-@media (max-width:1100px){.vgrid,.vcorr{grid-template-columns:1fr}}
-@media (max-width:860px){.pipe{grid-template-columns:1fr;gap:8px}.pipe .arrow{display:none}.vcols{grid-template-columns:1fr}.fi{grid-template-columns:1fr}.fi .m{grid-column:1}}
-@media (prefers-reduced-motion:reduce){.beat.on i,.vbar i,.pipe.live .arrow::before,.fi.fresh,.vev.new::after{animation:none}}
+.vpop ul{margin:6px 0 0;padding:0;list-style:none}.vpop li{padding:4px 0;border-top:1px solid var(--rule)}
+
+/* -- sociétés, prévisions, méthode ------------------------------------------------------------------- */
+.barlist{display:flex;flex-direction:column;gap:10px}
+.barlist .bl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px}
+.barlist .bl i{grid-column:1/-1;display:block;height:2px;background:var(--muted);border-radius:1px}
+.barlist .bl:first-child i{background:var(--text)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.seg{display:flex;flex-wrap:wrap;gap:0 18px;border-bottom:1px solid var(--border);margin-bottom:16px}
+.seg button{height:auto;padding:6px 0 9px;border:0;border-radius:0;background:none;color:var(--muted);font-weight:400;position:relative}
+.seg button[aria-pressed="true"]{color:var(--text)}
+.seg button[aria-pressed="true"]::after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:1px;background:var(--accent)}
+.kpis{display:grid;grid-template-columns:repeat(var(--k,4),minmax(0,1fr));background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);margin-bottom:var(--gap)}
+.kpis>div{padding:14px 18px;border-right:1px solid var(--rule)}.kpis>div:last-child{border-right:0}
+.kpis span{display:block;color:var(--muted);font-size:12px}.kpis b{font-size:20px;font-weight:500}
+.pick{display:flex;flex-wrap:wrap;gap:6px 10px;margin:10px 0 0}
+.pick a{font-size:12px}
+.fcsearch{position:relative;max-width:420px}
+.fcsearch input{width:100%}
+#fc_res{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);
+  box-shadow:var(--float);z-index:900;padding:4px}
+#fc_res a{display:block;padding:6px 10px;color:var(--text);border-radius:4px}#fc_res a:hover,#fc_res a:focus-visible{background:var(--raised);text-decoration:none}
+.srclist{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 var(--gap)}
+.srclist div{padding:12px 0;border-bottom:1px solid var(--rule)}.srclist b{font-weight:500;display:block}
+.srclist span{color:var(--muted);font-size:12px}
+
+@media (max-width:1180px){.mapgrid{grid-template-columns:minmax(0,1fr) 340px}.vgrid,.vcorr,.grid-7-5{grid-template-columns:minmax(0,1fr)}}
+@media (max-width:900px){
+  :root{--pad:16px;--gap:16px}
+  .top{gap:10px;padding:0 12px}
+  .navtoggle{display:inline-flex}
+  .tabs{display:none;position:fixed;top:52px;left:0;right:0;bottom:0;flex-direction:column;height:auto;overflow:auto;
+    background:var(--ground);padding:8px 16px 32px;z-index:1250}
+  .tabs.open{display:flex}
+  .menu{flex-direction:column}
+  .menu-btn{height:40px;padding:0;color:var(--muted);cursor:default;font-size:12px}.menu-btn .chev,.menu-btn.cur::after{display:none}
+  .tabs .menu-list,.tabs .menu-list[hidden]{display:block!important;position:static;box-shadow:none;border:0;padding:0 0 8px;background:none;min-width:0}
+  .menu-list a{padding:10px 0;font-size:15px}
+  .tools #jobs,.tools #status{display:none}
+  .search kbd{display:none}
+  .mapgrid,#view-map.is-site .mapgrid{grid-template-columns:minmax(0,1fr)}
+  #view-map.is-site .mapcol{grid-column:1;grid-row:1;position:static}#view-map.is-site #detail{grid-column:1;grid-row:2}
+  #view-map.is-site #map{height:220px}
+  #map{height:58vh}
+  .grid2,.vcols,.srclist{grid-template-columns:minmax(0,1fr)}
+  .pipe{grid-template-columns:1fr;gap:8px}.pipe .arrow{display:none}
+  .fi{grid-template-columns:1fr}.fi .m{grid-column:1}
+  .totals,.kpis{grid-template-columns:1fr 1fr}.kpis>div:nth-child(2n){border-right:0}
+  .totals div{border-right:1px solid var(--rule)!important;border-bottom:1px solid var(--rule)!important}
+  .kv{grid-template-columns:120px 1fr}.imgs{grid-template-columns:1fr}
+  .cbrow{grid-template-columns:1fr}.cb{display:flex;flex-wrap:wrap}
+  h1,.title{font-size:21px}
+}
+@media (prefers-reduced-motion:reduce){.beat.on i,.vbar i,.fi.fresh,.vev.new::after{animation:none}}
 </style>
 </head>
 <body>
-<header><b>STRATE</b><div class="search"><input id="cmd" placeholder="Chercher parmi toutes les mines du monde — ex. ESCONDIDA" autocomplete="off"><div id="results"></div></div><nav class="tabs"><a data-v="map" class="on">Carte</a><a data-v="screener">Screener</a><a data-v="veille">Veille<i id="v_dot" class="tdot"></i></a></nav><span class="meta" id="jobs"></span><span class="meta" id="status"></span></header>
-<main id="view-map">
-<section>
-  <h2>Carte du monde — <span id="count">…</span></h2><div id="map"></div>
-  <p class="meta legend"><span><i class="dot" style="background:#f2a93b"></i>mine active (ICMM)</span><span><i class="dot" style="background:#5fa8ff"></i>usine / fonderie / raffinerie</span><span><i class="dot" style="background:#8b8f98"></i>mine Wikidata</span><span><i class="dot" style="background:#b07cff"></i>emprise sans nom</span><span><i class="dot" style="border:2px solid #ff5d5d;width:10px;height:10px"></i>mine suivie (radar)</span></p>
-  <p class="meta"><label class="vtog"><input type="checkbox" id="v_layer">Actualité de la veille (30 jours ; un point par mine, pulsation = moins de 48 h)</label> <span id="v_lmsg"></span></p>
-  <p class="meta legend vleg" id="v_legend" hidden></p>
-  <h2>Radar — mines suivies (données de moins de 6 mois)</h2>
-  <table id="radar"><thead><tr><th>Niv.</th><th>Mine</th><th>Mois</th><th>Pourquoi</th></tr></thead><tbody></tbody></table>
-  <p class="meta">Niveau 0 = calme · 1 = une famille de signaux anormale · 2 = plusieurs familles indépendantes en même temps.<br><b>Attention :</b> une alerte satellite signale un changement physique du site, pas un changement de production : ces alertes mensuelles n'ont pas été confrontées à la production réelle.</p>
-  <h2>Sources du catalogue</h2><div id="sources" class="meta"></div>
-</section>
-<section id="detail"><p class="meta">Cliquez une mine sur la carte ou cherchez-la.</p></section>
+<header class="top">
+  <a class="brand" href="#/carte" aria-label="Strate, carte des mines"><svg width="22" height="16" viewBox="0 0 22 16" aria-hidden="true"><path d="M1 3h4v4h3v4h6V7h3V3h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M8.5 14.2h5" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round"/></svg><span>Strate</span></a>
+  <nav class="tabs"><div class="menu"><button class="menu-btn" id="mb-explorer" data-group="map screener" aria-expanded="false" aria-controls="ml-explorer">Explorer<svg class="chev" viewBox="0 0 8 8" aria-hidden="true"><path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.3"/></svg></button><div class="menu-list" id="ml-explorer" hidden><a href="#/carte" data-v="map">Carte<small>Toutes les mines du monde, radar des mines suivies</small></a><a href="#/screener" data-v="screener">Screener<small>Filtrer, trier, exporter, analyser par lots</small></a></div></div><div class="menu"><button class="menu-btn" id="mb-veille" data-group="veille" aria-expanded="false" aria-controls="ml-veille">Veille <i id="v_dot" class="tdot" aria-hidden="true"></i><svg class="chev" viewBox="0 0 8 8" aria-hidden="true"><path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.3"/></svg></button><div class="menu-list" id="ml-veille" hidden><a href="#/veille/flux" data-v="veille" data-sub="flux">Flux d’actualité</a><a href="#/veille/correlations" data-v="veille" data-sub="correlations">Corrélations événements ↔ satellite</a><a href="#/veille/suivies" data-v="veille" data-sub="suivies">Mines suivies</a><a href="#/veille/etat" data-v="veille" data-sub="etat">État du service</a></div></div><div class="menu"><button class="menu-btn" id="mb-societes" data-group="societes" aria-expanded="false" aria-controls="ml-societes">Sociétés<svg class="chev" viewBox="0 0 8 8" aria-hidden="true"><path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.3"/></svg></button><div class="menu-list" id="ml-societes" hidden><a href="#/societes" data-v="societes" data-sub="annuaire">Annuaire</a><a href="#/societes/capex" data-v="societes" data-sub="capex">CAPEX &amp; investissements</a><a href="#/societes/effectifs" data-v="societes" data-sub="effectifs">Effectifs</a></div></div><div class="menu"><button class="menu-btn" id="mb-previsions" data-group="previsions" aria-expanded="false" aria-controls="ml-previsions">Prévisions<svg class="chev" viewBox="0 0 8 8" aria-hidden="true"><path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.3"/></svg></button><div class="menu-list" id="ml-previsions" hidden><a href="#/previsions" data-v="previsions" data-sub="mine">Prévisions par mine</a><a href="#/previsions/retro-test" data-v="previsions" data-sub="retro">Rétro-test : l’outil s’évalue</a></div></div><div class="menu"><button class="menu-btn" id="mb-methode" data-group="methode" aria-expanded="false" aria-controls="ml-methode">Méthode<svg class="chev" viewBox="0 0 8 8" aria-hidden="true"><path d="M1 2.5l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.3"/></svg></button><div class="menu-list" id="ml-methode" hidden><a href="#/methode/calibration" data-v="methode" data-sub="calibration">Calibration</a><a href="#/methode/sources" data-v="methode" data-sub="sources">Sources &amp; licences</a><a href="#/methode/correlations" data-v="methode" data-sub="correlations">Corrélations — toutes</a></div></div></nav>
+  <div class="search" role="search"><input id="cmd" type="search" placeholder="Chercher une mine, une société, une page" aria-label="Recherche globale" aria-controls="results" autocomplete="off"><kbd aria-hidden="true">/</kbd><div id="results" role="listbox" aria-label="Résultats"></div></div>
+  <div class="tools"><span class="meta" id="jobs" aria-live="polite"></span><span class="meta" id="status"></span>
+    <button class="icon-btn" id="theme" type="button" aria-label="Thème : automatique"><svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 1.8a6.2 6.2 0 0 1 0 12.4z" fill="currentColor"/></svg></button>
+    <button class="icon-btn navtoggle" id="navtoggle" type="button" aria-expanded="false" aria-label="Menu"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.4"/></svg></button></div>
+</header>
+
+<main id="view-map" class="view">
+  <div class="page-head map-head"><div><h1>Carte des mines</h1><p class="sub" id="count">…</p></div></div>
+  <div class="mapgrid">
+    <section id="detail" aria-live="polite"><p class="meta">Cliquez une mine sur la carte ou cherchez-la.</p></section>
+    <div class="mapcol">
+      <div id="map" role="region" aria-label="Carte du monde des sites miniers"></div>
+      <p class="meta legend"><span><i class="dot" style="background:#3f7cc8"></i>mine active (ICMM)</span><span><i class="dot" style="background:#c7832b"></i>usine / fonderie / raffinerie</span><span><i class="dot" style="background:#8b9098"></i>mine Wikidata</span><span><i class="dot" style="background:#5e9c8f"></i>emprise sans nom</span><span><i class="dot ring" style="border-color:var(--tracked,#ff5d5d)"></i>mine suivie (liste radar)</span></p>
+      <p class="meta"><label class="vtog"><input type="checkbox" id="v_layer">Actualité de la veille (30 jours ; un point par mine, pulsation = moins de 48 h)</label> <span id="v_lmsg"></span></p>
+      <p class="meta legend vleg" id="v_legend" hidden></p>
+    </div>
+    <aside class="radarcol">
+      <h2>Radar des mines suivies</h2>
+      <p class="sub" style="margin:-6px 0 12px">Données satellite de moins de 6 mois</p>
+      <div class="tablebox"><table id="radar"><thead><tr><th>Niv.</th><th>Mine</th><th>Mois</th><th>Pourquoi</th></tr></thead><tbody></tbody></table></div>
+      <p class="note" style="margin-top:12px">Niveau 0 = calme · 1 = une famille de signaux anormale · 2 = plusieurs familles indépendantes en même temps.
+        Une alerte satellite signale un changement physique du site, pas un changement de production : ces alertes mensuelles n'ont pas été confrontées à la production réelle.</p>
+    </aside>
+  </div>
 </main>
-<div id="view-screener">
+
+<div id="view-screener" class="view" style="display:none">
+  <div class="page-head"><div><h1>Screener des mines</h1><p class="sub" id="scr_total">…</p></div>
+    <div class="actions"><a class="btn" id="scr_csv" href="#" download>Exporter en CSV</a>
+      <button id="scr_go" type="button">Analyser les 10 premières sans analyse récente</button></div></div>
+  <p class="meta" id="scr_msg" aria-live="polite"></p>
   <div class="filters">
     <label>Recherche<input type="text" id="f_q" placeholder="nom, propriétaire, région"></label>
     <label>Pays<input type="text" id="f_pays" list="l_pays" placeholder="tous"><datalist id="l_pays"></datalist></label>
     <label>Commodité<select id="f_com"><option value="">toutes</option></select></label>
     <label>Catégorie<select id="f_cat"><option value="">toutes</option></select></label>
-    <label>Emprise min (km²)<input type="number" id="f_emin" min="0" step="0.5"></label>
-    <label>Emprise max (km²)<input type="number" id="f_emax" min="0" step="0.5"></label>
-    <label>Prod. estimée min (Mt/an)<input type="number" id="f_pmin" min="0" step="0.5"></label>
+    <label>Emprise min. (km²)<input type="number" id="f_emin" min="0" step="0.5"></label>
+    <label>Emprise max. (km²)<input type="number" id="f_emax" min="0" step="0.5"></label>
+    <label>Prod. estimée min. (Mt/an)<input type="number" id="f_pmin" min="0" step="0.5"></label>
     <label class="chk"><input type="checkbox" id="f_emp">avec emprise</label>
     <label class="chk"><input type="checkbox" id="f_real">avec production réelle</label>
     <label class="chk" title="signaux satellite de moins de 6 mois ; les mines de calibration (2016–2019) n'en font pas partie"><input type="checkbox" id="f_ana">analyse récente</label>
     <label class="chk"><input type="checkbox" id="f_alert">en alerte</label>
     <label class="chk"><input type="checkbox" id="f_bbox">zone visible sur la carte</label>
-    <button class="ghost" id="f_reset">Réinitialiser</button>
+    <button class="btn-text" id="f_reset" type="button">Réinitialiser</button>
   </div>
-  <div class="pager" style="margin:0 0 10px"><span id="scr_total" class="meta"></span>
-    <a class="btn" id="scr_csv" href="#">Exporter en CSV</a>
-    <button id="scr_go">Analyser les 10 premières sans analyse récente</button><span class="meta" id="scr_msg"></span></div>
   <div class="scrwrap"><table id="scr"><thead><tr>
-    <th data-s="nom">Mine</th><th data-s="pays">Pays</th><th data-s="categorie">Catégorie</th><th data-s="commodite_principale">Commodités</th>
-    <th data-s="emprise_km2" class="n">Emprise km²</th><th data-s="prod_estimee_t" class="n s">Prod. estimée /an</th><th class="n">Intervalle 90 %</th>
-    <th data-s="prod_reelle_t" class="n">Prod. réelle publiée</th><th data-s="niveau">Alerte</th></tr></thead><tbody></tbody></table></div>
-  <div class="pager"><button class="ghost" id="pg_prev">←</button><span id="pg_info" class="meta"></span><button class="ghost" id="pg_next">→</button></div>
-  <p class="meta" id="scr_note"></p>
+    <th data-s="nom" scope="col">Mine</th><th data-s="pays" scope="col">Pays</th><th data-s="categorie" scope="col">Catégorie</th><th data-s="commodite_principale" scope="col">Commodités</th>
+    <th data-s="emprise_km2" class="n" scope="col">Emprise km²</th><th data-s="prod_estimee_t" class="n s" scope="col">Prod. estimée /an</th><th class="n" scope="col">Intervalle 90 %</th>
+    <th data-s="prod_reelle_t" class="n" scope="col">Prod. réelle publiée</th><th data-s="niveau" scope="col">Alerte</th></tr></thead><tbody></tbody></table></div>
+  <div class="pager"><button class="ghost" id="pg_prev" type="button" aria-label="Page précédente">←</button><span id="pg_info" class="meta"></span><button class="ghost" id="pg_next" type="button" aria-label="Page suivante">→</button></div>
+  <p class="note" id="scr_note" style="margin-top:16px"></p>
 </div>
+
 <div id="view-veille">
-  <div class="vhead"><p class="title">La veille</p>
-    <span class="meta">Chaîne d’agents sans IA, 24 h/24 : actualité minière mondiale (GDELT, ~65 langues) → rattachement aux mines → signaux satellite</span>
-    <span class="beat" id="v_beat"><i></i><span id="v_beat_t">…</span></span><span class="meta" id="v_upd"></span></div>
+  <div class="page-head"><div><h1 id="v_h1">Flux d’actualité</h1>
+    <p class="sub">Veille 24 h/24, sans IA : actualité minière mondiale (GDELT, ~65 langues) → rattachement aux mines → signaux satellite</p></div>
+    <div class="actions"><span class="beat" id="v_beat"><i></i><span id="v_beat_t">…</span></span><span class="meta" id="v_upd"></span></div></div>
   <div class="vbar" id="v_bar"><i></i></div>
-  <div class="pipe" id="v_pipe"><p class="meta">Chargement…</p></div>
-  <div class="totals" id="v_tot"></div>
+  <nav class="subtabs" aria-label="Veille"><a href="#/veille/flux" data-sub="flux">Flux d’actualité</a><a href="#/veille/correlations" data-sub="correlations">Corrélations événements ↔ satellite</a><a href="#/veille/suivies" data-sub="suivies">Mines suivies</a><a href="#/veille/etat" data-sub="etat">État du service</a></nav>
   <p class="vempty" id="v_empty" hidden></p>
-  <div class="vgrid">
-    <div>
-      <h2>Fil d’actualité — <span id="v_total">…</span></h2>
-      <div class="filters">
-        <label>Type<select id="vf_type"><option value="">tous</option></select></label>
-        <label>Langue<select id="vf_lang"><option value="">toutes</option></select></label>
-        <label>Pays<select id="vf_country"><option value="">tous</option></select></label>
-        <label>Confiance min. <output id="vf_conf_o">0,5</output><input type="range" id="vf_conf" min="0" max="1" step="0.05" value="0.5"></label>
-        <label>Période<select id="vf_days"><option value="1">24 h</option><option value="7">7 jours</option><option value="30" selected>30 jours</option><option value="90">90 jours</option><option value="365">1 an</option><option value="0">tout</option></select></label>
-        <button class="ghost" id="vf_map">Voir sur la carte</button>
+  <section data-sub="flux">
+    <div class="vgrid">
+      <div>
+        <h2>Fil d’actualité — <span id="v_total">…</span></h2>
+        <div class="filters">
+          <label>Type<select id="vf_type"><option value="">tous</option></select></label>
+          <label>Langue<select id="vf_lang"><option value="">toutes</option></select></label>
+          <label>Pays<select id="vf_country"><option value="">tous</option></select></label>
+          <label>Confiance min. <output id="vf_conf_o">0,5</output><input type="range" id="vf_conf" min="0" max="1" step="0.05" value="0.5"></label>
+          <label>Période<select id="vf_days"><option value="1">24 h</option><option value="7">7 jours</option><option value="30" selected>30 jours</option><option value="90">90 jours</option><option value="365">1 an</option><option value="0">tout</option></select></label>
+          <button class="ghost" id="vf_map" type="button">Voir sur la carte</button>
+        </div>
+        <div class="feed" id="v_feed"><p class="meta" style="padding:12px 14px;margin:0">Chargement…</p></div>
       </div>
-      <div class="feed" id="v_feed"><p class="meta" style="padding:0 10px">Chargement…</p></div>
-    </div>
-    <div>
-      <h2 id="v_day_h">Événements par jour, par type</h2>
-      <div class="card"><canvas id="v_day" height="170"></canvas><p class="meta vnone" id="v_day_e"></p></div>
-      <div class="vcols">
-        <div><h2>Par langue d’origine</h2><div class="card"><canvas id="v_lang" height="210"></canvas><p class="meta vnone" id="v_lang_e"></p></div></div>
-        <div><h2>Mines les plus citées</h2><div class="card" id="v_top"></div></div>
+      <div>
+        <h2 id="v_day_h">Événements par jour, par type</h2>
+        <div class="card"><canvas id="v_day" height="170"></canvas><p class="meta vnone" id="v_day_e"></p></div>
+        <div class="vcols">
+          <div><h2>Par langue d’origine</h2><div class="card"><canvas id="v_lang" height="210"></canvas><p class="meta vnone" id="v_lang_e"></p></div></div>
+          <div><h2>Mines les plus citées</h2><div class="card" id="v_top"></div></div>
+        </div>
       </div>
     </div>
-  </div>
-  <h2>Corrélations actualité ↔ satellite (étude d’événements)</h2>
-  <p class="meta" id="v_corrmeta"></p>
-  <div class="vcorr"><div class="hmwrap" id="v_corr"></div><div class="card" id="v_cdet"></div></div>
-  <div id="v_ctop" style="margin-top:12px"></div>
-  <p class="meta vnote"><b>À lire comme une exploration, pas une preuve.</b> Chaque case compare, sur les mines suivies
-    et analysées, la probabilité d’une anomalie satellite persistante (|z| ≥ 2) les mois où la mine fait l’actualité
-    (type donné) à celle des autres mois de la même mine : <b>lift</b> = rapport de risques de Mantel–Haenszel, 1 = aucun
-    lien (ρ = corrélation de rang intra-mine pour le volume d’actualité). Pour chaque mine, seuls comptent les mois où son
-    actualité était réellement collectée. Test : <b>Cochran–Mantel–Haenszel</b> stratifié par mine (un tableau 2×2 par
-    mine) ; intervalle à 90 % par bootstrap sur les mines ; correction de continuité 0,5 quand une case est vide.
-    Seul le <b>décalage 0</b> (même mois, colonne ★) forme la famille principale : sa <b>q-valeur</b> corrige les
-    comparaisons multiples (Benjamini-Hochberg) et « lien démontré » (★) n’y apparaît que si <b>q &lt; 0,10</b> et
-    l’intervalle exclut 1. Décalages −3 à +3 (−2 : anomalie 2 mois <i>avant</i> l’article ; +2 : 2 mois <i>après</i>),
-    en italique : calculés avec leur propre correction, toujours « exploratoire », on n’en conclut rien.
-    Hachuré : trop peu de données (moins de 5 mines ou de 10 mois-événements) ; n/d : effet non calculable.
-    Même démontré, un lien est une coïncidence statistique, pas une causalité.</p>
-  <h2>Mines suivies par la veille — <span id="v_ntr">…</span></h2>
-  <div class="scrwrap" style="max-height:420px"><table id="v_tracked"><thead><tr><th>Mine</th><th>Pourquoi</th><th>Suivie depuis</th>
-    <th>Dernier événement</th><th class="n">Événements</th><th>Analyse satellite</th></tr></thead><tbody></tbody></table></div>
+  </section>
+  <section data-sub="correlations" hidden>
+    <h2 style="margin-top:0">Étude d’événements : actualité ↔ anomalies satellite</h2>
+    <p class="meta" id="v_corrmeta"></p>
+    <div class="vcorr"><div class="hmwrap" id="v_corr"></div><div class="card" id="v_cdet"></div></div>
+    <div id="v_ctop" style="margin-top:12px"></div>
+    <p class="meta vnote"><b>À lire comme une exploration, pas une preuve.</b> Chaque case compare, sur les mines suivies
+      et analysées, la probabilité d’une anomalie satellite persistante (|z| ≥ 2) les mois où la mine fait l’actualité
+      (type donné) à celle des autres mois de la même mine : <b>lift</b> = rapport de risques de Mantel–Haenszel, 1 = aucun
+      lien (ρ = corrélation de rang intra-mine pour le volume d’actualité). Pour chaque mine, seuls comptent les mois où son
+      actualité était réellement collectée. Test : <b>Cochran–Mantel–Haenszel</b> stratifié par mine (un tableau 2×2 par
+      mine) ; intervalle à 90 % par bootstrap sur les mines ; correction de continuité 0,5 quand une case est vide.
+      Seul le <b>décalage 0</b> (même mois, colonne ★) forme la famille principale : sa <b>q-valeur</b> corrige les
+      comparaisons multiples (Benjamini-Hochberg) et « lien démontré » (★) n’y apparaît que si <b>q &lt; 0,10</b> et
+      l’intervalle exclut 1. Décalages −3 à +3 (−2 : anomalie 2 mois <i>avant</i> l’article ; +2 : 2 mois <i>après</i>),
+      en italique : calculés avec leur propre correction, toujours « exploratoire », on n’en conclut rien.
+      Hachuré : trop peu de données (moins de 5 mines ou de 10 mois-événements) ; n/d : effet non calculable.
+      Même démontré, un lien est une coïncidence statistique, pas une causalité.</p>
+  </section>
+  <section data-sub="suivies" hidden>
+    <h2 style="margin-top:0">Mines suivies par la veille — <span id="v_ntr">…</span></h2>
+    <div class="scrwrap" style="max-height:none"><table id="v_tracked"><thead><tr><th>Mine</th><th>Pourquoi</th><th>Suivie depuis</th>
+      <th>Dernier événement</th><th class="n">Événements</th><th>Analyse satellite</th></tr></thead><tbody></tbody></table></div>
+  </section>
+  <section data-sub="etat" hidden>
+    <h2 style="margin-top:0">Chaîne de traitement</h2>
+    <div class="pipe" id="v_pipe"><p class="meta">Chargement…</p></div>
+    <h2>Contenu de la base</h2>
+    <div class="totals" id="v_tot"></div>
+  </section>
+</div>
+
+<div id="view-societes" class="view" style="display:none">
+  <div class="page-head"><div><div class="crumb" id="co_crumb" hidden><a href="#/societes">Sociétés</a></div><h1 id="co_h1">Sociétés</h1><p class="sub" id="co_sub"></p></div><div class="actions" id="co_act"></div></div>
+  <nav class="subtabs" aria-label="Sociétés"><a href="#/societes" data-sub="annuaire">Annuaire</a><a href="#/societes/capex" data-sub="capex">CAPEX &amp; investissements</a><a href="#/societes/effectifs" data-sub="effectifs">Effectifs</a></nav>
+  <section data-sub="annuaire">
+    <div class="filters"><label>Société, ticker ou CIK<input type="search" id="co_q" placeholder="ex. Rio Tinto, NYSE:FCX"></label>
+      <label>Pays<input type="text" id="co_pays" placeholder="tous"></label></div>
+    <div id="co_list"></div>
+  </section>
+  <section data-sub="fiche" hidden><div id="co_sheet"></div></section>
+  <section data-sub="capex" hidden><div id="co_capex"></div></section>
+  <section data-sub="effectifs" hidden><div id="co_eff"></div></section>
+</div>
+
+<div id="view-previsions" class="view" style="display:none">
+  <div class="page-head"><div><h1 id="fc_h1">Prévisions par mine</h1><p class="sub" id="fc_sub"></p></div></div>
+  <nav class="subtabs" aria-label="Prévisions"><a href="#/previsions" data-sub="mine">Prévisions par mine</a><a href="#/previsions/retro-test" data-sub="retro">Rétro-test : l’outil s’évalue</a></nav>
+  <section data-sub="mine">
+    <div class="fcsearch"><label class="meta" for="fc_q" style="display:block;font-size:12px;margin-bottom:4px">Mine à série de production publiée</label>
+      <input type="search" id="fc_q" placeholder="Nom de la mine" autocomplete="off" aria-controls="fc_res"><div id="fc_res" hidden></div></div>
+    <div class="pick" id="fc_pick"></div>
+    <div id="fc_out" style="margin-top:24px"></div>
+  </section>
+  <section data-sub="retro" hidden><div id="bt_out"></div></section>
+</div>
+
+<div id="view-methode" class="view" style="display:none">
+  <div class="page-head"><div><h1 id="me_h1">Calibration</h1><p class="sub" id="me_sub"></p></div></div>
+  <nav class="subtabs" aria-label="Méthode"><a href="#/methode/calibration" data-sub="calibration">Calibration</a><a href="#/methode/sources" data-sub="sources">Sources &amp; licences</a><a href="#/methode/correlations" data-sub="correlations">Corrélations — toutes</a></nav>
+  <section data-sub="calibration"><div id="me_cal"></div></section>
+  <section data-sub="sources" hidden>
+    <h2 style="margin-top:0">Catalogue des mines</h2><div class="panel" id="sources"><p class="meta">Chargement…</p></div>
+    <h2>Signaux, actualité, sociétés et interface</h2><div class="srclist" id="me_src"></div>
+  </section>
+  <section data-sub="correlations" hidden><div id="me_corr"></div></section>
 </div>
 <script>
 const $=s=>document.querySelector(s), api=(p,o)=>fetch(p,o).then(r=>{if(!r.ok)throw r;return r.json()});
-let charts=[], poll=null, CAL={}, CURRENT=null, OPEN_SEQ=0;
+let charts=[], poll=null, CAL={}, CURRENT=null, OPEN_SEQ=0, VIEW=null, SUB=null;
 const LBL={bare_km2:'Surface nue (km²)',water_km2:'Surface en eau (km²)',change_km2:'Empreinte minière modifiée sur 1 an (km²)',new_bare_km2:'Surface nouvellement défrichée sur 1 an (km²)',site_views:'Vues Wikipedia — mine',owner_views:'Vues Wikipedia — propriétaire(s)',activity_db:'Activité radar, mine − environnement (dB) — expérimental, non validé'};
-const COL=['#f2a93b','#5fa8ff','#8b8f98','#b07cff'];
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+// catégories de la carte : bleu = mines actives (la donnée principale), puis trois teintes sourdes lisibles sur les deux thèmes
+const COL=['#3f7cc8','#c7832b','#8b9098','#5e9c8f'];
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=(v,d=1)=>v==null||!isFinite(v)?'—':Number(v).toLocaleString('fr-FR',{maximumFractionDigits:d});
 // calibration.json évolue avec les recalibrations : chaque champ est lu prudemment (absent → texte sans chiffre)
 const num=v=>typeof v==='number'&&isFinite(v)?v:null, firstOf=v=>Array.isArray(v)?v[0]:v;
@@ -238,96 +515,136 @@ const pick=(...vs)=>vs.map(num).find(v=>v!=null)??null;
 const errTxt=e=>e instanceof Response?(e.status===404?'introuvable (404)':`erreur serveur (${e.status})`)
   :e instanceof TypeError&&/fetch|network|load failed/i.test(e.message)?'serveur injoignable':'erreur inattendue (voir la console)';
 const plur=(n,s)=>n>1?s.replace(/(\S+)/g,'$1s'):s;  // « mine mise » → « mines mises »
+const enc=encodeURIComponent;
+const lvl=n=>`<span class="lvl ${n>=2?'l2':n===1?'l1':'lz'}">${esc(n)}</span>`;  // niveau d'alerte : 0 neutre, 1 ambre, 2 rouge
 
 const map=L.map('map',{preferCanvas:true,worldCopyJump:true}).setView([20,10],2);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:14,attribution:'© OpenStreetMap'}).addTo(map);
-const renderer=L.canvas({padding:.5}); let hi=null;
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:14,attribution:'© contributeurs OpenStreetMap'}).addTo(map);
+const renderer=L.canvas({padding:.5}); let hi=null, STATS={};
 
 async function init(){
-  const [pts,stats,rad,cal]=await Promise.all([api('/api/catalog/points'),api('/api/catalog/stats'),api('/api/radar'),api('/api/calibration')]); CAL=cal||{};
-  $('#count').textContent=`${fmt(stats.total,0)} sites dans ${stats.pays||0} pays`;
-  $('#sources').innerHTML=`${fmt(stats.mines_actives_icmm,0)} mines actives nommées · ${fmt(stats.usines_fonderies_raffineries,0)} usines/fonderies/raffineries · ${fmt(stats.mines_wikidata,0)} mines Wikidata · ${fmt(stats.emprises_sans_nom,0)} emprises satellite sans nom<br>${fmt(stats.avec_emprise_satellite,0)} avec emprise réelle · ${fmt(stats.avec_production_reelle,0)} avec production réelle · ${fmt(stats.avec_article_wikipedia,0)} avec article Wikipedia<br><br>`+(stats.sources||[]).map(esc).join('<br>');
+  const [pts,stats,rad,cal]=await Promise.all([api('/api/catalog/points'),api('/api/catalog/stats'),api('/api/radar'),api('/api/calibration')]); CAL=cal||{}; STATS=stats||{};
+  $('#count').textContent=`${fmt(stats.total,0)} sites dans ${stats.pays||0} pays · ${fmt(stats.avec_emprise_satellite,0)} avec emprise réelle · ${fmt(stats.avec_production_reelle,0)} avec production publiée`;
+  $('#sources').innerHTML=`<p>${fmt(stats.mines_actives_icmm,0)} mines actives nommées · ${fmt(stats.usines_fonderies_raffineries,0)} usines, fonderies et raffineries · ${fmt(stats.mines_wikidata,0)} mines Wikidata · ${fmt(stats.emprises_sans_nom,0)} emprises satellite sans nom</p>
+    <p class="meta">${fmt(stats.avec_emprise_satellite,0)} avec emprise réelle · ${fmt(stats.avec_production_reelle,0)} avec production réelle · ${fmt(stats.avec_article_wikipedia,0)} avec article Wikipedia</p>
+    <ul style="margin:12px 0 0;padding-left:18px">${(stats.sources||[]).map(s=>`<li>${esc(s)}</li>`).join('')}</ul>`;
   // bindTooltip(chaîne) passe par innerHTML : les noms viennent de Wikidata (éditable par tous), donc esc()
   for(const [id,la,lo] of pts) PTS.set(id,[la,lo]);  // calque veille : position catalogue de la mine citée
   for(const k of [2,3,1,0]) for(const [id,la,lo,kind,name] of pts){ if(kind!==k)continue;
     L.circleMarker([la,lo],{renderer,radius:k===0?3:2.2,stroke:false,fillColor:COL[kind],fillOpacity:.85}).on('click',()=>open(id)).bindTooltip(esc(name||'Emprise minière sans nom')).addTo(map); }
   const wl=await api('/api/sites');
   for(const s of wl){ PTS.set(s.id,[s.lat,s.lon]);
-    L.circleMarker([s.lat,s.lon],{renderer,radius:6,color:'#ff5d5d',weight:2,fillOpacity:.2}).on('click',()=>open(s.id)).bindTooltip(esc(s.nom)).addTo(map); }
+    L.circleMarker([s.lat,s.lon],{renderer,radius:6,color:tok('--tracked','#c4242a'),weight:2,fillOpacity:.15}).on('click',()=>open(s.id)).bindTooltip(esc(s.nom)).addTo(map); }
   drawRadar(rad);
-  if(location.hash.length>1) open(decodeURIComponent(location.hash.slice(1)));
 }
 function drawRadar(rad){
-  $('#radar tbody').innerHTML=rad.map(r=>`<tr class="row${r.site===CURRENT?' sel':''}" data-id="${esc(r.site)}"><td><span class="lvl l${Math.min(r.niveau,2)}">${r.niveau}</span></td><td>${esc(r.nom)}</td><td>${esc(String(r.date).slice(0,7))}</td><td class="meta">${esc(r.explication)||'—'}</td></tr>`).join('');
-  document.querySelectorAll('#radar tr.row').forEach(tr=>tr.onclick=()=>open(tr.dataset.id));
+  $('#radar tbody').innerHTML=rad.map(r=>`<tr class="row${r.site===CURRENT?' sel':''}" data-id="${esc(r.site)}"><td>${lvl(Math.min(r.niveau,2))}</td><td><a class="nm" href="#/site/${esc(enc(r.site))}">${esc(r.nom)}</a></td><td style="white-space:nowrap">${esc(String(r.date).slice(0,7))}</td><td class="meta">${esc(r.explication)||'—'}</td></tr>`).join('')
+    ||'<tr><td colspan=4 class="meta">Aucune mine suivie n’a de données récentes.</td></tr>';
+  document.querySelectorAll('#radar tr.row').forEach(tr=>tr.onclick=e=>{ if(!e.target.closest?.('a')) open(tr.dataset.id); });
 }
 
-// -- recherche ------------------------------------------------------------------------
+// -- recherche globale : mines, sociétés et pages -------------------------------------------------
 // /api/search tourne dans un pool de threads : les réponses peuvent revenir dans le désordre. Chaque frappe
 // (ou choix, ou Échap) incrémente QSEQ ; seule la réponse de la dernière frappe a le droit d'afficher.
+// Les mines s'affichent dès leur réponse ; les sociétés s'y ajoutent ensuite si la frappe est toujours la dernière.
+const PAGES=[['Carte des mines','#/carte'],['Screener','#/screener'],['Flux d’actualité','#/veille/flux'],
+  ['Corrélations événements ↔ satellite','#/veille/correlations'],['Mines suivies par la veille','#/veille/suivies'],
+  ['État du service de veille','#/veille/etat'],['Annuaire des sociétés','#/societes'],['CAPEX & investissements','#/societes/capex'],
+  ['Effectifs','#/societes/effectifs'],['Prévisions par mine','#/previsions'],['Rétro-test des prévisions','#/previsions/retro-test'],
+  ['Calibration','#/methode/calibration'],['Sources & licences','#/methode/sources'],['Toutes les corrélations','#/methode/correlations']];
+const fold=s=>String(s??'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase();
 let tmo=null, QSEQ=0;
 const RES=$('#results');
-function hideResults(){QSEQ++;clearTimeout(tmo);RES.style.display='none';RES.innerHTML='';delete RES.dataset.q;}
+function hideResults(){QSEQ++;clearTimeout(tmo);RES.style.display='none';RES.innerHTML='';delete RES.dataset.q;$('#cmd').setAttribute?.('aria-expanded','false');}
 function pickResult(id){hideResults();$('#cmd').value='';open(id);}
+function pickHref(h){hideResults();$('#cmd').value='';location.hash=h.replace(/^#/,'');}
+function resHtml(q,mines,cos){
+  const pg=PAGES.filter(([t])=>fold(t).includes(fold(q))).slice(0,4);
+  const m=mines==null?'<div class="meta">Recherche des mines indisponible</div>'
+    :mines.map(x=>`<div role="option" data-id="${esc(x.id)}">${esc(x.nom||'Emprise sans nom')} <span class="meta">${esc(x.pays||'')}${x.suivi?' · suivie':''}</span></div>`).join('');
+  const c=(cos||[]).map(co=>`<div role="option" data-href="#/societe/${esc(enc(co.id))}">${esc(co.nom||co.id)} <span class="meta">${esc((co.tickers||[]).slice(0,2).join(' · '))}</span></div>`).join('');
+  const p=pg.map(([t,h])=>`<div role="option" data-href="${esc(h)}">${esc(t)}</div>`).join('');
+  const out=(m?'<div class="rh">Mines</div>'+m:'')+(c?'<div class="rh">Sociétés</div>'+c:'')+(p?'<div class="rh">Pages</div>'+p:'');
+  return out||'<div class="meta">Aucun résultat</div>';
+}
+function resShow(q,mines,cos){
+  RES.dataset.q=q; RES.innerHTML=resHtml(q,mines,cos); RES.style.display='block'; $('#cmd').setAttribute?.('aria-expanded','true');
+  const first=RES.querySelector('div[data-id],div[data-href]'); first?.classList?.add?.('on');
+  RES.querySelectorAll('div[data-id]').forEach(d=>d.onclick=()=>pickResult(d.dataset.id));
+  RES.querySelectorAll('div[data-href]').forEach(d=>d.onclick=()=>pickHref(d.dataset.href));
+}
 $('#cmd').addEventListener('input',e=>{const q=e.target.value.trim();if(q.length<2){hideResults();return;}
   clearTimeout(tmo); const my=++QSEQ;
   tmo=setTimeout(async()=>{let r=null;
-    try{r=await api('/api/search?q='+encodeURIComponent(q));}catch(err){console.error(err);}
+    const sp=api('/api/search?q='+enc(q));  // les mines d'abord : elles s'affichent sans attendre les sociétés
+    const cp=api('/api/companies?'+new URLSearchParams({q,limit:'5'})).then(x=>Array.isArray(x?.rows)?x.rows:[]).catch(()=>[]);
+    try{r=await sp;}catch(err){console.error(err);}
     if(my!==QSEQ) return;  // une frappe plus récente a rendu cette réponse caduque
-    RES.dataset.q=q;
-    RES.innerHTML=r==null?'<div class="meta">Recherche indisponible</div>':r.map((x,i)=>`<div data-id="${esc(x.id)}" class="${i?'':'on'}">${esc(x.nom||'Emprise sans nom')} <span class="meta">${esc(x.pays||'')}${x.suivi?' · suivie':''}</span></div>`).join('')||'<div class="meta">Aucun résultat</div>';
-    RES.style.display='block';
-    RES.querySelectorAll('div[data-id]').forEach(d=>d.onclick=()=>pickResult(d.dataset.id));},200);});
+    resShow(q,r,[]);
+    cp.then(cos=>{ if(my===QSEQ&&cos.length) resShow(q,r,cos); });},200);});
 $('#cmd').addEventListener('keydown',e=>{
+  const opts=[...RES.querySelectorAll('div[data-id],div[data-href]')];
+  if((e.key==='ArrowDown'||e.key==='ArrowUp')&&opts.length){ e.preventDefault();
+    const i=opts.findIndex(d=>d.classList.contains('on')), j=(i+(e.key==='ArrowDown'?1:-1)+opts.length)%opts.length;
+    opts.forEach((d,k)=>d.classList.toggle('on',k===j)); opts[j].scrollIntoView?.({block:'nearest'}); return; }
   // Entrée n'ouvre que la liste visible ET calculée pour le texte actuel, jamais un reste d'ancienne recherche
-  if(e.key==='Enter'&&RES.style.display==='block'&&RES.dataset.q===$('#cmd').value.trim()){const d=RES.querySelector('div.on[data-id]');if(d)pickResult(d.dataset.id);}
+  if(e.key==='Enter'&&RES.style.display==='block'&&RES.dataset.q===$('#cmd').value.trim()){
+    const d=RES.querySelector('div.on[data-id]'), h=RES.querySelector('div.on[data-href]');
+    if(d?.dataset?.id) pickResult(d.dataset.id); else if(h?.dataset?.href) pickHref(h.dataset.href);}
   if(e.key==='Escape')hideResults();});
+RES.addEventListener('mousedown',e=>e.preventDefault());  // un clic dans la liste ne fait pas perdre le focus
+$('#cmd').addEventListener('blur',()=>setTimeout(()=>{ if(document.activeElement!==$('#cmd')&&RES.style.display==='block') hideResults(); },150));
 
 // -- fiche d'une mine -------------------------------------------------------------------
 // open() enchaîne plusieurs requêtes : si l'utilisateur ouvre une autre mine entre-temps, la réponse tardive
 // ne doit rien toucher (fiche, carte, graphiques, suivi). Chaque appel prend un jeton ; seul le dernier vit.
 async function open(id){
-  const tok=++OPEN_SEQ, live=()=>tok===OPEN_SEQ;
-  clearInterval(poll); poll=null; CURRENT=id; location.hash=id;
-  if($('#view-map').style.display==='none') show('map');  // recherche ou « précédent » depuis l'onglet Screener
+  const seq=++OPEN_SEQ, live=()=>seq===OPEN_SEQ;
+  clearInterval(poll); poll=null; CURRENT=id; location.hash='/site/'+enc(id);
+  show('site');  // recherche, lien ou « précédent » depuis une autre page : la fiche et sa carte s'affichent
   document.querySelectorAll('#radar tr').forEach(tr=>tr.classList.toggle('sel',tr.dataset.id===id));
   charts.forEach(c=>c.destroy()); charts=[];
   $('#detail').innerHTML='<p class="meta">Chargement de la fiche…</p>';
   try{ await renderSite(id,live); }
   catch(e){ if(!live()) return; console.error(e);
     charts.forEach(c=>c.destroy()); charts=[];
-    $('#detail').innerHTML=`<p class="title">${esc(id)}</p><p class="meta">Impossible d'ouvrir cette fiche : ${esc(errTxt(e))}.</p>`; }
+    $('#detail').innerHTML=`<div class="crumb"><a href="#/carte">Carte</a></div><h1 class="title">${esc(id)}</h1><p class="meta">Impossible d'ouvrir cette fiche : ${esc(errTxt(e))}.</p>`; }
+}
+function siteHead(s,src,wiki,wd){
+  return `<div class="crumb"><a href="#/carte">Carte</a></div><h1 class="title">${esc(s.nom)}</h1>
+    <p class="sub">${esc(s.pays)}${s.region?', '+esc(s.region):''}${s.metaux?' · '+esc(s.metaux):''}</p>
+    <div class="kv"><div>Type / statut</div><div>${esc(s.type||s.stade)}${s.confiance?' · confiance '+esc(s.confiance):''}</div><div>Propriétaire(s)</div><div>${esc(s.proprietaires)||'—'}</div>
+    <div>Emprise réelle</div><div>${s.emprise_km2?fmt(s.emprise_km2,2)+' km² (contours satellite Maus 2022)':'non cartographiée'}</div>
+    <div>Zone analysée</div><div>carré de ${fmt(2*s.rayon_m/1000,1)} km de côté</div>
+    <div>Coordonnées</div><div>${Number(s.lat).toFixed(4)}, ${Number(s.lon).toFixed(4)} · ${src}${wiki}${wd}</div>
+    <div>Sources</div><div>${esc(s.sources)}${s.production_reelle?' · production réelle disponible':''}</div>
+    ${s.derniere_date?`<div>Signaux satellite</div><div>jusqu'à ${esc(s.derniere_date)}${s.analyse?'':' (anciens)'}</div>`:''}</div>`;
 }
 async function renderSite(id,live){
-  const s=await api('/api/site?site='+encodeURIComponent(id));
+  const s=await api('/api/site?site='+enc(id));
   if(!live()) return;
   // jumeau catalogue d'une mine suivie : le serveur renvoie la fiche suivie. Dossier, images et suivi d'analyse
   // partent de son id (sinon dossier vide et suivi d'un id que le serveur ne met jamais en file)
-  if(s.id&&s.id!==id){ id=s.id; CURRENT=id; location.hash=id;
+  if(s.id&&s.id!==id){ id=s.id; CURRENT=id; location.hash='/site/'+enc(id);
     document.querySelectorAll('#radar tr').forEach(tr=>tr.classList.toggle('sel',tr.dataset.id===id)); }
+  document.title=`${s.nom||id} — Strate`;
   map.setView([s.lat,s.lon],Math.max(map.getZoom(),10));
   if(hi) map.removeLayer(hi);
-  hi=L.rectangle(L.latLng(s.lat,s.lon).toBounds(2*s.rayon_m),{color:'#ff5d5d',weight:1.5,fill:false}).addTo(map);
-  const wiki=s.wikipedia?` · <a href="https://en.wikipedia.org/wiki/${esc(s.wikipedia)}" target="_blank" rel="noopener">Wikipedia</a>`:'';
-  const wd=s.wikidata?` · <a href="https://www.wikidata.org/wiki/${esc(s.wikidata)}" target="_blank" rel="noopener">Wikidata</a>`:'';
+  hi=L.rectangle(L.latLng(s.lat,s.lon).toBounds(2*s.rayon_m),{color:tok('--tracked','#c4242a'),weight:1.5,fill:false}).addTo(map);
+  const wiki=s.wikipedia?` · <a href="https://en.wikipedia.org/wiki/${esc(enc(s.wikipedia))}" target="_blank" rel="noopener">Wikipedia</a>`:'';
+  const wd=/^Q\d+$/.test(String(s.wikidata||''))?` · <a href="https://www.wikidata.org/wiki/${esc(s.wikidata)}" target="_blank" rel="noopener">Wikidata</a>`:'';
   const sc=String(s.source_coordonnees||'');
-  const src=sc.startsWith('http')?`<a href="${esc(sc)}" target="_blank" rel="noopener">source</a>`:esc(sc);
-  let html=`<p class="title">${esc(s.nom)}</p>
-    <div class="kv"><div>Pays</div><div>${esc(s.pays)}${s.region?', '+esc(s.region):''}</div><div>Commodités</div><div>${esc(s.metaux)}</div>
-    <div>Type / statut</div><div>${esc(s.type||s.stade)}${s.confiance?' · confiance '+esc(s.confiance):''}</div><div>Propriétaire(s)</div><div>${esc(s.proprietaires)}</div>
-    <div>Emprise réelle</div><div>${s.emprise_km2?fmt(s.emprise_km2,2)+' km² (contours satellite Maus 2022)':'non cartographiée'}</div>
-    <div>Zone analysée</div><div>carré de ${fmt(2*s.rayon_m/1000,1)} km de côté</div>
-    <div>Coordonnées</div><div>${s.lat.toFixed(4)}, ${s.lon.toFixed(4)} · ${src}${wiki}${wd}</div>
-    <div>Sources</div><div>${esc(s.sources)}${s.production_reelle?' · production réelle disponible':''}</div>
-    ${s.derniere_date?`<div>Signaux satellite</div><div>jusqu'à ${esc(s.derniere_date)}${s.analyse?'':' (anciens)'}</div>`:''}</div>`;
+  const src=/^https?:\/\//i.test(sc)?`<a href="${esc(sc)}" target="_blank" rel="noopener">source</a>`:esc(sc);
+  let html=siteHead(s,src,wiki,wd);
   const st=s.statut_analyse||'', busy=st.startsWith('en');
   // « analyse » = signaux de moins de ~6 mois. Une mine qui n'a que des signaux anciens (calibration 2016–2019)
   // garde sa fiche de signaux mais doit pouvoir être mise à jour ; une analyse en cours ou en erreur est
   // affichée même sur une fiche analysée (l'optique est enregistrée avant l'attention et le radar).
   const block=!s.analyse||busy||st.startsWith('erreur');
   const vs=veilleOf(s);  // actualité de la mine (veille) : null = serveur sans veille, {fetch:true} = à demander
+  const fc=s.production_reelle?fcSiteBlock():'';  // prévision : seulement pour une mine à série de production
   if(!s.analyse&&!s.donnees_anciennes){
-    html+=prodEstimate(s)+analyseBlock(s)+vSiteBlock(vs);
+    html+=prodEstimate(s)+analyseBlock(s)+vSiteBlock(vs)+fc;
     html+=`<h2>Image satellite récente</h2><div class="imgs"><div class="wait"><img id="i1" alt="image satellite récente"></div><div class="meta" id="i1m"></div></div>`;
     if(s.production_reelle) html+=`<h2>Production réelle (Jasansky et al. 2023)</h2><div class="card"><canvas id="prod" height="140"></canvas></div>`;
     charts.forEach(c=>c.destroy()); charts=[];
@@ -335,30 +652,31 @@ async function renderSite(id,live){
     tryImg($('#i1'),id,recentMonths(s.lat),$('#i1m'));
     if(s.production_reelle) prodChart(id,s.metaux,$('#prod'));
     vSiteAfter(vs,id,live);
+    if(fc) fcSiteAfter(id,live);
     armAnalyse(id,busy);
     return;
   }
-  $('#detail').innerHTML=`<p class="title">${esc(s.nom)}</p><p class="meta">Chargement des signaux…</p>`;
-  const [dos,ev]=await Promise.all([api('/api/dossier?site='+encodeURIComponent(id)),api('/api/events?site='+encodeURIComponent(id))]);
+  $('#detail').innerHTML=siteHead(s,src,wiki,wd)+'<p class="meta" style="margin-top:16px">Chargement des signaux…</p>';
+  const [dos,ev]=await Promise.all([api('/api/dossier?site='+enc(id)),api('/api/events?site='+enc(id))]);
   if(!live()) return;
   const months=dos.filter(r=>r.bare_km2!=null).map(r=>r.date.slice(0,7));
   const first=months.find(m=>/-0[89]$/.test(m))||months[0], last=[...months].reverse().find(m=>/-0[89]$/.test(m))||months.at(-1);
-  const opt=ms=>ms.map(m=>`<option>${m}</option>`).join('');
+  const opt=ms=>ms.map(m=>`<option>${esc(m)}</option>`).join('');
   const alerts=dos.filter(r=>r.level>=1||r.evenement_connu).reverse();
   const marks=vs&&!vs.fetch?vMarks(vs):[];
-  html+=prodEstimate(s)+(block?analyseBlock(s):'')+calNote()+vSiteBlock(vs);
+  html+=prodEstimate(s)+(block?analyseBlock(s):'')+calNote()+vSiteBlock(vs)+fc;
   html+=`<h2>Changements physiques du site (satellite)</h2><div class="charts">${Object.keys(LBL).map(k=>`<div class="card"><h3>${LBL[k]}</h3><canvas id="c_${k}" height="150"></canvas></div>`).join('')}</div>
     ${vs?`<p class="meta" id="v_marknote">${marks.length?MARKNOTE:''}</p>`:''}
     ${s.production_reelle?`<h2>Production réelle (Jasansky et al. 2023)</h2><div class="card"><canvas id="prod" height="140"></canvas></div>`:''}
     <h2>Avant / après (Sentinel-2, couleurs naturelles)</h2>
-    <div class="imgs"><div><select id="m1">${opt(months)}</select><img id="i1" alt="image satellite avant"></div><div><select id="m2">${opt(months)}</select><img id="i2" alt="image satellite après"></div></div>
+    <div class="imgs"><div><select id="m1" aria-label="Mois de l’image avant">${opt(months)}</select><img id="i1" alt="image satellite avant"></div><div><select id="m2" aria-label="Mois de l’image après">${opt(months)}</select><img id="i2" alt="image satellite après"></div></div>
     <h2>Alertes et événements</h2>
-    <table class="alerts"><thead><tr><th>Mois</th><th>Niv.</th><th>Détail</th></tr></thead><tbody>${alerts.map(r=>`<tr><td>${r.date.slice(0,7)}</td><td><span class="lvl l${Math.min(r.level,2)}">${r.level}</span></td><td>${esc(r.explication)}${r.evenement_connu?` <span class="ev">◆ ${esc(r.evenement_connu)}</span>`:''}</td></tr>`).join('')||'<tr><td colspan=3 class="meta">Aucune</td></tr>'}</tbody></table>
-    ${ev.length?`<h2>Contrôle sur événements connus</h2><table><tbody>${ev.map(e=>`<tr><td>${esc(e.date)}</td><td>${esc(e.evenement)}</td><td>${e.detecte?'<span class="lvl l0">détecté</span>':'<span class="lvl l2">manqué</span>'}</td></tr>`).join('')}</tbody></table>`:''}
-    <p class="meta">Sources : Copernicus Sentinel-2 L2A (Microsoft Planetary Computer), Wikimedia Pageviews. Seuils non encore calibrés : à lire comme des pistes, pas des conclusions.</p>`;
+    <div class="tablebox"><table class="alerts"><thead><tr><th>Mois</th><th>Niv.</th><th>Détail</th></tr></thead><tbody>${alerts.map(r=>`<tr><td>${esc(r.date.slice(0,7))}</td><td>${lvl(Math.min(r.level,2))}</td><td>${esc(r.explication)}${r.evenement_connu?` <span class="ev">◆ ${esc(r.evenement_connu)}</span>`:''}</td></tr>`).join('')||'<tr><td colspan=3 class="meta">Aucune</td></tr>'}</tbody></table></div>
+    ${ev.length?`<h2>Contrôle sur événements connus</h2><div class="tablebox"><table><tbody>${ev.map(e=>`<tr><td>${esc(e.date)}</td><td>${esc(e.evenement)}</td><td>${e.detecte?'<span class="lvl l0">détecté</span>':'<span class="lvl l2">manqué</span>'}</td></tr>`).join('')}</tbody></table></div>`:''}
+    <p class="note" style="margin-top:16px">Sources : Copernicus Sentinel-2 L2A (Microsoft Planetary Computer), Wikimedia Pageviews. Seuils non encore calibrés : à lire comme des pistes, pas des conclusions.</p>`;
   charts.forEach(c=>c.destroy()); charts=[];
   $('#detail').innerHTML=html;
-  const set=(sel,img,m)=>{$(sel).value=m;const im=$(img),box=im.parentElement;box.className='wait';im.onload=()=>box.className='';im.onerror=()=>box.className='none';im.src=`/api/thumbnail?site=${encodeURIComponent(id)}&month=${m}`;};
+  const set=(sel,img,m)=>{$(sel).value=m;const im=$(img),box=im.parentElement;box.className='wait';im.onload=()=>box.className='';im.onerror=()=>box.className='none';im.src=`/api/thumbnail?site=${enc(id)}&month=${enc(m)}`;};
   if(months.length){set('#m1','#i1',first);set('#m2','#i2',last);}
   $('#m1').onchange=e=>set('#m1','#i1',e.target.value); $('#m2').onchange=e=>set('#m2','#i2',e.target.value);
   for(const k of Object.keys(LBL)){
@@ -368,6 +686,7 @@ async function renderSite(id,live){
   }
   if(s.production_reelle) prodChart(id,s.metaux,$('#prod'));
   vSiteAfter(vs,id,live);
+  if(fc) fcSiteAfter(id,live);
   if(block) armAnalyse(id,busy);
 }
 // Bloc « Analyse » : libellé selon l'état (jamais analysée / signaux anciens / analysée mais relancée ou en
@@ -381,7 +700,7 @@ function analyseBlock(s){
     :s.donnees_anciennes?`<b>Données anciennes</b> : les signaux satellite de cette mine s’arrêtent en ${d||'?'} (échantillon de calibration), rien de récent. Les courbes ci-dessous décrivent ce passé. ${why}`
     :`Cette mine n'a pas encore été analysée. ${why}`;
   return `<h2>Analyse</h2><p class="meta">${note}</p>
-      <button id="go" data-label="${esc(label)}" ${busy?'disabled':''}>${busy?esc(st):esc(label)}</button> <span class="meta" id="jst">${st&&!busy?esc(st):''}</span>`;
+      <button id="go" type="button" data-label="${esc(label)}" ${busy?'disabled':''}>${busy?esc(st):esc(label)}</button> <span class="meta" id="jst">${st&&!busy?esc(st):''}</span>`;
 }
 function armAnalyse(id,busy){ const go=$('#go'); if(!go) return; go.onclick=()=>launch(id); if(busy) watch(id); }
 // Mois candidats de l'« image récente », calculés depuis aujourd'hui : mois complets des 18 derniers (le mois en
@@ -402,9 +721,9 @@ function prodEstimate(s){
   const f=s.production_emprise; if(!f||num(f.tonnes_an)==null) return '';
   const f90=num(f.facteur_90), ch=f.type==='charbon'?num(CAL.modele_emprise?.charbon?.slope):null;
   return `<h2>Production estimée d'après l'emprise — ordre de grandeur</h2>
-    <div class="card"><p style="font-size:18px;margin:0 0 6px;color:var(--amber)">≈ ${tonnes(f.tonnes_an)} de ${esc(f.type)} par an</p>
+    <div class="card"><p class="estim">≈ ${tonnes(f.tonnes_an)} de ${esc(f.type)} par an</p>
     <p class="meta" style="margin:0">Intervalle à 90 % : ${tonnes(f.bas_90)} à ${tonnes(f.haut_90)} · erreur typique × ${fmt(f.facteur_typique,1)}${f90!=null?`, 9 fois sur 10 sous × ${fmt(f90,1)}`:''}<br>
-    D'après ${fmt(f.emprise_km2,1)} km² d'emprise réelle (contours satellite Maus, images 2019), modèle calibré sur ${f.mines_calibration??'?'} mines à production connue.
+    D'après ${fmt(f.emprise_km2,1)} km² d'emprise réelle (contours satellite Maus, images 2019), modèle calibré sur ${esc(f.mines_calibration??'?')} mines à production connue.
     C'est la taille de l'emprise qui donne l'échelle, pas une mesure Sentinel : très imprécis par nature, la taille d'une mine dit son échelle, pas son rendement.${ch!=null&&ch<0.4?` Pour le charbon, l'estimation varie peu avec la taille (pente ${fmt(ch,2)}) : elle reste proche de la mine de charbon médiane.`:''}</p></div>`;
 }
 function calNote(){
@@ -429,20 +748,21 @@ function calNote(){
   if(prec!=null) out.push(`Une variation annuelle de plus de 10 % de la surface nue ne coïncide avec une vraie variation de production (&gt; 20 %) que dans ${pct(prec)} des cas${base!=null?`, contre ${pct(base)} au hasard`:''}.`);
   out.push(`Les alertes mensuelles affichées ici (z saisonnier ≥ 2, persistant) n'ont <b>pas</b> été confrontées à la production.
     Ces courbes décrivent donc l'évolution physique du site (expansion, résidus, défrichement), pas sa production.`);
-  return `<p class="meta" style="border-left:2px solid var(--amber);padding-left:10px">${out.join('\n    ')}</p>`;
+  return `<h2>Ce que valent ces signaux</h2><p class="calnote">${out.join('\n    ')}</p>${calBadges(true)}`;
 }
 // sig = {a, z} : a (z retenu, persistant) place les points d'alerte ; z (brut) s'affiche au survol.
 // Un mois isolé a a = 0 : afficher a ferait lire « z = 0,0 » pour une anomalie réelle mais non confirmée.
 // marks = repères d'actualité de la veille [{m:'AAAA-MM', c:couleur, t:{type:n}}] : traits verticaux (vMarkPlugin)
 // et ligne de pied de l'infobulle. Rangés sur le graphique ($vmarks) pour être posés après coup si l'actualité
 // arrive après les courbes.
-function line(el,labels,data,sig,log,marks){
-  const a=sig?.a, z=sig?.z, alert=v=>v!=null&&Math.abs(v)>=2;
-  const ch=new Chart(el,{type:'line',data:{labels,datasets:[{data,borderColor:'#f2a93b',borderWidth:1.5,
-    pointRadius:a?a.map(v=>alert(v)?4:0):2,pointBackgroundColor:a?a.map(v=>v>0?'#ff5d5d':'#5fa8ff'):'#f2a93b',tension:.2,spanGaps:true}]},
-    options:{animation:false,plugins:{legend:{display:false},tooltip:{callbacks:{afterLabel:c=>{const v=z?.[c.dataIndex];if(v==null)return '';
+function line(el,labels,data,sig,log,marks,color){
+  const a=sig?.a, z=sig?.z, alert=v=>v!=null&&Math.abs(v)>=2, c=color||tok('--accent','#1f5fae');
+  const ch=new Chart(el,{type:'line',data:{labels,datasets:[{data,borderColor:c,borderWidth:1.6,
+    pointRadius:a?a.map(v=>alert(v)?4:0):0,pointBackgroundColor:tok('--warning','#8f5306'),pointBorderWidth:0,
+    pointStyle:a?a.map(v=>v>0?'triangle':'circle'):'circle',tension:0,spanGaps:true}]},
+    options:{animation:false,aspectRatio:ar(el,200),plugins:{legend:{display:false},tooltip:{callbacks:{afterLabel:c=>{const v=z?.[c.dataIndex];if(v==null)return '';
       return 'z = '+v.toFixed(1)+(alert(v)&&!alert(a?.[c.dataIndex])?' (mois isolé : non retenu comme alerte)':'');},footer:vFooter}}},
-    scales:{x:{ticks:{color:'#8b8f98',maxTicksLimit:8},grid:{color:'#1c1f24'}},y:{type:log?'logarithmic':'linear',ticks:{color:'#8b8f98'},grid:{color:'#1c1f24'}}}},
+    scales:{x:{...ax(),ticks:{...ax().ticks,maxTicksLimit:7,maxRotation:0}},y:{...ax(),type:log?'logarithmic':'linear'}}},
     plugins:[vMarkPlugin]});
   ch.$vmarks=marks||[];
   return ch;
@@ -452,7 +772,7 @@ const FR={copper:'cuivre',gold:'or',silver:'argent',zinc:'zinc',lead:'plomb',nic
 // il n'est plus dans le document et on n'y dessine rien (sinon série d'une autre mine, puis « Canvas is already in use »).
 async function prodChart(id,metaux,cv){
   if(!cv) return;
-  let p; try{p=await api('/api/production?site='+encodeURIComponent(id));}catch(e){console.error(e);return;}
+  let p; try{p=await api('/api/production?site='+enc(id));}catch(e){console.error(e);return;}
   if(!cv.isConnected||!p.length) return;
   const tot={}; p.forEach(r=>tot[r.serie]=(tot[r.serie]||0)+1);
   // série principale : minerai extrait > minerai traité > charbon > métal le plus documenté
@@ -460,7 +780,7 @@ async function prodChart(id,metaux,cv){
   const pref=['minerai extrait','minerai traité','charbon'].find(s=>tot[s])||main||Object.keys(tot).sort((a,b)=>tot[b]-tot[a])[0];
   const rows=p.filter(r=>r.serie===pref).sort((a,b)=>a.year-b.year); if(!rows.length) return;
   const big=Math.max(...rows.map(r=>r.value_tonnes))>=1e6, div=big?1e6:1e3;
-  charts.push(line(cv,rows.map(r=>String(r.year)),rows.map(r=>r.value_tonnes/div),null,false));
+  charts.push(line(cv,rows.map(r=>String(r.year)),rows.map(r=>r.value_tonnes/div),null,false,null,tok('--text','#151515')));
   cv.insertAdjacentHTML('beforebegin',`<h3>${esc(pref)}, ${big?'millions':'milliers'} de tonnes par an</h3>`);
 }
 // cap affiche le mois réellement montré : « récente » ne dit rien de l'âge de l'image
@@ -468,13 +788,13 @@ function tryImg(img,id,months,cap){
   const box=img.parentElement; let i=0;
   const say=t=>{ if(cap) cap.textContent=t; };
   const next=()=>{ if(i>=months.length){box.className='none';say(`Mois essayés : ${months.join(', ')}`);return;}
-    img.src=`/api/thumbnail?site=${encodeURIComponent(id)}&month=${months[i++]}`; };
+    img.src=`/api/thumbnail?site=${enc(id)}&month=${months[i++]}`; };
   img.onload=()=>{ box.className=''; say(`Sentinel-2, ${months[i-1]} (mois le plus récent sans nuages parmi ${months.join(', ')})`); };
   img.onerror=next; next();
 }
 async function launch(id){
   const go=$('#go'), jst=$('#jst'); go.disabled=true; go.textContent='…'; jst.textContent='';
-  try{ const r=await api('/api/analyze?site='+encodeURIComponent(id),{method:'POST'});
+  try{ const r=await api('/api/analyze?site='+enc(id),{method:'POST'});
     jobsPoll();  // compteur d'en-tête + rafraîchissement du radar même si l'on quitte cette fiche
     if(!go.isConnected) return;  // une autre fiche est affichée : son propre suivi s'en charge
     go.textContent=r.statut||'en file'; watch(id); }
@@ -490,7 +810,7 @@ function watch(id){
   const h=setInterval(async()=>{
     const stop=()=>{clearInterval(h); if(poll===h) poll=null;};
     if(poll!==h||CURRENT!==id) return stop();
-    let s=null; try{ s=await api('/api/site?site='+encodeURIComponent(id)); fails=0; }
+    let s=null; try{ s=await api('/api/site?site='+enc(id)); fails=0; }
     catch(e){ console.error(e); if(++fails<3) return; }
     if(poll!==h||CURRENT!==id) return stop();  // la fiche a changé pendant la requête
     const st=s?.statut_analyse||'', go=$('#go'), jst=$('#jst');
@@ -507,20 +827,72 @@ function watch(id){
   poll=h;
 }
 
-// -- onglets -----------------------------------------------------------------------------
-function show(v){
+// -- pages et routage ---------------------------------------------------------------------------------
+// Une seule page visible. Routes : #/carte, #/site/<id>, #/screener, #/veille/<flux|correlations|suivies|etat>,
+// #/societes[/capex|/effectifs], #/societe/<id>, #/previsions[/mine/<id>], #/previsions/retro-test,
+// #/methode/<calibration|sources|correlations>. Un ancien lien « #<id> » ouvre encore la fiche de la mine.
+const TITLES={map:'Carte des mines',site:'Mine',screener:'Screener',veille:'Veille',societes:'Sociétés',previsions:'Prévisions',methode:'Méthode'};
+function show(v,sub=null,arg=null){
   mapBox();  // mémorise la zone visible tant que la carte est affichée
-  document.querySelectorAll('.tabs a').forEach(a=>a.classList.toggle('on',a.dataset.v===v));
-  $('#view-map').style.display=v==='map'?'':'none'; $('#view-screener').style.display=v==='screener'?'block':'none';
+  const m=v==='site'?'map':v;
+  $('#view-map').style.display=m==='map'?'':'none'; $('#view-screener').style.display=v==='screener'?'block':'none';
   $('#view-veille').style.display=v==='veille'?'block':'none';
-  if(v==='map') setTimeout(()=>map.invalidateSize(),50);
+  $('#view-societes').style.display=v==='societes'?'block':'none';
+  $('#view-previsions').style.display=v==='previsions'?'block':'none';
+  $('#view-methode').style.display=v==='methode'?'block':'none';
+  $('#view-map').classList.toggle('is-site',v==='site');
+  const moved=VIEW!==v||SUB!==sub; VIEW=v; SUB=sub;
+  navMark(v,sub);
+  if(v!=='site') document.title=(sub&&SUBT[sub]?SUBT[sub]:TITLES[v]||'Strate')+' — Strate';
+  if(moved&&v!=='site') window.scrollTo?.(0,0);
+  // page choisie au clavier dans un menu : le focus va au titre de la nouvelle page, pas au document
+  if(moved&&v!=='site'&&document.activeElement?.closest?.('.tabs')){ const h=$(`#view-${m} h1`);
+    h?.setAttribute?.('tabindex','-1'); h?.focus?.({preventScroll:true}); }
+  if(m==='map') setTimeout(()=>map.invalidateSize(),50);
   // la veille ne s'actualise que visible (onglet, ou calque sur la carte) : rien ne tourne pour rien
-  if(v==='veille') vRefresh(); else vSchedule();
+  if(v==='veille'){ vSub(sub||'flux'); vRefresh(); } else vSchedule();
   // la carte n'est jamais visible en même temps que le screener : le filtre « zone visible » se remet à jour
   // au retour sur l'onglet, pas sur moveend
   if(v==='screener'){ if(!SCR.loaded) scrInit(); else if($('#f_bbox').checked&&scrParams().toString()!==SCR.shown){SCR.page=1;scrLoad();} }
+  if(v==='societes'||v==='previsions'||v==='methode') pageRender(v,sub,arg);
 }
-document.querySelectorAll('.tabs a').forEach(a=>a.onclick=()=>show(a.dataset.v));
+const SUBT={flux:'Flux d’actualité',correlations:'Corrélations',suivies:'Mines suivies',etat:'État du service',annuaire:'Sociétés',
+  fiche:'Société',capex:'CAPEX & investissements',effectifs:'Effectifs',mine:'Prévisions par mine',retro:'Rétro-test',
+  calibration:'Calibration',sources:'Sources & licences'};
+// menu : le bouton du groupe et la page en cours portent la sélection (trait d'accent) ; aria-current pour les lecteurs
+function navMark(v,sub){
+  const grp=v==='site'?'map':v;
+  document.querySelectorAll('.menu-btn').forEach(b=>b.classList.toggle('cur',String(b.dataset.group||'').split(' ').includes(grp)));
+  document.querySelectorAll('.menu-list a[data-v]').forEach(a=>{
+    const on=a.dataset.v===grp&&(!a.dataset.sub||a.dataset.sub===(sub==='fiche'?'annuaire':sub));
+    if(on) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
+  document.querySelectorAll(`#view-${v} .subtabs a`).forEach(a=>{
+    const on=a.dataset.sub===(sub==='fiche'?'annuaire':sub);
+    if(on) a.setAttribute('aria-current','page'); else a.removeAttribute('aria-current'); });
+  document.querySelectorAll(`#view-${v} section[data-sub]`).forEach(s=>{ s.hidden=s.dataset.sub!==sub; });
+}
+const seg=s=>{ try{ return decodeURIComponent(s); }catch{ return s; } };
+// hash → {v, sub, arg} ; pur, testé tel quel
+function parseRoute(hash){
+  const h=String(hash??'').replace(/^#/,'');
+  if(!h||h==='/'||h==='/carte') return {v:'map'};
+  if(h[0]!=='/') return {v:'site',arg:seg(h)};  // ancien format « #<id> »
+  const [a,b,...r]=h.slice(1).split('/'), rest=[b,...r].filter(x=>x!=null).join('/');
+  if(a==='site'&&rest) return {v:'site',arg:seg(rest)};
+  if(a==='screener') return {v:'screener'};
+  if(a==='veille') return {v:'veille',sub:['flux','correlations','suivies','etat'].includes(b)?b:'flux'};
+  if(a==='societes') return {v:'societes',sub:b==='capex'||b==='effectifs'?b:'annuaire'};
+  if(a==='societe'&&rest) return {v:'societes',sub:'fiche',arg:seg(rest)};
+  if(a==='previsions'){ if(b==='retro-test') return {v:'previsions',sub:'retro'};
+    return {v:'previsions',sub:'mine',arg:b==='mine'&&r.length?seg(r.join('/')):null}; }
+  if(a==='methode') return {v:'methode',sub:['sources','correlations'].includes(b)?b:'calibration'};
+  return {v:'map'};
+}
+function route(){
+  const r=parseRoute(location.hash);
+  if(r.v==='site'){ if(r.arg===CURRENT) show('site'); else open(r.arg); return; }
+  show(r.v,r.sub??null,r.arg??null);
+}
 
 // -- screener ----------------------------------------------------------------------------
 // Avec worldCopyJump, Leaflet rend des longitudes non ramenées (est = 200). On les ramène dans [-180, 180] :
@@ -531,7 +903,7 @@ function bboxParam(w,s,e,n){
   const [W,E]=e-w>=360?[-180,180]:[wrapW(w),wrapE(e)];
   return [W,lat(s),E,lat(n)].map(x=>x.toFixed(3)).join(',');
 }
-// Carte cachée (onglet Screener) : sa taille vaut 0 et getBounds() ne veut plus rien dire ; on garde la
+// Carte cachée (autre page) : sa taille vaut 0 et getBounds() ne veut plus rien dire ; on garde la
 // dernière zone vue.
 let MAPBOX=null;
 function mapBox(){
@@ -567,8 +939,10 @@ async function scrInit(){
   $('#scr_note').innerHTML=scrNote(f);
   ['#f_com','#f_cat','#f_emp','#f_real','#f_ana','#f_alert','#f_bbox'].forEach(id=>$(id).onchange=()=>{SCR.page=1;scrLoad();});
   ['#f_q','#f_pays','#f_emin','#f_emax','#f_pmin'].forEach(id=>{let t;$(id).oninput=()=>{clearTimeout(t);t=setTimeout(()=>{SCR.page=1;scrLoad();},300);};});
-  $('#f_reset').onclick=()=>{document.querySelectorAll('.filters input').forEach(i=>i.type==='checkbox'?i.checked=false:i.value='');$('#f_com').value='';$('#f_cat').value='';SCR.page=1;scrLoad();};
-  document.querySelectorAll('#scr th[data-s]').forEach(th=>th.onclick=()=>{const s=th.dataset.s; SCR.desc=SCR.sort===s?!SCR.desc:!['nom','pays','categorie','commodite_principale'].includes(s); SCR.sort=s; SCR.page=1; scrLoad();});
+  $('#f_reset').onclick=()=>{document.querySelectorAll('#view-screener .filters input').forEach(i=>i.type==='checkbox'?i.checked=false:i.value='');$('#f_com').value='';$('#f_cat').value='';SCR.page=1;scrLoad();};
+  document.querySelectorAll('#scr th[data-s]').forEach(th=>{ th.tabIndex=0;
+    const go=()=>{const s=th.dataset.s; SCR.desc=SCR.sort===s?!SCR.desc:!['nom','pays','categorie','commodite_principale'].includes(s); SCR.sort=s; SCR.page=1; scrLoad();};
+    th.onclick=go; th.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); go(); } }; });
   $('#pg_prev').onclick=()=>{if(SCR.page>1){SCR.page--;scrLoad();}}; $('#pg_next').onclick=()=>{if(SCR.page*SCR.per<SCR.total){SCR.page++;scrLoad();}};
   $('#scr_go').onclick=scrAnalyze;
   scrLoad();
@@ -596,18 +970,19 @@ async function scrLoad(){
   catch(e){ if(my===SCR.seq){ console.error(e); $('#scr_total').textContent='Erreur de chargement : '+errTxt(e); } return; }
   if(my!==SCR.seq) return; SCR.total=r.total; SCR.shown=p.toString();
   $('#scr_csv').href='/api/screener.csv?'+p;  // l'export suit la table affichée
-  document.querySelectorAll('#scr th[data-s]').forEach(th=>{th.classList.toggle('s',th.dataset.s===SCR.sort);th.classList.toggle('asc',th.dataset.s===SCR.sort&&!SCR.desc);});
-  $('#scr_total').textContent=`${fmt(r.total,0)} sites`;
+  document.querySelectorAll('#scr th[data-s]').forEach(th=>{const on=th.dataset.s===SCR.sort; th.classList.toggle('s',on);th.classList.toggle('asc',on&&!SCR.desc);
+    th.setAttribute?.('aria-sort',on?(SCR.desc?'descending':'ascending'):'none');});
+  $('#scr_total').textContent=`${fmt(r.total,0)} sites correspondent aux filtres`;
   $('#pg_info').textContent=r.total?`${fmt((SCR.page-1)*SCR.per+1,0)}–${fmt(Math.min(SCR.page*SCR.per,r.total),0)} sur ${fmt(r.total,0)}`:'';
   $('#scr tbody').innerHTML=r.rows.map(x=>`<tr class="row" data-id="${esc(x.id)}">
-    <td>${esc(x.nom||'Emprise sans nom')}${x.suivi?' <span class="meta">· suivie</span>':''}${x.analyse?' <span style="color:var(--red)" title="analyse récente (signaux de moins de 6 mois)">●</span>':''}</td>
+    <td><a class="nm" href="#/site/${esc(enc(x.id))}">${esc(x.nom||'Emprise sans nom')}</a>${x.suivi?' <span class="meta">· suivie</span>':''}${x.analyse?' <span class="pill p-acc" title="analyse récente (signaux de moins de 6 mois)">analysée</span>':''}</td>
     <td>${esc(x.pays||'—')}</td><td class="meta">${esc(x.categorie)}</td><td>${esc(x.commodites||'—')}</td>
-    <td class="n">${x.emprise_km2==null?'—':fmt(x.emprise_km2,x.emprise_km2<10?2:0)}${x.avertissement?` <span title="${esc(x.avertissement)}" style="color:var(--amber);cursor:help">⚠</span>`:''}</td>
-    <td class="n">${x.prod_estimee_t==null?'—':'≈ '+mt(x.prod_estimee_t)+' <span class="meta">'+(x.prod_estimee_type==='charbon'?'charbon':x.prod_estimee_type?'minerai':'')+'</span>'}</td>
+    <td class="n">${x.emprise_km2==null?'—':fmt(x.emprise_km2,x.emprise_km2<10?2:0)}${x.avertissement?`<abbr class="flag" title="${esc(x.avertissement)}">*</abbr>`:''}</td>
+    <td class="n">${x.prod_estimee_t==null?'—':'≈ '+mt(x.prod_estimee_t)+' <span class="u">'+(x.prod_estimee_type==='charbon'?'charbon':x.prod_estimee_type?'minerai':'')+'</span>'}</td>
     <td class="n meta">${x.prod_estimee_t==null?'':mt(x.prod_estimee_bas90)+' – '+mt(x.prod_estimee_haut90)}</td>
-    <td class="n">${x.prod_reelle_t==null?'—':mt(x.prod_reelle_t)+' <span class="meta">'+esc(x.prod_reelle_serie)+', '+esc(x.prod_reelle_annee)+'</span>'}</td>
-    <td>${x.niveau==null?'':`<span class="lvl l${Math.min(x.niveau,2)}" title="${esc(x.alerte||'')}">${x.niveau}</span>`}</td></tr>`).join('')||'<tr><td colspan=9 class="meta">Aucun site ne correspond.</td></tr>';
-  document.querySelectorAll('#scr tr.row').forEach(tr=>tr.onclick=()=>open(tr.dataset.id));  // open() bascule sur la carte
+    <td class="n">${x.prod_reelle_t==null?'—':mt(x.prod_reelle_t)+' <span class="u">'+esc(x.prod_reelle_serie)+', '+esc(x.prod_reelle_annee)+'</span>'}</td>
+    <td>${x.niveau==null?'':`<span title="${esc(x.alerte||'')}">${lvl(Math.min(x.niveau,2))}</span>`}</td></tr>`).join('')||'<tr><td colspan=9 class="meta">Aucun site ne correspond.</td></tr>';
+  document.querySelectorAll('#scr tr.row').forEach(tr=>tr.onclick=e=>{ if(!e.target.closest?.('a')) open(tr.dataset.id); });  // open() affiche la fiche
 }
 let jobT=null, JOBSEQ=0;
 async function jobsPoll(){
@@ -615,7 +990,7 @@ async function jobsPoll(){
   let j; try{ j=await api('/api/jobs'); }catch(e){ console.error(e); if(my===JOBSEQ) jobT=setTimeout(jobsPoll,30000); return; }
   if(my!==JOBSEQ) return;
   const all=j.analyses||[], act=all.filter(a=>/^en /.test(a.statut));
-  $('#jobs').textContent=act.length?`Analyses : ${act.length} en cours/en file`:'';
+  $('#jobs').textContent=act.length?`${act.length} ${plur(act.length,'analyse')} en cours ou en file`:'';
   if(act.length) jobT=setTimeout(jobsPoll,10000);
   else if(all.length){ try{ drawRadar(await api('/api/radar')); if(SCR.loaded) scrLoad(); }catch(e){ console.error(e); } }
 }
@@ -624,9 +999,43 @@ async function jobsPoll(){
 // du contrat (docs/veille.md) et la clé « veille » de /api/site. Tout champ peut manquer (base vide, étape jamais
 // lancée, serveur plus ancien) : lectures via arr()/obj()/num(), jamais d'« undefined » à l'écran, et chaque
 // chaîne venue du serveur passe par esc() (titres et domaines viennent d'articles du monde entier).
-const VT_COL={accident:'#ff5d5d',securite:'#ff4fa3',social:'#f2a93b',juridique:'#b07cff',environnement:'#4cc38a',
-  operations:'#5fa8ff',finance:'#e8d44d',autre:'#8b8f98'};
-const vcol=t=>Object.hasOwn(VT_COL,String(t))?VT_COL[t]:'#8b8f98';  // jamais une clé arbitraire dans un style
+// tok() et corrBadge() servent à toute l'interface ; ils vivent ici parce que cette région est rejouée seule par
+// les tests (déclarations de fonction : visibles dans tout le script).
+function ar(el,h=240){ const w=el?.parentElement?.clientWidth; return w>0?Math.max(1.6,Math.min(6,w/h)):2; }
+function tok(name,fb){ try{ const v=getComputedStyle(document.documentElement).getPropertyValue(name).trim(); return v||fb; }catch{ return fb; } }
+const f2=v=>Number(v).toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2});
+// signe dans le texte ; trois décimales sous 0,01 (sinon une borne à 0,004 s'afficherait « 0,00 » à côté de « lien positif »)
+const fx2=v=>{ const a=Math.abs(v); return a>0&&a<0.01?a.toLocaleString('fr-FR',{minimumFractionDigits:3,maximumFractionDigits:3}):f2(a); };
+const sg2=v=>{ const r=Math.abs(v)<0.0005?0:v; return (r>0?'+':r<0?'−':'')+fx2(r); };
+// Badge de corrélation, unique composant pour toute relation affichée : coefficient, IC 90 %, n, verdict et bande
+// de l'intervalle (r et ρ sur [−1, 1], nul à 0 ; lift sur une échelle log ÷8…×8, nul à 1).
+// o = {type:'r'|'rho'|'lift', v, lo, hi, n, nUnit, verdict, state:'demo'|'nul'|'few'|'na'}. Tout est échappé.
+function corrBadge(o){
+  o=o&&typeof o==='object'?o:{};
+  const t=o.type==='lift'?'lift':o.type==='r'?'r':'rho', sym=t==='lift'?'lift ×':t==='r'?'r':'ρ';
+  const v=num(o.v), lo=num(o.lo), hi=num(o.hi), n=num(o.n), nul=t==='lift'?1:0;
+  const ex=lo!=null&&hi!=null&&(lo>nul||hi<nul);
+  const auto=v==null?'non calculable':lo==null||hi==null?'IC 90 % indisponible'
+    :!ex?`non démontré (IC 90 % inclut ${nul})`:t==='lift'?(lo>1?'risque accru':'risque réduit'):(lo>0?'lien positif':'lien négatif');
+  // verdict du serveur gardé s'il dit la même chose que l'intervalle affiché ; sinon (verdict calculé sur un autre
+  // coefficient de la même ligne, par ex. ρ pour une ligne r) le verdict de cet intervalle. État imposé : verdict tel quel.
+  const sv=o.verdict!=null&&String(o.verdict).trim()?String(o.verdict):null, no=/non d[ée]montr|inclu|contient|trop peu|exploratoire|indisponible|calculable/i;
+  const verdict=sv&&(o.state||v==null||lo==null||hi==null||(ex?!no.test(sv):no.test(sv)))?sv:auto;
+  const state=['demo','nul','few','na'].includes(o.state)?o.state:v==null||lo==null||hi==null?'na':ex?'demo':'nul';
+  const pill={demo:'p-acc',nul:'p-neu',few:'p-warn',na:v==null?'p-neu':'p-warn'}[state];
+  const X=x=>{ if(t==='lift'){ const l=Math.log2(Math.max(1/8,Math.min(8,x))); return 2+(l+3)/6*80; } return 2+(Math.max(-1,Math.min(1,x))+1)/2*80; };
+  const ink=state==='demo'?'var(--accent)':'var(--muted)';
+  const svg=`<svg viewBox="0 0 84 12" aria-hidden="true"><line x1="2" y1="6" x2="82" y2="6" stroke="var(--rule)" stroke-width="2"/><line x1="${X(nul).toFixed(1)}" y1="1" x2="${X(nul).toFixed(1)}" y2="11" stroke="var(--faint)" stroke-width="1"/>${lo!=null&&hi!=null?`<rect x="${X(lo).toFixed(1)}" y="4" width="${Math.max(1,X(hi)-X(lo)).toFixed(1)}" height="4" rx="1" fill="${ink}" opacity=".55"/>`:''}${v!=null?`<rect x="${(X(v)-1).toFixed(1)}" y="1" width="2" height="10" fill="var(--text)"/>`:''}</svg>`;
+  const val=v==null?'—':t==='lift'?f2(v):sg2(v);
+  const ci=lo!=null&&hi!=null?`IC 90 % ${t==='lift'?f2(lo):sg2(lo)} à ${t==='lift'?f2(hi):sg2(hi)}`:'IC 90 % —';
+  const nn=n!=null?`n = ${fmt(n,0)}${o.nUnit?' '+String(o.nUnit):''}`:'n —';
+  const label=`${sym} ${val}, ${ci}, ${nn}, ${verdict}`;
+  return `<span class="cb" role="group" aria-label="${esc(label)}" title="${esc(label)}"><span class="cb-v"><i>${esc(sym)}</i>${esc(val)}</span>${svg}<span class="cb-ci">${esc(ci)}</span><span class="cb-n">${esc(nn)}</span><span class="pill ${pill}">${esc(verdict)}</span></span>`;
+}
+// couleurs des types d'événements : teintes sourdes, une par type (catégories, pas des signaux)
+const VT_COL={accident:'#c2412d',securite:'#b5527a',social:'#c7832b',juridique:'#6f7f96',environnement:'#5b8a3a',
+  operations:'#3f7cc8',finance:'#3f8f7f',autre:'#8b9098'};
+const vcol=t=>Object.hasOwn(VT_COL,String(t))?VT_COL[t]:'#8b9098';  // jamais une clé arbitraire dans un style
 const arr=v=>Array.isArray(v)?v:[], obj=v=>v&&typeof v==='object'&&!Array.isArray(v)?v:{};
 const safeUrl=u=>/^https?:\/\//i.test(String(u??''))?String(u):null;  // ni javascript: ni data: dans un lien
 const EMPTY='La veille n’a encore rien collecté';
@@ -640,6 +1049,7 @@ const STAGES=[['collecte','Collecteur','récupère le flux GDELT (15 min, ~65 la
 const TOT=[['docs','documents collectés'],['docs_en_attente','en attente'],['rejetes','rejetés (format)'],['events','événements'],
   ['mines_avec_evenements','mines citées'],['suivies','mines suivies'],['fichiers_faits','fichiers GDELT lus'],
   ['fichiers_manquants','fichiers absents (réessayés)']];
+const VSUB={flux:'Flux d’actualité',correlations:'Corrélations événements ↔ satellite',suivies:'Mines suivies',etat:'État du service'};
 const VEI={init:null,types:{},timer:null,seq:0,lseq:0,seen:null,empty:false,charts:{},corr:[],layer:null,layerOn:false,hooked:false,ct:null};
 const PTS=new Map();  // id → [lat, lon] du catalogue : la mine plutôt que le lieu (parfois un pays entier) cité par GDELT
 
@@ -652,16 +1062,16 @@ function ago(s){ const t=tms(s); if(t==null) return '—'; const d=(Date.now()-t
 const sinceISO=d=>new Date(Date.now()-d*864e5).toISOString().slice(0,19)+'Z';
 const day=s=>String(s??'').slice(0,10);
 const tdesc=t=>Object.hasOwn(VEI.types,String(t))?String(VEI.types[t]):'';
-const badge=t=>`<span class="badge" style="color:${vcol(t)}" title="${esc(tdesc(t))}">${esc(t||'?')}</span>`;
-// lien de mine : le href « #id » marche seul (hashchange → open), le clic intercepté rouvre même la fiche courante
-const mineLink=(id,name)=>id?`<a class="mine" href="#${esc(encodeURIComponent(id))}" data-open="${esc(id)}">${esc(name||id)}</a>`
+const badge=t=>`<span class="badge" title="${esc(tdesc(t))}"><i class="dot" style="background:${vcol(t)}"></i>${esc(t||'?')}</span>`;
+// lien de mine : le href « #/site/<id> » marche seul (route), le clic intercepté rouvre même la fiche courante
+const mineLink=(id,name)=>id?`<a class="mine" href="#/site/${esc(encodeURIComponent(id))}" data-open="${esc(id)}">${esc(name||id)}</a>`
   :'<span>mine non rattachée</span>';
 function confBar(c){ const v=Math.max(0,Math.min(1,num(c)??0));
   return `<span title="confiance = force du rattachement à la mine × force du classement"><span class="cf"><i style="width:${Math.round(v*100)}%"></i></span>${fmt(v,2)}</span>`; }
 const pv=v=>num(v)==null?'—':v<0.001?'&lt; 0,001':fmt(v,3);
 const lagL=l=>`${l>0?'+':l<0?'−':''}${Math.abs(l)} m`;
 const lagP=l=>l===0?'le même mois':l>0?`${l} mois après`:`${-l} mois avant`;
-const ax=()=>({ticks:{color:'#8b8f98',font:{size:10}},grid:{color:'#1c1f24'}});
+const ax=()=>({ticks:{color:tok('--muted','#55585c'),font:{size:11}},grid:{color:tok('--grid','#e4e4df')},border:{display:false}});
 
 // -- chargement -----------------------------------------------------------------------------
 function vInit(){
@@ -678,6 +1088,10 @@ function vParams(){
   p.set('min_conf',String(+v('#vf_conf')||0));
   const d=+v('#vf_days'); if(d>0) p.set('since',sinceISO(d));
   p.set('limit','200'); return p;
+}
+// sous-page de la veille : une seule section visible ; le titre suit
+function vSub(sub){
+  $('#v_h1').textContent=Object.hasOwn(VSUB,String(sub))?VSUB[sub]:VSUB.flux;
 }
 // Toutes les routes en parallèle, chacune affichée (ou son erreur) indépendamment : une route en panne ne vide
 // pas le reste de l'onglet. VEI.seq : seule la dernière actualisation (filtre changé vite) a le droit d'afficher.
@@ -698,7 +1112,7 @@ async function vLoad(){
   const safe=f=>{try{f();}catch(e){console.error(e);}};
   safe(()=>vStatus(st.v,st.er)); safe(()=>vFeed(ev.v,ev.er)); safe(()=>vStats(sta.v,sp.v,sta.er));
   safe(()=>vCorr(co.v,co.er)); safe(()=>vTracked(tr.v,tr.er));
-  $('#v_upd').textContent=`mis à jour à ${new Date().toLocaleTimeString('fr-FR')} · actualisation toutes les 60 s`;
+  $('#v_upd').textContent=`mis à jour à ${new Date().toLocaleTimeString('fr-FR')} · toutes les 60 s`;
   $('#v_bar').innerHTML='<i></i>';  // relance l'animation de 60 s
 }
 const vTab=()=>$('#view-veille').style.display==='block';
@@ -712,7 +1126,7 @@ async function vRefresh(){
   try{ if(vTab()) await vLoad(); if(VEI.layerOn&&vMapShown()) await vLayerLoad(); }catch(e){ console.error(e); }
   vSchedule();
 }
-// pastille de l'onglet : un seul appel au chargement de la page, sans minuteur
+// pastille du menu : un seul appel au chargement de la page, sans minuteur
 async function vBeat(){
   try{ const svc=obj(obj(await api('/api/veille/status')).service), d=$('#v_dot');
     d.className='tdot '+(svc.actif===true?'on':'off'); d.title=svc.actif===true?'service de veille actif':'service de veille arrêté';
@@ -743,7 +1157,7 @@ function vStage(n,name,role,x,live,iv){
   const c=vCnt(x);
   const kv=Object.entries(c).filter(([,v])=>v!=null&&typeof v!=='object').slice(0,8)
     .map(([k,v])=>`<span>${esc(k.replace(/_/g,' '))}</span><span>${typeof v==='number'?fmt(v,v%1?2:0):esc(v)}</span>`).join('');
-  return `<div class="stage ${cls}"><h3><span>${n} · ${name}</span><span class="st">● ${lbl}</span></h3>
+  return `<div class="stage ${cls}"><h3><span>${n} · ${name}</span><span class="pill st">${lbl}</span></h3>
     <div class="role">${role}</div><div class="msg" title="${esc(x?.message)}">${esc(x?.message||'')}</div>
     <div class="cnt">${kv||'<span>compteurs</span><span>—</span>'}</div>
     <div class="when">${ran?`dernier passage ${esc(ago(x.last_run))}`:'—'}</div></div>`;
@@ -754,7 +1168,7 @@ function vStatus(s,er){
   s=obj(s); const by={}; arr(s.stages).map(obj).forEach(x=>{ if(x.stage) by[x.stage]=x; });
   const svc=obj(s.service), live=svc.actif===true, iv=vCnt(by.service).interval_s;
   vBeatSet(svc,by.service);
-  $('#v_pipe').classList.toggle('live',live);  // flux animé entre les étapes seulement quand le service tourne
+  $('#v_pipe').classList.toggle('live',live);  // trait d'accent entre les étapes seulement quand le service tourne
   $('#v_pipe').innerHTML=STAGES.map(([k,name,role],i)=>(i?'<div class="arrow" aria-hidden="true"></div>':'')+vStage(i+1,name,role,by[k],live,iv)).join('');
   const t=obj(s.totaux);
   $('#v_tot').innerHTML=TOT.map(([k,l])=>`<div><b>${fmt(num(t[k]),0)}</b><span>${l}</span></div>`).join('');
@@ -766,7 +1180,7 @@ function vStatus(s,er){
 // -- fil d'actualité -------------------------------------------------------------------------
 function vItem(it,fresh){
   const u=safeUrl(it.url), title=it.title||it.url||'(sans titre)';
-  return `<div class="fi${fresh?' fresh':''}" style="--c:${vcol(it.event_type)}">
+  return `<div class="fi${fresh?' fresh':''}">
     <div class="side">${badge(it.event_type)}<time title="${esc(it.published_at)}">${esc(ago(it.published_at))}</time></div>
     <div class="t">${u?`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(title)}</a>`:esc(title)}</div>
     <div class="m">${mineLink(it.site_id,it.site_name)}${it.lang?`<span title="langue d’origine">${esc(String(it.lang).toUpperCase())}</span>`:''}${it.country?`<span>${esc(it.country)}</span>`:''}${it.domain?`<span>${esc(it.domain)}</span>`:''}${confBar(it.confidence)}${it.match_method?`<span title="méthode de rattachement à la mine">${esc(it.match_method)}</span>`:''}</div></div>`;
@@ -774,10 +1188,10 @@ function vItem(it,fresh){
 // VEI.seen : ids déjà montrés. Les nouveaux d'une actualisation à l'autre s'allument brièvement (pas au 1er rendu).
 function vFeed(r,er){
   const box=$('#v_feed');
-  if(er){ $('#v_total').textContent='indisponible'; box.innerHTML=`<p class="meta" style="padding:0 10px">Fil ${esc(er)}</p>`; return; }
+  if(er){ $('#v_total').textContent='indisponible'; box.innerHTML=`<p class="meta" style="padding:12px 14px;margin:0">Fil ${esc(er)}</p>`; return; }
   r=obj(r); const evs=arr(r.events).map(obj), tot=num(r.total)??evs.length;
   $('#v_total').textContent=evs.length<tot?`${fmt(evs.length,0)} plus récents sur ${fmt(tot,0)}`:`${fmt(tot,0)} ${tot>1?'événements':'événement'}`;
-  if(!evs.length){ box.innerHTML=`<p class="meta" style="padding:0 10px">${VEI.empty?EMPTY:'Aucun événement ne correspond à ces filtres.'}</p>`; return; }
+  if(!evs.length){ box.innerHTML=`<p class="meta" style="padding:12px 14px;margin:0">${VEI.empty?EMPTY:'Aucun événement ne correspond à ces filtres.'}</p>`; return; }
   const first=VEI.seen==null, seen=VEI.seen||new Set();
   box.innerHTML=evs.map(it=>vItem(it,!first&&!seen.has(it.id))).join('');
   evs.forEach(it=>seen.add(it.id)); VEI.seen=seen;
@@ -841,15 +1255,15 @@ function vStats(st,sp,er){
   const types=[...order.filter(t=>seenT.has(t)),...[...seenT].filter(t=>!order.includes(t))];
   const ds=types.map(t=>({label:t,data:labels.map(j=>S.cnt[j]?.[t]||0),backgroundColor:vcol(t),stack:'s'}));
   const rest=labels.map(j=>{ const s=Object.values(S.cnt[j]||{}).reduce((a,b)=>a+b,0); return Math.max(0,(S.tot[j]??s)-s); });
-  if(rest.some(v=>v>0)) ds.push({label:'non détaillés',data:rest,backgroundColor:'#3a3f47',stack:'s'});
+  if(rest.some(v=>v>0)) ds.push({label:'non détaillés',data:rest,backgroundColor:tok('--control','#c8c8c2'),stack:'s'});
   const hasDay=labels.length&&ds.some(d=>d.data.some(v=>v>0));
-  vChart('day',$('#v_day'),hasDay?{type:'bar',data:{labels,datasets:ds},options:{animation:false,
-    plugins:{legend:{position:'bottom',labels:{color:'#8b8f98',boxWidth:8,font:{size:10}}}},
-    scales:{x:{...ax(),stacked:true,ticks:{color:'#8b8f98',maxTicksLimit:10,font:{size:10}}},y:{...ax(),stacked:true,beginAtZero:true}}}}:null,noData);
+  vChart('day',$('#v_day'),hasDay?{type:'bar',data:{labels,datasets:ds},options:{animation:false,aspectRatio:ar($('#v_day'),260),
+    plugins:{legend:{position:'bottom',labels:{color:tok('--muted','#55585c'),boxWidth:8,boxHeight:8,font:{size:11}}}},
+    scales:{x:{...ax(),stacked:true,grid:{display:false},ticks:{...ax().ticks,maxTicksLimit:8,maxRotation:0}},y:{...ax(),stacked:true,beginAtZero:true,ticks:{...ax().ticks,precision:0}}}}}:null,noData);
   const lg=Object.entries(obj(st.par_langue)).map(([k,v])=>[k,num(v)??0]).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]).slice(0,12);
   vChart('lang',$('#v_lang'),lg.length?{type:'bar',data:{labels:lg.map(x=>String(x[0]).toUpperCase()),
-    datasets:[{data:lg.map(x=>x[1]),backgroundColor:'#f2a93b'}]},options:{indexAxis:'y',animation:false,
-    plugins:{legend:{display:false}},scales:{x:{...ax(),beginAtZero:true},y:ax()}}}:null,noData);
+    datasets:[{data:lg.map(x=>x[1]),backgroundColor:tok('--accent','#1f5fae')}]},options:{indexAxis:'y',animation:false,aspectRatio:ar($('#v_lang'),240),
+    plugins:{legend:{display:false}},scales:{x:{...ax(),beginAtZero:true,ticks:{...ax().ticks,precision:0}},y:{...ax(),grid:{display:false}}}}}:null,noData);
   const top=arr(st.top_mines).map(obj).slice(0,10), mx=Math.max(1,...top.map(x=>num(x.n)??0));
   $('#v_top').innerHTML=top.length?top.map(x=>`<div class="tm"><div class="tmn">${mineLink(x.site_id,x.site_name)}<span>${fmt(num(x.n),0)}</span></div><i style="width:${Math.round((num(x.n)??0)/mx*100)}%"></i></div>`).join('')
     :`<p class="meta" style="margin:0">${noData}</p>`;
@@ -885,6 +1299,10 @@ function vVerdict(cr){
   if(cr.verdict==='lien démontré') return 'non démontré (q ≥ 0,10 ou IC contenant la valeur nulle)';
   return String(cr.verdict||'non démontré');
 }
+// badge de corrélation d'une case : verdict et état suivent les règles de vDemo / vFew (jamais celles du badge seul)
+const vBadge=cr=>{ const e=vEffV(cr);
+  return corrBadge({type:vVol(cr)?'rho':'lift',v:e.v,lo:e.lo,hi:e.hi,n:num(cr.n_events),nUnit:'mois-événements',
+    verdict:vVerdict(cr),state:vDemo(cr)?'demo':vFew(cr)?'few':e.v==null?'na':'nul'}); };
 // infobulle d'une case, déjà échappée (pv() rend du HTML) : à insérer telle quelle dans title="…"
 const vTitle=cr=>`${esc(cr.event_type)} × ${esc(sigL(cr.signal))}, décalage ${lagL(vLag(cr))} : ${esc(vEff(cr))} · p ${pv(cr.p_value)} · q ${pv(cr.q_value)}${vXp(cr)?' (famille exploratoire)':''} · ${fmt(num(cr.n_mines),0)} mines, ${fmt(num(cr.n_events),0)} mois-événements · ${esc(vVerdict(cr))}`;
 function vCell(cr,i){
@@ -893,13 +1311,13 @@ function vCell(cr,i){
   if(vFew(cr)) return `<td class="few" data-i="${i}" title="${vTitle(cr)}">·</td>`;
   // assez de données mais effet absent (ne devrait plus arriver avec la correction de continuité) : pas hachuré
   if(v==null) return `<td class="nd${xp?' xp':''}" data-i="${i}" title="${vTitle(cr)}">n/d</td>`;
-  // couleur : log2(lift) (×4 et ÷4 aux extrêmes) ou ρ ; ambre = plus d'anomalies, bleu = moins ;
-  // pâle si q ≥ 0,10 ou si le décalage est exploratoire
+  // couleur divergente : bleu = plus d'anomalies les mois d'actualité, ocre = moins ; log2(lift) (×4 et ÷4 aux
+  // extrêmes) ou ρ ; pâle si q ≥ 0,10 ou si le décalage est exploratoire
   const x=vol?Math.max(-1,Math.min(1,v)):v>0?Math.max(-1,Math.min(1,Math.log2(v)/2)):-1;
-  const q=num(cr.q_value), a=((0.1+0.65*Math.abs(x))*(!xp&&q!=null&&q<0.1?1:0.5)).toFixed(2);
-  const bg=x>=0?`rgba(242,169,59,${a})`:`rgba(95,168,255,${a})`, d=vDemo(cr);
+  const q=num(cr.q_value), a=((0.08+0.47*Math.abs(x))*(!xp&&q!=null&&q<0.1?1:0.5)).toFixed(2);
+  const bg=x>=0?`rgba(63,124,200,${a})`:`rgba(199,131,43,${a})`, d=vDemo(cr);
   const cls=[d?'demo':'',xp?'xp':''].filter(Boolean).join(' ');
-  return `<td${cls?` class="${cls}"`:''} data-i="${i}" style="background:${bg}" title="${vTitle(cr)}">${d?'★ ':''}${vol?fmt(v,2):'×'+fmt(v,v<10?2:0)}</td>`;
+  return `<td${cls?` class="${cls}"`:''} data-i="${i}" tabindex="0" style="background:${bg}" title="${vTitle(cr)}">${d?'★ ':''}${vol?fmt(v,2):'×'+fmt(v,v<10?2:0)}</td>`;
 }
 function vCorrDetail(i){
   const cr=VEI.corr[i], det=$('#v_cdet');
@@ -908,23 +1326,22 @@ function vCorrDetail(i){
   const read=e.v==null?'Effet non calculable sur ces données.'
     :vol?`Corrélation de rang, mine par mine, entre le volume d’actualité et « ${s} » ${lagP(l)} : ρ = ${fmt(e.v,2)}.`
     :`Les mois où la mine fait l’actualité (${esc(cr.event_type)}), la probabilité d’une anomalie « ${s} » ${lagP(l)} vaut ×${fmt(e.v,2)} celle des autres mois de la même mine (rapport de risques de Mantel–Haenszel).`;
-  const cls=vDemo(cr)?'l0':vFew(cr)||xp?'':'l1';
-  const verdict=`<span class="lvl ${cls}"${cls?'':' style="color:var(--dim)"'}>${esc(vVerdict(cr))}</span>`
-    +(xp&&!vFew(cr)?' <span class="meta">décalage ≠ 0 : calculé pour explorer, rien n’est déclaré</span>':'');
-  det.innerHTML=`<h3>${vol?'<span class="badge" style="color:var(--text)">volume</span>':badge(cr.event_type)} × ${s} · décalage ${lagL(l)}</h3><p style="margin:4px 0 8px">${verdict}</p>
-    <div class="kv"><div>Effet</div><div>${esc(vEff(cr))}</div><div>${vol?'p (corrélation de rang)':'p (Cochran–Mantel–Haenszel)'}</div><div>${pv(cr.p_value)}</div>
+  det.innerHTML=`<h3>${vol?'<span class="badge">volume</span>':badge(cr.event_type)} × ${s} · décalage ${lagL(l)}</h3>
+    <div style="margin:8px 0 12px">${vBadge(cr)}</div>
+    ${xp&&!vFew(cr)?'<p class="meta">décalage ≠ 0 : calculé pour explorer, rien n’est déclaré</p>':''}
+    <div class="kv" style="margin-top:0"><div>Effet</div><div>${esc(vEff(cr))}</div><div>${vol?'p (corrélation de rang)':'p (Cochran–Mantel–Haenszel)'}</div><div>${pv(cr.p_value)}</div>
     <div>q (Benjamini-Hochberg, ${xp?'famille exploratoire':'famille principale'})</div><div>${pv(cr.q_value)}</div><div>Échantillon</div><div>${fmt(num(cr.n_mines),0)} mines · ${fmt(num(cr.n_events),0)} mois-événements</div></div>
-    <p class="meta" style="margin:8px 0 0">${read}</p>`;
+    <p class="meta" style="margin:10px 0 0">${read}</p>`;
 }
 function vCorr(c,er){
   const box=$('#v_corr'), meta=$('#v_corrmeta'), top=$('#v_ctop'), det=$('#v_cdet');
   if(er){ box.innerHTML=`<p class="meta">Corrélations ${esc(er)}</p>`; meta.textContent=''; top.innerHTML=''; det.innerHTML=''; VEI.corr=[]; return; }
   c=obj(c); const rows=arr(c.rows).map(obj).filter(cr=>cr.event_type&&cr.signal&&num(cr.lag_months)!=null); VEI.corr=rows;
   const demo=rows.filter(vDemo), main=rows.filter(cr=>!vXp(cr));
-  meta.innerHTML=c.run_at?`Dernier calcul ${esc(ago(c.run_at))} · ${fmt(rows.length,0)} combinaisons calculées, dont ${fmt(main.length,0)} au décalage 0 (famille principale, seule à pouvoir conclure) · <b style="color:${demo.length?'var(--green)':'var(--text)'}">${demo.length?`${demo.length} ${demo.length>1?'liens démontrés':'lien démontré'}`:'aucun lien démontré'}</b> (q &lt; 0,10)${c.methode?` · ${esc(c.methode)}`:''}`
+  meta.innerHTML=c.run_at?`Dernier calcul ${esc(ago(c.run_at))} · ${fmt(rows.length,0)} combinaisons calculées, dont ${fmt(main.length,0)} au décalage 0 (famille principale, seule à pouvoir conclure) · <b>${demo.length?`${demo.length} ${demo.length>1?'liens démontrés':'lien démontré'}`:'aucun lien démontré'}</b> (q &lt; 0,10)${c.methode?` · ${esc(c.methode)}`:''}`
     :'';
   if(!rows.length){ top.innerHTML=''; det.innerHTML='';
-    box.innerHTML=`<p class="meta">${VEI.empty?EMPTY:'Pas encore d’étude d’événements : il faut au moins 5 mines suivies et analysées et 10 mois-événements (recalcul toutes les 6 h au plus).'}</p>`;
+    box.innerHTML=`<p class="empty">${VEI.empty?EMPTY:'Pas encore d’étude d’événements : il faut au moins 5 mines suivies et analysées et 10 mois-événements (recalcul toutes les 6 h au plus).'}</p>`;
     return; }
   const lags=[...new Set(rows.map(cr=>cr.lag_months))].sort((a,b)=>a-b);
   const tOrd=[...Object.keys(VEI.types),...Object.keys(VT_COL),'volume'], sOrd=Object.keys(LBL);
@@ -934,12 +1351,12 @@ function vCorr(c,er){
   const pairs=[...new Map(rows.map(cr=>[ck(cr.event_type,cr.signal),[cr.event_type,cr.signal]])).values()]
     .sort((a,b)=>rk(tOrd,a[0])-rk(tOrd,b[0])||String(a[0]).localeCompare(b[0])||rk(sOrd,a[1])-rk(sOrd,b[1])||String(a[1]).localeCompare(b[1]));
   box.innerHTML=`<table class="hm"><thead><tr><th class="rl">type × signal \\ décalage</th>${lags.map(l=>l===0?`<th class="main" title="famille principale : seul décalage où un lien peut être déclaré">★ ${lagL(l)}</th>`:`<th title="exploratoire : calculé avec sa propre correction, rien n’est déclaré">${lagL(l)}</th>`).join('')}</tr></thead><tbody>${
-    pairs.map(([t,s])=>`<tr><th class="rl">${t==='volume'?'<span class="badge" style="color:var(--text)">volume</span>':badge(t)} <span class="meta">×</span> ${esc(sigL(s))}</th>${
+    pairs.map(([t,s])=>`<tr><th class="rl">${t==='volume'?'<span class="badge">volume</span>':badge(t)} <span class="meta">×</span> ${esc(sigL(s))}</th>${
       lags.map(l=>{const i=idx.get(ck(t,s,l)); return vCell(i==null?null:rows[i],i);}).join('')}</tr>`).join('')}</tbody></table>`;
   // tableau des plus nettes : famille principale seulement (les q des décalages exploratoires ne se comparent pas)
   const best=rows.map((cr,i)=>[cr,i]).filter(([cr])=>!vXp(cr)&&!vFew(cr)&&num(cr.q_value)!=null).sort((a,b)=>a[0].q_value-b[0].q_value).slice(0,10);
-  top.innerHTML=best.length?`<h2>Famille principale (décalage 0) : les combinaisons les plus nettes, q croissante</h2><table><thead><tr><th>Type</th><th>Signal</th><th>Effet (IC 90 %)</th><th class="n">p</th><th class="n">q</th><th class="n">Mines</th><th>Verdict</th></tr></thead><tbody>${
-    best.map(([cr,i])=>`<tr class="row" data-i="${i}"><td>${vVol(cr)?'volume':badge(cr.event_type)}</td><td>${esc(sigL(cr.signal))}</td><td>${esc(vEff(cr))}</td><td class="n">${pv(cr.p_value)}</td><td class="n">${pv(cr.q_value)}</td><td class="n">${fmt(num(cr.n_mines),0)}</td><td>${vDemo(cr)?'<span class="lvl l0">★ lien démontré</span>':'<span class="meta">non démontré</span>'}</td></tr>`).join('')}</tbody></table>`:'';
+  top.innerHTML=best.length?`<h2>Famille principale (décalage 0) : les combinaisons les plus nettes, q croissante</h2><div class="tablebox"><table><thead><tr><th>Type</th><th>Signal</th><th>Effet, IC 90 %, n, verdict</th><th class="n">p</th><th class="n">q</th><th class="n">Mines</th></tr></thead><tbody>${
+    best.map(([cr,i])=>`<tr class="row" data-i="${i}"><td>${vVol(cr)?'volume':badge(cr.event_type)}</td><td>${esc(sigL(cr.signal))}</td><td>${vBadge(cr)}</td><td class="n">${pv(cr.p_value)}</td><td class="n">${pv(cr.q_value)}</td><td class="n">${fmt(num(cr.n_mines),0)}</td></tr>`).join('')}</tbody></table></div>`:'';
   top.querySelectorAll('tr[data-i]').forEach(tr=>tr.onclick=()=>vCorrDetail(+tr.dataset.i));
   vCorrDetail(demo.length?rows.indexOf(demo[0]):best.length?best[0][1]:-1);
 }
@@ -1015,14 +1432,14 @@ function vSiteHtml(v){
   const row=it=>{ const u=safeUrl(it.url), ti=esc(it.title||it.domain||'article');
     return `<tr><td class="meta" style="white-space:nowrap">${esc(day(it.published_at))}</td><td>${badge(it.event_type)}</td>
       <td>${u?`<a class="lk" href="${esc(u)}" target="_blank" rel="noopener">${ti}</a>`:ti}<div class="meta">${it.lang?esc(String(it.lang).toUpperCase())+' · ':''}${it.domain?esc(it.domain)+' · ':''}confiance ${fmt(num(it.confidence),2)}${it.match_method?' · '+esc(it.match_method):''}</div></td></tr>`; };
-  const list=evs.length?`<table class="vsite"><tbody>${evs.slice(0,8).map(row).join('')}</tbody></table>${evs.length>8?`<details><summary class="meta" style="cursor:pointer">Voir les ${Math.min(evs.length,200)-8} autres</summary><table class="vsite"><tbody>${evs.slice(8,200).map(row).join('')}</tbody></table></details>`:''}`
+  const list=evs.length?`<div class="tablebox"><table class="vsite"><tbody>${evs.slice(0,8).map(row).join('')}</tbody></table></div>${evs.length>8?`<details><summary class="meta" style="cursor:pointer;margin-top:8px">Voir les ${Math.min(evs.length,200)-8} autres</summary><table class="vsite"><tbody>${evs.slice(8,200).map(row).join('')}</tbody></table></details>`:''}`
     :'<p class="meta">Aucun article rattaché à cette mine pour l’instant.</p>';
-  return head+list+(vol.length?'<div class="card" style="margin-top:8px"><h3>Volume d’actualité mensuel (GDELT, articles citant la mine)</h3><canvas id="v_vol" height="110"></canvas></div>':'');
+  return head+list+(vol.length?'<div class="card" style="margin-top:12px"><h3>Volume d’actualité mensuel (GDELT, articles citant la mine)</h3><canvas id="v_vol" height="110"></canvas></div>':'');
 }
 function vSiteCharts(v){
   const vol=arr(obj(v).volume).map(obj).filter(x=>x.month), cv=$('#v_vol'); if(!cv||!vol.length) return;
-  charts.push(new Chart(cv,{type:'bar',data:{labels:vol.map(x=>String(x.month).slice(0,7)),datasets:[{data:vol.map(x=>num(x.n_articles)??0),backgroundColor:'#5fa8ff'}]},
-    options:{animation:false,plugins:{legend:{display:false}},scales:{x:{...ax(),ticks:{color:'#8b8f98',maxTicksLimit:8,font:{size:10}}},y:{...ax(),beginAtZero:true}}}}));
+  charts.push(new Chart(cv,{type:'bar',data:{labels:vol.map(x=>String(x.month).slice(0,7)),datasets:[{data:vol.map(x=>num(x.n_articles)??0),backgroundColor:tok('--accent','#1f5fae')}]},
+    options:{animation:false,aspectRatio:ar(cv,140),plugins:{legend:{display:false}},scales:{x:{...ax(),grid:{display:false},ticks:{...ax().ticks,maxTicksLimit:8,maxRotation:0}},y:{...ax(),beginAtZero:true,ticks:{...ax().ticks,precision:0}}}}}));
 }
 // un repère par mois : couleur du type le plus fréquent ce mois-là (confiance ≥ 0,5, comme l'étude d'événements)
 function vMarks(v){
@@ -1057,20 +1474,496 @@ function vFooter(items){
 }
 
 $('#v_layer').onchange=e=>vLayer(e.target.checked);
-$('#vf_map').onclick=()=>{ vLayer(true); show('map'); };
+$('#vf_map').onclick=()=>{ vLayer(true); location.hash='/carte'; };
 // filtre changé : rien n'est « nouveau », seules les arrivées d'une actualisation automatique s'allument
 const vFilter=()=>{ VEI.seen=null; vLoad(); };
 ['#vf_type','#vf_lang','#vf_country','#vf_days'].forEach(id=>$(id).onchange=vFilter);
 $('#vf_conf').oninput=()=>{ $('#vf_conf_o').textContent=fmt(+$('#vf_conf').value,2); clearTimeout(VEI.ct); VEI.ct=setTimeout(vFilter,250); };
-// délégation : liens de mine (fil, top, liste suivie) → fiche sur la carte ; cases de la carte de chaleur → détail
+// délégation : liens de mine (fil, top, liste suivie) → fiche ; cases de la carte de chaleur → détail
 $('#view-veille').addEventListener('click',e=>{
   const a=e.target.closest?.('a.mine[data-open]'); if(a){ e.preventDefault(); open(a.dataset.open); return; }
   const td=e.target.closest?.('#v_corr td[data-i]'); if(td) vCorrDetail(+td.dataset.i);
 });
+$('#view-veille').addEventListener('keydown',e=>{
+  const td=(e.key==='Enter'||e.key===' ')&&e.target.closest?.('#v_corr td[data-i]'); if(td){ e.preventDefault(); vCorrDetail(+td.dataset.i); }
+});
 // == fin veille ============================================================================
 
-window.addEventListener('hashchange',()=>{const id=decodeURIComponent(location.hash.slice(1)); if(id&&id!==CURRENT) open(id);});
-init().then(jobsPoll).catch(e=>{$('#status').textContent='Erreur de chargement';console.error(e)});
+// == sociétés, prévisions, méthode ==========================================================
+// Ne lisent que le contrat de docs/previsions-societes.md § 3 (et /api/calibration, /api/search, /api/screener,
+// /api/correlations/summary). Données absentes → le « message » du serveur, ou une phrase claire, dans le cadre.
+const PG={seq:{},charts:[],co:null,coSort:{k:'capex_dernier',desc:true},coShown:200,summary:null,corrDom:'tous',fcSeq:0};
+const box=(msg,cls='')=>`<div class="empty${cls?' '+cls:''}">${msg}</div>`;
+const loading=()=>'<p class="meta">Chargement…</p>';
+const errBox=(what,e)=>box(`${esc(what)} : ${esc(errTxt(e))}. <button class="btn-text" type="button" data-retry>Réessayer</button>`,'err');
+const pgSeq=k=>{ PG.seq[k]=(PG.seq[k]||0)+1; const n=PG.seq[k]; return ()=>PG.seq[k]===n; };
+function pgCharts(){ PG.charts.forEach(c=>c.destroy?.()); PG.charts=[]; }
+const head=(h1,sub,crumb)=>{ return {h1,sub,crumb}; };
+function setHead(v,h){
+  const ids={societes:['#co_h1','#co_sub'],previsions:['#fc_h1','#fc_sub'],methode:['#me_h1','#me_sub']}[v]; if(!ids) return;
+  $(ids[0]).textContent=h.h1; $(ids[1]).innerHTML=h.sub||'';
+  if(v==='societes'){ const c=$('#co_crumb'); c.hidden=!h.crumb; }
+}
+function pageRender(v,sub,arg){
+  pgCharts();
+  if(v==='societes'){ if(sub==='fiche') return coSheet(arg); if(sub==='capex') return coCapex(); if(sub==='effectifs') return coEff(); return coList(); }
+  if(v==='previsions'){ if(sub==='retro') return btPage(); return fcPage(arg); }
+  if(v==='methode'){ if(sub==='sources') return srcPage(); if(sub==='correlations') return allCorr(); return calPage(); }
+}
+// montants : séparateurs français, milliards « Md » et millions « M », devise en suffixe gris
+function money(v,dev){ v=num(v); if(v==null) return '—'; const a=Math.abs(v), d=dev?` <span class="u">${esc(dev)}</span>`:'';
+  const fx=(x,n)=>x.toLocaleString('fr-FR',{minimumFractionDigits:n,maximumFractionDigits:n});
+  return (a>=1e9?fx(v/1e9,2)+' Md':a>=1e6?fx(v/1e6,1)+' M':fmt(v,0))+d; }
+const yr=y=>num(y)==null?'':`<div class="u">exercice ${esc(y)}</div>`;
+const cnt12=v=>Array.isArray(v)?v.length:num(v);
+const tickers=t=>(Array.isArray(t)?t:t?[t]:[]).map(x=>String(x));
+// noms des variables de corrélation des sociétés (clés de companies.correlations) ; inconnues : la clé lisible
+const VARL={capex_glog:'croissance du CAPEX',sat_growth:'croissance de la surface nue des mines détenues',
+  new_share:'part de surface nouvellement défrichée',prod_growth:'croissance de la production réelle des mines détenues',
+  pred_g:'croissance du CAPEX prévue',act_g:'croissance du CAPEX constatée',capex:'CAPEX',effectifs:'effectifs',
+  employees:'effectifs',production:'production des mines détenues',emprise:'emprise satellite'};
+const varL=k=>Object.hasOwn(VARL,String(k))?VARL[k]:String(k??'—').replace(/_/g,' ');
+const METL={capex:'CAPEX (investissements corporels payés)',revenue:'Chiffre d’affaires',ppe_net:'Immobilisations corporelles nettes',
+  ocf:'Flux de trésorerie d’exploitation',net_income:'Résultat net',da:'Amortissements et dépréciations',effectifs:'Effectifs',
+  employees:'Effectifs',capex_revenue:'CAPEX / chiffre d’affaires',capex_per_employee:'CAPEX par salarié',capex_growth:'Croissance du CAPEX',
+  ppe_growth:'Croissance des immobilisations',capex_da:'CAPEX / amortissements',capex_prevision:'CAPEX prévu (année suivante)'};
+const metL=k=>Object.hasOwn(METL,String(k))?METL[k]:String(k??'—').replace(/_/g,' ');
+const CATL={expansion:'expansion',exploration:'exploration','usine/traitement':'usine / traitement',
+  'décarbonation/énergie':'décarbonation / énergie','rachat/fusion':'rachat / fusion',infrastructure:'infrastructure',autre:'autre'};
+const lagY=d=>num(d)?` · décalage ${d>0?'+':'−'}${Math.abs(d)} an${Math.abs(d)>1?'s':''}`:'';
+function factVal(f){ const v=num(f.valeur), u=String(f.unite??'');
+  if(v==null) return '—';
+  if(u==='ratio') return f2(v); if(u==='variation') return (v>0?'+':v<0?'−':'')+fmt(Math.abs(v)*100,1)+' %';
+  if(/salari/.test(u)) return fmt(v,0)+` <span class="u">${esc(u)}</span>`;
+  if(f.devise) return money(v,f.devise); return fmt(v,2)+(u?` <span class="u">${esc(u)}</span>`:''); }
+// relation société : deux badges (r et ρ) ; n = points (sociétés × années) et sociétés quand connu
+function ccRow(cc){
+  const n=num(cc.n_points)??num(cc.n), ns=num(cc.n_societes);
+  return `<div class="cbrow"><div class="rel"><b>${esc(varL(cc.x))} ↔ ${esc(varL(cc.y))}</b><small>${esc(lagY(cc.decalage).replace(/^ · /,''))||'même exercice'}${ns!=null?` · ${fmt(ns,0)} sociétés`:''}</small></div>
+    <div class="cblist">${corrBadge({type:'r',v:cc.r,lo:cc.r_lo,hi:cc.r_hi,n,nUnit:'points'})}${num(cc.rho)!=null?corrBadge({type:'rho',v:cc.rho,lo:cc.rho_lo,hi:cc.rho_hi,n,nUnit:'points',verdict:cc.verdict}):''}</div></div>`;
+}
+async function coRows(){
+  if(PG.co) return PG.co;
+  const d=obj(await api('/api/companies?limit=5000'));
+  PG.co={rows:arr(d.rows).map(obj),total:num(d.total)??arr(d.rows).length,message:typeof d.message==='string'?d.message:''};
+  return PG.co;
+}
+
+// -- annuaire ----------------------------------------------------------------------------------
+function coTable(rows){
+  const S=PG.coSort, k=S.k, txt=new Set(['nom','pays']);
+  const key=co=>k==='investissements_12m'?cnt12(co[k]):co[k];
+  const sorted=[...rows].sort((a,b)=>{ const x=key(a), y=key(b);
+    if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1;
+    const c=txt.has(k)?String(x).localeCompare(String(y),'fr'):x-y; return S.desc?-c:c; });
+  const th=(kk,l,n)=>`<th class="${n?'n':''}" data-k="${kk}" tabindex="0" aria-sort="${k===kk?(S.desc?'descending':'ascending'):'none'}" style="cursor:pointer">${l}${k===kk?(S.desc?' ↓':' ↑'):''}</th>`;
+  const shown=sorted.slice(0,PG.coShown);
+  return `<div class="scrwrap"><table id="co_tab"><thead><tr>${th('nom','Société')}${th('pays','Pays')}${th('n_mines','Mines',1)}${th('capex_dernier','CAPEX dernier',1)}${th('effectifs','Effectifs',1)}${th('ca_dernier','Chiffre d’affaires',1)}${th('investissements_12m','Annonces 12 mois',1)}</tr></thead><tbody>${
+    shown.map(co=>`<tr class="row" data-href="#/societe/${esc(enc(co.id))}"><td><a class="nm" href="#/societe/${esc(enc(co.id))}">${esc(co.nom||co.id)}</a>${tickers(co.tickers).length?`<div class="meta" style="font-size:12px">${esc(tickers(co.tickers).slice(0,3).join(' · '))}${co.cik?` · CIK ${esc(co.cik)}`:''}</div>`:co.cik?`<div class="meta" style="font-size:12px">CIK ${esc(co.cik)}</div>`:''}</td>
+      <td>${esc(co.pays||'—')}</td><td class="n">${fmt(num(co.n_mines),0)}</td><td class="n">${money(co.capex_dernier,co.devise)}${yr(co.capex_annee)}</td>
+      <td class="n">${num(co.effectifs)==null?'—':fmt(co.effectifs,0)+yr(co.effectifs_annee)}</td><td class="n">${money(co.ca_dernier,co.devise)}</td>
+      <td class="n">${cnt12(co.investissements_12m)==null?'—':fmt(cnt12(co.investissements_12m),0)}</td></tr>`).join('')
+    ||'<tr><td colspan=7 class="meta">Aucune société ne correspond.</td></tr>'}</tbody></table></div>
+    ${sorted.length>shown.length?`<div class="pager"><button type="button" id="co_more">Afficher 200 de plus</button><span class="meta">${fmt(shown.length,0)} sur ${fmt(sorted.length,0)}</span></div>`:''}`;
+}
+function coFilter(rows){
+  const q=fold($('#co_q').value.trim()), p=fold($('#co_pays').value.trim());
+  return rows.filter(co=>(!q||fold([co.nom,co.id,co.cik,...tickers(co.tickers)].filter(Boolean).join(' ')).includes(q))
+    &&(!p||fold(co.pays).includes(p)));
+}
+function coDraw(){
+  const d=PG.co; if(!d) return;
+  const rows=coFilter(d.rows), el=$('#co_list');
+  el.innerHTML=d.rows.length?coTable(rows):box(esc(d.message||'Aucune donnée société : uv run strate companies refresh'));
+  el.querySelectorAll('th[data-k]').forEach(th=>{ const go=()=>{ const k=th.dataset.k; PG.coSort={k,desc:PG.coSort.k===k?!PG.coSort.desc:!['nom','pays'].includes(k)}; coDraw(); };
+    th.onclick=go; th.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); go(); } }; });
+  el.querySelectorAll('tr[data-href]').forEach(tr=>tr.onclick=e=>{ if(!e.target.closest?.('a')) location.hash=tr.dataset.href.slice(1); });
+  const more=$('#co_more'); if(more) more.onclick=()=>{ PG.coShown+=200; coDraw(); };
+}
+async function coList(){
+  const live=pgSeq('co');
+  setHead('societes',head('Sociétés','Propriétaires et exploitants des mines du catalogue : CAPEX, effectifs et chiffre d’affaires déclarés (SEC EDGAR, Wikidata), annonces d’investissement relevées par la veille.'));
+  $('#co_list').innerHTML=loading();
+  let d; try{ d=await coRows(); }catch(e){ if(live()) $('#co_list').innerHTML=errBox('Annuaire indisponible',e); return; }
+  if(!live()) return;
+  $('#co_sub').innerHTML=`${fmt(d.total,0)} sociétés · ${fmt(d.rows.filter(co=>num(co.capex_dernier)!=null).length,0)} avec un CAPEX déclaré · ${fmt(d.rows.filter(co=>num(co.effectifs)!=null).length,0)} avec des effectifs`;
+  let t; const re=()=>{ clearTimeout(t); t=setTimeout(()=>{ PG.coShown=200; coDraw(); },200); };
+  $('#co_q').oninput=re; $('#co_pays').oninput=re;
+  coDraw();
+}
+
+// -- fiche société -----------------------------------------------------------------------------
+function coSeries(faits,keys){
+  const by=new Map();
+  for(const f of faits) if(keys.includes(String(f.indicateur))&&num(f.annee)!=null&&num(f.valeur)!=null&&!by.has(f.annee)) by.set(f.annee,f);
+  return [...by.values()].sort((a,b)=>a.annee-b.annee);
+}
+function coBars(cv,rows,color,div){
+  if(!cv||!rows.length) return;
+  PG.charts.push(new Chart(cv,{type:'bar',data:{labels:rows.map(f=>String(f.annee)),datasets:[{data:rows.map(f=>f.valeur/div),backgroundColor:color,borderRadius:0}]},
+    options:{animation:false,aspectRatio:ar(cv,220),plugins:{legend:{display:false}},scales:{x:{...ax(),grid:{display:false},ticks:{...ax().ticks,maxTicksLimit:10,maxRotation:0}},y:{...ax(),beginAtZero:true}}}}));
+}
+async function coSheet(id){
+  const live=pgSeq('co'), el=$('#co_sheet');
+  setHead('societes',head(id||'Société','',true)); el.innerHTML=loading();
+  if(!id){ el.innerHTML=box('Aucune société choisie.'); return; }
+  let d; try{ d=obj(await api('/api/company?id='+enc(id))); }
+  catch(e){ if(!live()) return; el.innerHTML=errBox('Fiche société indisponible',e); return; }
+  if(!live()) return;
+  const pf=obj(d.profil), mines=arr(d.mines).map(obj), faits=arr(d.faits).map(obj), inv=arr(d.investissements).map(obj), cor=arr(d.correlations).map(obj);
+  const name=pf.name||pf.nom||id;
+  document.title=`${name} — Strate`;
+  if(!Object.keys(pf).length&&!mines.length&&!faits.length){ setHead('societes',head(name,'',true)); el.innerHTML=box(esc(d.message||'Aucune donnée pour cette société.')); return; }
+  const tk=tickers(pf.tickers), cik=/^\d{1,10}$/.test(String(pf.cik??''))?String(pf.cik):null, qid=/^Q\d+$/.test(String(pf.qid??''))?pf.qid:null;
+  const links=[cik?`<a href="https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&amp;CIK=${esc(cik)}" target="_blank" rel="noopener">SEC EDGAR</a>`:'',
+    qid?`<a href="https://www.wikidata.org/wiki/${esc(qid)}" target="_blank" rel="noopener">Wikidata</a>`:''].filter(Boolean).join(' · ');
+  setHead('societes',head(name,[tk.join(' · '),cik?'CIK '+esc(cik):'',links].filter(Boolean).join(' · ')||'Société du catalogue',true));
+  if(tk.length) $('#co_sub').innerHTML=[esc(tk.join(' · ')),cik?'CIK '+esc(cik):'',links].filter(Boolean).join(' · ');
+  const skip=new Set(['id','name','nom','tickers','cik','qid']);
+  const PFL={aliases:'Autres noms',cik_source:'Source du CIK',sources:'Sources',watchlist:'Liste suivie',n_mines:'Mines',pays:'Pays',country:'Pays'};
+  const kv=Object.entries(pf).filter(([k,v])=>!skip.has(k)&&v!=null&&v!==''&&typeof v!=='object'||Array.isArray(v)&&v.length&&!skip.has(k))
+    .slice(0,10).map(([k,v])=>`<div>${esc(Object.hasOwn(PFL,k)?PFL[k]:k.replace(/_/g,' '))}</div><div>${esc(Array.isArray(v)?v.join(', '):typeof v==='boolean'?(v?'oui':'non'):v)}</div>`).join('');
+  const cap=coSeries(faits,['capex']), emp=coSeries(faits,['effectifs','employees']);
+  const capDev=cap.find(f=>f.devise)?.devise, capDiv=cap.some(f=>Math.abs(f.valeur)>=1e9)?1e9:1e6;
+  const latest=new Map(); for(const f of [...faits].sort((a,b)=>(num(b.annee)??0)-(num(a.annee)??0))) if(!latest.has(f.indicateur)) latest.set(f.indicateur,f);
+  const factRow=f=>{ const u=safeUrl(f.source);
+    return `<tr><td>${esc(metL(f.indicateur))}</td><td class="n">${esc(f.annee??'—')}</td><td class="n">${factVal(f)}</td><td class="meta">${esc(f.formulaire||'—')}</td><td>${u?`<a href="${esc(u)}" target="_blank" rel="noopener">source</a>`:'—'}</td></tr>`; };
+  const sortedF=[...faits].sort((a,b)=>String(a.indicateur).localeCompare(String(b.indicateur))||(num(b.annee)??0)-(num(a.annee)??0));
+  el.innerHTML=`${kv?`<div class="kv" style="margin:0 0 8px">${kv}</div>`:''}
+    <div class="grid2" style="margin-top:24px">
+      <div><h2 style="margin-top:0">CAPEX par exercice${capDev?` <span class="u">${capDiv===1e9?'Md':'M'} ${esc(capDev)}</span>`:''}</h2><div class="card">${cap.length?'<canvas id="co_cap" height="160"></canvas>':'<p class="meta" style="margin:0">Pas de CAPEX déclaré.</p>'}</div></div>
+      <div><h2 style="margin-top:0">Effectifs par exercice</h2><div class="card">${emp.length?'<canvas id="co_emp" height="160"></canvas>':'<p class="meta" style="margin:0">Pas d’effectifs déclarés.</p>'}</div></div>
+    </div>
+    <h2>Ce que disent les chiffres de cette société</h2>
+    ${cor.length?`<div class="panel" style="padding:4px 20px">${cor.map(ccRow).join('')}</div>`:box('Pas assez d’exercices pour une corrélation propre à cette société ; voir les corrélations sur l’ensemble des sociétés dans CAPEX &amp; investissements.')}
+    <div class="grid-7-5">
+      <div><h2>Derniers chiffres déclarés</h2>${latest.size?`<div class="tablebox"><table><thead><tr><th>Indicateur</th><th class="n">Exercice</th><th class="n">Valeur</th><th>Formulaire</th><th>Source</th></tr></thead><tbody>${[...latest.values()].map(factRow).join('')}</tbody></table></div>
+        ${sortedF.length>latest.size?`<details style="margin-top:10px"><summary class="meta" style="cursor:pointer">Tous les faits (${fmt(sortedF.length,0)})</summary><div class="tablebox" style="margin-top:8px"><table><tbody>${sortedF.slice(0,400).map(factRow).join('')}</tbody></table></div></details>`:''}`:box('Aucun fait financier ou humain déclaré.')}</div>
+      <div><h2>Mines détenues ou exploitées — ${fmt(mines.length,0)}</h2>${mines.length?`<div class="tablebox" style="max-height:420px"><table><thead><tr><th>Mine</th><th class="n">Part</th></tr></thead><tbody>${mines.slice(0,300).map(mi=>`<tr><td>${mi.site_id?`<a class="nm" href="#/site/${esc(enc(mi.site_id))}">${esc(mi.nom||mi.site_id)}</a>`:esc(mi.nom||'—')}</td><td class="n">${num(mi.part)==null?'—':fmt(mi.part<=1?mi.part*100:mi.part,0)+' %'}</td></tr>`).join('')}</tbody></table></div>`:box('Aucune mine rattachée.')}</div>
+    </div>
+    <h2>Annonces d’investissement</h2>
+    ${inv.length?`<div class="tablebox"><table><thead><tr><th>Date</th><th class="n">Montant</th><th>Catégorie</th><th>Annonce</th><th>Mine</th></tr></thead><tbody>${inv.slice(0,200).map(iv=>{ const u=safeUrl(iv.url);
+      return `<tr><td class="n" style="text-align:left">${esc(day(iv.date))||'—'}</td><td class="n">${money(iv.montant,iv.devise)}</td><td><span class="pill p-neu">${esc(Object.hasOwn(CATL,String(iv.categorie))?CATL[iv.categorie]:iv.categorie||'autre')}</span></td>
+        <td>${u?`<a class="nm" href="${esc(u)}" target="_blank" rel="noopener">${esc(iv.titre||'article')}</a>`:esc(iv.titre||'—')}</td><td>${iv.site_id?`<a href="#/site/${esc(enc(iv.site_id))}">${esc(iv.site_id)}</a>`:'—'}</td></tr>`; }).join('')}</tbody></table></div>`
+      :box('Aucune annonce d’investissement relevée dans l’actualité collectée.')}`;
+  coBars($('#co_cap'),cap,tok('--accent','#1f5fae'),capDiv);
+  coBars($('#co_emp'),emp,tok('--muted','#55585c'),1);
+}
+
+// -- CAPEX et effectifs (toutes sociétés) ----------------------------------------------------------
+async function coCorrRows(){
+  const d=obj(await api('/api/companies/correlations'));
+  return {rows:arr(d.rows).map(obj),methode:typeof d.methode==='string'?d.methode:'',message:typeof d.message==='string'?d.message:''};
+}
+function rankList(rows,val,lab,n=15){
+  const top=rows.filter(r=>num(val(r))!=null).sort((a,b)=>val(b)-val(a)).slice(0,n);
+  if(!top.length) return null; const mx=Math.max(...top.map(val));
+  return `<div class="barlist">${top.map(co=>`<div class="bl"><a class="nm" href="#/societe/${esc(enc(co.id))}">${esc(co.nom||co.id)}</a><span class="num">${lab(co)}</span><i style="width:${Math.max(1,Math.round(val(co)/mx*100))}%"></i></div>`).join('')}</div>`;
+}
+async function coCapex(){
+  const live=pgSeq('co'), el=$('#co_capex');
+  setHead('societes',head('CAPEX & investissements','Dans quoi les sociétés investissent, et si cet investissement annonce quelque chose dans leurs mines.'));
+  el.innerHTML=loading();
+  const [c,d]=await Promise.allSettled([coCorrRows(),coRows()]); if(!live()) return;
+  const C=c.status==='fulfilled'?c.value:null, D=d.status==='fulfilled'?d.value:null;
+  const rel=C?C.rows.filter(cc=>/capex|pred_g|act_g|invest/i.test(String(cc.x)+' '+String(cc.y))):[];
+  const corr=!C?errBox('Corrélations indisponibles',c.reason):rel.length?`<div class="panel" style="padding:4px 20px">${rel.map(ccRow).join('')}</div>${C.methode?`<p class="note" style="margin-top:10px">${esc(C.methode)}</p>`:''}`
+    :box(esc(C.message||'Aucune corrélation CAPEX calculée.'));
+  let rank='', inv='';
+  if(!D) rank=errBox('Annuaire indisponible',d.reason);
+  else{ const devs={}; D.rows.forEach(co=>{ if(num(co.capex_dernier)!=null&&co.devise) devs[co.devise]=(devs[co.devise]||0)+1; });
+    const dev=Object.entries(devs).sort((a,b)=>b[1]-a[1])[0]?.[0];
+    const rl=dev?rankList(D.rows.filter(co=>co.devise===dev),co=>num(co.capex_dernier),co=>`${money(co.capex_dernier,co.devise)}${yr(co.capex_annee)}`):null;
+    rank=rl?`${rl}<p class="note" style="margin-top:10px">Dernier exercice déclaré, en ${esc(dev)} seulement (les autres devises ne se comparent pas sans change) ; les exercices diffèrent d’une société à l’autre.</p>`:box(esc(D.message||'Aucun CAPEX déclaré.'));
+    const il=rankList(D.rows,co=>cnt12(co.investissements_12m),co=>`${fmt(cnt12(co.investissements_12m),0)} ${plur(cnt12(co.investissements_12m),'annonce')}`,10);
+    inv=il||box('Aucune annonce d’investissement relevée ces 12 derniers mois (la veille extrait montant, devise et catégorie des titres collectés).'); }
+  el.innerHTML=`<h2 style="margin-top:0">Le CAPEX annonce-t-il quelque chose ?</h2>${corr}
+    <div class="grid2"><div><h2>Plus gros CAPEX déclarés</h2><div class="panel">${rank}</div></div>
+      <div><h2>Annonces d’investissement, 12 derniers mois</h2><div class="panel">${inv}</div></div></div>`;
+}
+async function coEff(){
+  const live=pgSeq('co'), el=$('#co_eff');
+  setHead('societes',head('Effectifs','Effectifs déclarés (SEC dei:EntityNumberOfEmployees, rapports annuels, Wikidata) et leur lien avec la production.'));
+  el.innerHTML=loading();
+  const [c,d]=await Promise.allSettled([coCorrRows(),coRows()]); if(!live()) return;
+  const C=c.status==='fulfilled'?c.value:null, D=d.status==='fulfilled'?d.value:null;
+  const rel=C?C.rows.filter(cc=>/effectif|employ|salari/i.test(String(cc.x)+' '+String(cc.y))):[];
+  const corr=!C?errBox('Corrélations indisponibles',c.reason):rel.length?`<div class="panel" style="padding:4px 20px">${rel.map(ccRow).join('')}</div>`
+    :box('Aucune corrélation effectifs ↔ production calculée : trop peu de sociétés ont des effectifs sur plusieurs exercices.');
+  const now=new Date().getFullYear();
+  const rl=D?rankList(D.rows,co=>num(co.effectifs),co=>`${fmt(co.effectifs,0)}${yr(co.effectifs_annee)}${num(co.effectifs_annee)!=null&&now-co.effectifs_annee>5?' <span class="pill p-warn">ancien</span>':''}`,20):null;
+  el.innerHTML=`<h2 style="margin-top:0">Effectifs ↔ production</h2>${corr}
+    <h2>Plus gros effectifs déclarés</h2><div class="panel">${!D?errBox('Annuaire indisponible',d.reason):rl?rl+'<p class="note" style="margin-top:10px">Dernier exercice où la société a déclaré ses effectifs ; « ancien » = plus de 5 ans.</p>':box(esc(D.message||'Aucun effectif déclaré.'))}</div>`;
+}
+
+// -- prévisions par mine -------------------------------------------------------------------------
+const alpha=(hex,a)=>{ const m=/^#?([0-9a-f]{6})$/i.exec(String(hex).trim()); if(!m) return `rgba(31,95,174,${a})`;
+  const n=parseInt(m[1],16); return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`; };
+function fcChart(cv,d){
+  const H=arr(d.historique).map(obj).filter(r=>num(r.year)!=null&&num(r.value)!=null).sort((a,b)=>a.year-b.year);
+  const P=[]; for(const r of arr(d.prevision).map(obj)) if(num(r.year)!=null&&num(r.value)!=null&&!P.some(x=>x.year===r.year)) P.push(r);
+  P.sort((a,b)=>a.year-b.year);
+  if(!cv||(!H.length&&!P.length)) return null;
+  const years=[...new Set([...H.map(r=>r.year),...P.map(r=>r.year)])].sort((a,b)=>a-b);
+  const mx=Math.max(...H.map(r=>r.value),...P.map(r=>num(r.hi90)??r.value)), div=mx>=1e6?1e6:1e3, last=H.at(-1);
+  const real=years.map(y=>{ const r=H.find(x=>x.year===y); return r?r.value/div:null; });
+  // la prévision et ses bandes partent du dernier point réel : la courbe ne se coupe pas
+  const fc=k=>years.map(y=>{ const r=P.find(x=>x.year===y); if(r) return num(r[k])==null?null:r[k]/div; return last&&y===last.year&&P.length?last.value/div:null; });
+  const acc=tok('--accent','#1f5fae'), ink=tok('--text','#151515');
+  const ch=new Chart(cv,{type:'line',data:{labels:years.map(String),datasets:[
+    {label:'lo90',data:fc('lo90'),borderWidth:0,pointRadius:0,fill:false},
+    {label:'Intervalle 90 %',data:fc('hi90'),borderWidth:0,pointRadius:0,fill:'-1',backgroundColor:alpha(acc,.10)},
+    {label:'lo80',data:fc('lo80'),borderWidth:0,pointRadius:0,fill:false},
+    {label:'Intervalle 80 %',data:fc('hi80'),borderWidth:0,pointRadius:0,fill:'-1',backgroundColor:alpha(acc,.18)},
+    {label:'Réel',data:real,borderColor:ink,borderWidth:2,pointRadius:0,tension:0},
+    {label:'Prévision',data:fc('value'),borderColor:acc,borderDash:[5,4],borderWidth:2,pointRadius:0,tension:0}]},
+    options:{animation:false,aspectRatio:ar(cv,280),interaction:{mode:'index',intersect:false},plugins:{legend:{display:false},
+      tooltip:{filter:i=>!/^lo/.test(i.dataset.label),callbacks:{label:c=>`${c.dataset.label} : ${fmt(c.parsed.y,2)} ${div===1e6?'Mt':'kt'}`}}},
+      scales:{x:{...ax(),grid:{display:false},ticks:{...ax().ticks,maxTicksLimit:9,maxRotation:0}},y:{...ax(),beginAtZero:true}}}});
+  ch.$unit=div===1e6?'millions de tonnes par an':'milliers de tonnes par an';
+  return ch;
+}
+const FC_LEGEND='<div class="lgd"><span><i style="border-color:var(--text)"></i>réel</span><span><i class="dash" style="border-color:var(--accent)"></i>prévision</span><span><i class="box" style="background:var(--accent);opacity:.35"></i>intervalle 80 %</span><span><i class="box" style="background:var(--accent);opacity:.16"></i>intervalle 90 %</span></div>';
+// qualité passée : la mine (r, ρ sans IC dans la réponse) puis le modèle retenu sur toutes les mines (IC du rétro-test)
+function fcQuality(q,btp,h){
+  q=q&&typeof q==='object'?q:null;
+  const rows=arr(btp?.rows).map(obj), ret=obj(btp?.retenu), model=ret[String(h)];
+  const g=rows.find(bt2=>String(bt2.horizon)===String(h)&&bt2.model===model);
+  const loc=q?`<div class="cbrow stack"><div class="rel"><b>Prévision ↔ réel, qualité publiée avec cette prévision</b><small>rétro-test${num(q.skill)!=null?` · skill ${sg2(q.skill)}`:''}${num(q.facteur_median)!=null?` · erreur médiane × ${f2(q.facteur_median)}`:''}${num(q.couverture90)!=null?` · couverture 90 % : ${pct(q.couverture90)}`:''}</small></div>
+    <div class="cblist">${corrBadge({type:'r',v:q.r,n:q.n,nUnit:'points'})}${num(q.rho)!=null?corrBadge({type:'rho',v:q.rho,n:q.n,nUnit:'points'}):''}</div></div>`:'';
+  const glob=g?`<div class="cbrow stack"><div class="rel"><b>Prévision ↔ réel, modèle « ${esc(model)} » à ${esc(h)} an${h>1?'s':''}, toutes mines</b><small>période de test jamais vue · ${fmt(num(g.n_mines),0)} mines${num(g.skill)!=null?` · skill ${sg2(g.skill)}`:''}</small></div>
+    <div class="cblist">${corrBadge({type:'r',v:g.r,lo:g.r_lo,hi:g.r_hi,n:g.n_points,nUnit:'points'})}${corrBadge({type:'rho',v:g.rho,lo:g.rho_lo,hi:g.rho_hi,n:g.n_points,nUnit:'points'})}</div></div>`:'';
+  return loc||glob?`<div class="panel" style="padding:4px 20px">${loc}${glob}</div>`:box('Qualité passée non publiée pour cette mine.');
+}
+function fcTable(d){
+  const P=arr(d.prevision).map(obj).filter(r=>num(r.year)!=null).sort((a,b)=>a.year-b.year);
+  if(!P.length) return '';
+  return `<div class="tablebox"><table><thead><tr><th>Année</th><th>Modèle</th><th class="n">Prévision</th><th class="n">Intervalle 80 %</th><th class="n">Intervalle 90 %</th></tr></thead><tbody>${
+    P.map(fp=>`<tr><td>${esc(fp.year)}</td><td class="meta">${esc(fp.model||'—')}</td><td class="n">${tonnes(num(fp.value))}</td><td class="n meta">${tonnes(num(fp.lo80))} – ${tonnes(num(fp.hi80))}</td><td class="n meta">${tonnes(num(fp.lo90))} – ${tonnes(num(fp.hi90))}</td></tr>`).join('')}</tbody></table></div>`;
+}
+async function fcData(id){
+  const [f,b]=await Promise.allSettled([api('/api/forecast/site?site='+enc(id)),PG.bt??api('/api/forecast/backtest')]);
+  if(b.status==='fulfilled') PG.bt=b.value;
+  if(f.status==='rejected') throw f.reason;
+  return {d:f.value,bt:b.status==='fulfilled'?obj(b.value):null};
+}
+function fcMsg(d){ return d==null?'Pas de série de production publiée pour cette mine : pas de prévision.'
+  :typeof d.message==='string'&&d.message?d.message:'Série trop courte pour prévoir.'; }
+// fiche d'une mine : bloc « Prévision » (rempli après coup ; jeton de la fiche respecté)
+function fcSiteBlock(){ return '<h2>Prévision de production</h2><div id="fc_site"><p class="meta">Chargement de la prévision…</p></div>'; }
+async function fcSiteAfter(id,live){
+  let r; try{ r=await fcData(id); }catch(e){ const b=$('#fc_site'); if(live()&&b?.isConnected) b.innerHTML=`<p class="meta">Prévision indisponible : ${esc(errTxt(e))}</p>`; return; }
+  const b=$('#fc_site'); if(!live()||!b?.isConnected) return;
+  const d=r.d&&typeof r.d==='object'?r.d:null;
+  if(!d||!arr(d.prevision).length){ b.innerHTML=box(esc(fcMsg(d))); return; }
+  const P=arr(d.prevision).map(obj), h=Math.max(1,(num(P.at(-1)?.year)??0)-(num(arr(d.historique).at(-1)?.year)??0));
+  b.innerHTML=`<div class="card">${FC_LEGEND}<canvas id="fc_site_c" height="150"></canvas></div><div style="margin-top:12px">${fcQuality(d.qualite,r.bt,Math.min(h,3))}</div>
+    <p style="margin-top:8px"><a href="#/previsions/mine/${esc(enc(id))}">Détail de la prévision</a></p>`;
+  const c=fcChart($('#fc_site_c'),d); if(c) charts.push(c);
+}
+async function fcPicks(){
+  const el=$('#fc_pick'); if(el.dataset.done) return; el.dataset.done='1';
+  try{ const r=obj(await api('/api/screener?'+new URLSearchParams({avec_prod_reelle:'true',sort:'prod_reelle_t',desc:'true',page:'1',per_page:'12'})));
+    const rows=arr(r.rows).map(obj).slice(0,12);
+    el.innerHTML=rows.length?'<span class="meta" style="font-size:12px">Plus grosses productions publiées :</span>'+rows.map(x=>`<a href="#/previsions/mine/${esc(enc(x.id))}">${esc(x.nom||x.id)}</a>`).join(''):'';
+  }catch(e){ console.error(e); el.dataset.done=''; }
+}
+function fcSearchArm(){
+  const q=$('#fc_q'), res=$('#fc_res'); if(q.dataset.armed) return; q.dataset.armed='1'; let t, s=0;
+  q.oninput=()=>{ clearTimeout(t); const v=q.value.trim(); if(v.length<2){ res.hidden=true; return; } const my=++s;
+    t=setTimeout(async()=>{ let r=[]; try{ r=arr(await api('/api/search?q='+enc(v))); }catch(e){ console.error(e); }
+      if(my!==s) return;
+      res.innerHTML=r.length?r.slice(0,8).map(x=>`<a href="#/previsions/mine/${esc(enc(x.id))}">${esc(x.nom||x.id)} <span class="meta">${esc(x.pays||'')}</span></a>`).join(''):'<p class="meta" style="margin:6px 10px">Aucune mine</p>';
+      res.hidden=false; },200); };
+  q.onkeydown=e=>{ if(e.key==='Escape') res.hidden=true; if(e.key==='ArrowDown'){ const a=res.querySelector('a'); if(a){ e.preventDefault(); a.focus(); } } };
+  res.onkeydown=e=>{ const as=[...res.querySelectorAll('a')], i=as.indexOf(document.activeElement);
+    if(e.key==='ArrowDown'){ e.preventDefault(); as[Math.min(i+1,as.length-1)]?.focus(); } if(e.key==='ArrowUp'){ e.preventDefault(); (i>0?as[i-1]:q).focus(); }
+    if(e.key==='Escape'){ res.hidden=true; q.focus(); } };
+  res.onclick=()=>{ res.hidden=true; q.value=''; };
+}
+async function fcPage(id){
+  const live=pgSeq('fc'), out=$('#fc_out');
+  setHead('previsions',head('Prévisions par mine','Le passé sert à prédire l’année suivante ; un modèle n’est retenu que s’il bat la production de l’an dernier hors échantillon.'));
+  fcSearchArm(); fcPicks();
+  if(!id){ out.innerHTML=box('Choisissez une mine à série de production publiée (Jasansky et al. 2023) pour voir son historique, sa prévision et la qualité mesurée du modèle.'); return; }
+  out.innerHTML=loading();
+  let r; try{ r=await fcData(id); }catch(e){ if(live()) out.innerHTML=errBox('Prévision indisponible',e); return; }
+  if(!live()) return;
+  let nom=id; try{ const s=obj(await api('/api/site?site='+enc(id))); if(s.nom) nom=s.nom; }catch(e){ console.error(e); }
+  if(!live()) return;
+  const d=r.d&&typeof r.d==='object'?r.d:null;
+  setHead('previsions',head(`Prévision — ${nom}`,`<a href="#/site/${esc(enc(id))}">Fiche de la mine</a>${d?.serie?` · série : ${esc(d.serie)}`:''}`));
+  document.title=`Prévision ${nom} — Strate`;
+  if(!d||(!arr(d.historique).length&&!arr(d.prevision).length)){ out.innerHTML=box(esc(fcMsg(d))); return; }
+  const P=arr(d.prevision).map(obj), lastH=num(arr(d.historique).map(obj).at(-1)?.year), h=lastH!=null&&P.length?Math.min(3,Math.max(1,(num(P[0].year)??lastH+1)-lastH)):1;
+  out.innerHTML=`<div class="grid-7-5"><div><h2 style="margin-top:0">Historique et prévision</h2><div class="card">${FC_LEGEND}<canvas id="fc_c" height="230"></canvas><p class="meta" id="fc_unit" style="margin:6px 0 0"></p></div></div>
+    <div><h2 style="margin-top:0">Qualité mesurée</h2>${fcQuality(d.qualite,r.bt,h)}<p class="note" style="margin-top:10px">Intervalles = quantiles empiriques des erreurs du rétro-test à cet horizon : leur couverture réelle est mesurée (<a href="#/previsions/retro-test">rétro-test</a>).</p></div></div>
+    <h2>Valeurs prévues</h2>${fcTable(d)||box(esc(fcMsg(d)))}`;
+  const c=fcChart($('#fc_c'),d); if(c){ PG.charts.push(c); $('#fc_unit').textContent=c.$unit||''; }
+}
+
+// -- rétro-test ----------------------------------------------------------------------------------
+async function btPage(){
+  const live=pgSeq('bt'), out=$('#bt_out');
+  setHead('previsions',head('Rétro-test : l’outil s’évalue','On rejoue l’histoire : pour prédire l’année t, seules les données connues avant t servent.'));
+  out.innerHTML=loading();
+  let d; try{ d=obj(await api('/api/forecast/backtest')); PG.bt=d; }catch(e){ if(live()) out.innerHTML=errBox('Rétro-test indisponible',e); return; }
+  if(!live()) return;
+  const per=obj(d.periode), rows=arr(d.rows).map(obj), ret=obj(d.retenu);
+  $('#fc_sub').innerHTML=`Réglages choisis sur ${esc(per.reglage||'≤ 2014')}, évaluation sur ${esc(per.test||'2015–2021')} (jamais vue)${d.run_at?` · calcul du ${esc(day(d.run_at))}`:''}`;
+  if(!rows.length){ out.innerHTML=box(esc(d.message||'Rétro-test pas encore lancé : uv run strate forecast backtest'))+(d.methode?`<p class="note">${esc(d.methode)}</p>`:''); return; }
+  const hs=[...new Set(rows.map(bt=>bt.horizon))].sort((a,b)=>a-b);
+  const kp=hs.map(h=>`<div><span>Horizon ${esc(h)} an${h>1?'s':''} : modèle retenu</span><b>${esc(ret[String(h)]||'—')}</b></div>`).join('');
+  const tbl=h=>`<h2>Horizon ${esc(h)} an${h>1?'s':''}</h2><div class="tablebox"><table><thead><tr><th>Modèle</th><th>Prévision ↔ réel (variations log)</th><th class="n">Skill</th><th class="n">Erreur médiane</th><th class="n">Bon sens</th><th class="n">Couverture 80 %</th><th class="n">Couverture 90 %</th></tr></thead><tbody>${
+    rows.filter(bt=>bt.horizon===h).map(bt=>`<tr><td><span class="nm">${esc(bt.model)}</span>${ret[String(h)]===bt.model?' <span class="pill p-acc">retenu</span>':''}<div class="meta" style="font-size:12px">${fmt(num(bt.n_mines),0)} mines · ${fmt(num(bt.n_points),0)} points</div></td>
+      <td><div class="cblist">${corrBadge({type:'r',v:bt.r,lo:bt.r_lo,hi:bt.r_hi,n:bt.n_points,nUnit:'points'})}${corrBadge({type:'rho',v:bt.rho,lo:bt.rho_lo,hi:bt.rho_hi,n:bt.n_points,nUnit:'points'})}</div></td>
+      <td class="n">${num(bt.skill)==null?'—':sg2(bt.skill)}<div class="meta" style="font-size:12px">${num(bt.skill)==null?'':bt.skill>0?'bat le naïf':'ne bat pas le naïf'}</div></td>
+      <td class="n">${num(bt.facteur_median)==null?'—':'× '+f2(bt.facteur_median)}</td><td class="n">${pct(num(bt.bon_sens))}</td>
+      <td class="n">${pct(num(bt.couverture80))}<div class="meta" style="font-size:12px">cible 80 %</div></td><td class="n">${pct(num(bt.couverture90))}<div class="meta" style="font-size:12px">cible 90 %</div></td></tr>`).join('')}</tbody></table></div>`;
+  out.innerHTML=`<div class="kpis" style="--k:${Math.min(4,hs.length)}">${kp}</div>${hs.map(tbl).join('')}
+    <p class="note" style="margin-top:16px"><b>Lecture.</b> r de Pearson et ρ de Spearman entre la variation prévue et la variation réelle, IC 90 % par bootstrap sur les mines ; « naïf » (production de l’an dernier) ne prévoit aucune variation : sa corrélation n’est pas calculable, c’est la référence du skill (1 − MSE modèle / MSE naïf). Une couverture proche de 80 % / 90 % dit que les intervalles sont honnêtes.</p>
+    ${d.methode?`<p class="note">${esc(d.methode)}</p>`:''}`;
+}
+
+// -- méthode : calibration, sources, toutes les corrélations ------------------------------------------
+const Z90=1.6448536269514722;
+// IC 90 % approché d'un ρ publié sans intervalle (Fisher z, erreur type de Bonett–Wright), comme l'API
+function approxCI(rho,n){ if(num(rho)==null||num(n)==null||n<=3||rho<=-1||rho>=1) return [null,null];
+  const se=Math.sqrt((1+rho*rho/2)/(n-3)), z=Math.atanh(rho); return [Math.tanh(z-Z90*se),Math.tanh(z+Z90*se)]; }
+// lignes de corrélation de calibration.json (même lecture que /api/correlations/summary) : {x, y, v, lo, hi, n, note}
+function calRows(){
+  const c=CAL||{}, out=[], t=c.taille||{}, ci=v=>Array.isArray(v)?[num(v[0]),num(v[1])]:[null,null];
+  const add=(x,y,v,lo,hi,n,note='')=>{ if(num(v)!=null) out.push({x,y,v,lo:num(lo),hi:num(hi),n:num(n),note}); };
+  if(t.rho!=null){ const [lo,hi]=ci(t.ic90); add('surface nue Sentinel-2 (fenêtre sur l’emprise)','production annuelle (niveau)',t.rho,lo,hi,t.mines); }
+  const fs=t.fenetre_seule||{}, fr=t.fraction_nue||{};
+  add('taille de la fenêtre seule (sans image)','production annuelle (niveau)',fs.rho,fs.ic90_bas,fs.ic90_haut,fs.mines);
+  add('surface nue / fenêtre','production annuelle (niveau)',fr.rho,fr.ic90_bas,fr.ic90_haut,fr.mines);
+  const v=c.variation||{}; if(v.rho!=null){ const [lo,hi]=ci(v.ic90); add('variation annuelle de la surface nue','variation annuelle de la production',v.rho,lo,hi,c.paires_annees,'n = paires d’années'); }
+  for(const [k,m] of Object.entries(c.modele_emprise||{})){ if(!m||typeof m!=='object'||num(m.rho)==null) continue;
+    const [lo,hi]=approxCI(m.rho,m.n); add('emprise Maus (km²)',`production (${k})`,m.rho,lo,hi,m.n,'IC 90 % approché (Fisher z)'); }
+  const r=c.radar||{}, tr=x=>Array.isArray(x)?x:[];
+  if(tr(r.variation).length) add('variation de l’activité radar Sentinel-1','variation annuelle de la production',tr(r.variation)[0],tr(r.variation)[1],tr(r.variation)[2],r.mines_test);
+  if(tr(r.intra_mine_niveau).length) add('activité radar (écart à la moyenne de la mine)','production (écart à la moyenne de la mine)',tr(r.intra_mine_niveau)[0],tr(r.intra_mine_niveau)[1],tr(r.intra_mine_niveau)[2],r.mines_test);
+  return out;
+}
+const calRow=c=>`<div class="cbrow"><div class="rel"><b>${esc(c.x)} ↔ ${esc(c.y)}</b>${c.note?`<small>${esc(c.note)}</small>`:''}</div><div>${corrBadge({type:'rho',v:c.v,lo:c.lo,hi:c.hi,n:c.n,nUnit:c.note.startsWith('n =')?'paires':'mines'})}</div></div>`;
+// sous la note de calibration d'une fiche : les mêmes chiffres, avec leur intervalle et leur n
+function calBadges(compact){
+  const rs=calRows(); if(!rs.length) return '';
+  return compact?`<details style="margin-top:6px"><summary class="meta" style="cursor:pointer">Corrélations de calibration, avec IC 90 % et n (${rs.length})</summary><div class="panel" style="padding:4px 20px;margin-top:8px">${rs.map(calRow).join('')}</div></details>`
+    :`<div class="panel" style="padding:4px 20px">${rs.map(calRow).join('')}</div>`;
+}
+function calPage(){
+  setHead('methode',head('Calibration',`Confrontation des signaux satellite à la production publiée${CAL.date?` · calibration du ${esc(CAL.date)}`:''}`));
+  const el=$('#me_cal');
+  if(num(CAL.mines)==null){ el.innerHTML=box('Calibration pas encore chargée ou absente : uv run strate calibrate'); return; }
+  const a=CAL.alertes||{}, prec=Array.isArray(a.precision)?a.precision:[];
+  const p=calNote().replace(/^<h2>[^<]*<\/h2>/,'').replace(/<details[\s\S]*$/,'');
+  el.innerHTML=`<h2 style="margin-top:0">Ce que l’on sait</h2>${p}
+    <h2>Corrélations mesurées</h2>${calBadges(false)}
+    ${num(prec[0])!=null?`<h2>Règle d’alerte annuelle</h2><div class="kpis" style="--k:2"><div><span>Précision (variation &gt; 10 % de la surface nue → vraie variation &gt; 20 %)</span><b>${pct(prec[0])}</b><span>IC 90 % ${pct(num(prec[1]))} à ${pct(num(prec[2]))}</span></div><div><span>Taux de base (au hasard)</span><b>${pct(num(a.taux_de_base))}</b></div></div>`:''}
+    <p class="note">Détail de la méthode : docs/calibration.md. Les alertes mensuelles du radar n’ont pas été confrontées à la production.</p>`;
+}
+const SRC=[['Copernicus Sentinel-2 L2A et Sentinel-1','Images optiques et radar, via Microsoft Planetary Computer. Données Copernicus libres et ouvertes (mention « contient des données Copernicus Sentinel modifiées »).'],
+  ['Wikimedia Pageviews','Vues des articles Wikipedia de la mine et de ses propriétaires. CC0.'],
+  ['GDELT','Flux d’actualité mondial (GKG, ~65 langues) et API documentaire, lus par la veille. Usage libre avec citation.'],
+  ['SEC EDGAR companyfacts','Comptes annuels XBRL (us-gaap, ifrs-full) : CAPEX, chiffre d’affaires, effectifs. Données publiques ; requêtes ≤ 10/s avec un User-Agent déclaré.'],
+  ['Wikidata','Mines, propriétaires et exploitants (P127, P137), effectifs et chiffre d’affaires datés. CC0.'],
+  ['OpenStreetMap','Fond de carte. © contributeurs OpenStreetMap, ODbL.'],
+  ['Leaflet 1.9.4 et Chart.js 4.4.1','Bibliothèques de l’interface, servies par cdnjs. Licences BSD-2-Clause et MIT.']];
+function srcPage(){
+  setHead('methode',head('Sources & licences','Tout vient de sources ouvertes ; chaque donnée garde sa source.'));
+  $('#me_src').innerHTML=SRC.map(([t,d])=>`<div><b>${esc(t)}</b><span>${esc(d)}</span></div>`).join('');
+}
+// toutes les corrélations : /api/correlations/summary ; sinon reconstruites depuis les routes du contrat
+async function corrFallback(){
+  const out=[], dom=[];
+  const cr=calRows().map(c=>({domaine:'calibration',x:c.x,y:c.y,coefficient:c.v,type:'rho',lo:c.lo,hi:c.hi,n:c.n,verdict:null,source:'calibration.json'}));
+  out.push(...cr); dom.push({domaine:'calibration',n:cr.length,message:cr.length?null:'aucune corrélation calculée'});
+  const [rc,rb]=await Promise.allSettled([api('/api/companies/correlations'),api('/api/forecast/backtest')]);
+  const cs=rc.status==='fulfilled'?arr(obj(rc.value).rows).map(obj):[];
+  for(const cc of cs) for(const t of ['r','rho']) if(num(cc[t])!=null) out.push({domaine:'sociétés',x:varL(cc.x),y:varL(cc.y)+lagY(cc.decalage),coefficient:cc[t],type:t,lo:cc[t+'_lo'],hi:cc[t+'_hi'],n:cc.n_points,verdict:cc.verdict,source:'data/companies'});
+  dom.push({domaine:'sociétés',n:out.filter(r=>r.domaine==='sociétés').length,message:rc.status==='fulfilled'?null:'source indisponible'});
+  const bs=rb.status==='fulfilled'?arr(obj(rb.value).rows).map(obj):[];
+  for(const b of bs) for(const t of ['r','rho']) if(num(b[t])!=null) out.push({domaine:'prévisions',x:`prévision « ${b.model} » à ${b.horizon} an${b.horizon>1?'s':''}`,y:'production réelle (période de test)',coefficient:b[t],type:t,lo:b[t+'_lo'],hi:b[t+'_hi'],n:b.n_points,verdict:null,source:'data/forecast/backtest.json'});
+  dom.push({domaine:'prévisions',n:out.filter(r=>r.domaine==='prévisions').length,message:rb.status==='fulfilled'?null:'source indisponible'});
+  dom.push({domaine:'veille',n:0,message:'voir Veille › Corrélations événements ↔ satellite'});
+  return {rows:out,domaines:dom};
+}
+function allCorrDraw(){
+  const d=PG.summary, el=$('#me_corr'); if(!d) return;
+  const rows=arr(d.rows).map(obj), doms=arr(d.domaines).map(obj);
+  const names=['tous',...new Set([...doms.map(x=>x.domaine),...rows.map(sr=>sr.domaine)].filter(Boolean))];
+  if(!names.includes(PG.corrDom)) PG.corrDom='tous';
+  const shown=rows.filter(sr=>PG.corrDom==='tous'||sr.domaine===PG.corrDom);
+  const nOf=n=>n==='tous'?rows.length:rows.filter(sr=>sr.domaine===n).length;
+  const msgs=doms.filter(x=>x.message&&(PG.corrDom==='tous'||x.domaine===PG.corrDom)).map(x=>`<li>${esc(x.domaine)} : ${esc(x.message)}</li>`).join('');
+  el.innerHTML=`<div class="seg" role="group" aria-label="Domaine">${names.map(n=>`<button type="button" data-dom="${esc(n)}" aria-pressed="${n===PG.corrDom}">${esc(n)} <span class="meta">${fmt(nOf(n),0)}</span></button>`).join('')}</div>
+    ${shown.length?`<div class="panel" style="padding:4px 20px">${shown.map(sr=>`<div class="cbrow"><div class="rel"><b>${esc(sr.x)} ↔ ${esc(sr.y)}</b><small>${esc(sr.domaine)} · ${esc(sr.source||'')}</small></div><div>${corrBadge({type:sr.type,v:sr.coefficient,lo:sr.lo,hi:sr.hi,n:sr.n,verdict:sr.verdict})}</div></div>`).join('')}</div>`:box('Aucune corrélation dans ce domaine pour l’instant.')}
+    ${msgs?`<ul class="note" style="margin-top:12px;padding-left:18px">${msgs}</ul>`:''}`;
+  el.querySelectorAll('button[data-dom]').forEach(b=>b.onclick=()=>{ PG.corrDom=b.dataset.dom; allCorrDraw(); });
+}
+async function allCorr(){
+  const live=pgSeq('corr'), el=$('#me_corr');
+  setHead('methode',head('Toutes les corrélations','Chaque relation que l’application affiche, avec son coefficient, son intervalle à 90 %, n et son verdict.'));
+  el.innerHTML=loading();
+  let d; try{ d=obj(await api('/api/correlations/summary')); }
+  catch(e){ console.error(e); try{ d=await corrFallback(); }catch(e2){ if(live()) el.innerHTML=errBox('Corrélations indisponibles',e2); return; } }
+  if(!live()) return;
+  PG.summary=d; allCorrDraw();
+}
+// « Réessayer » d'un cadre d'erreur : la page courante se redessine
+document.addEventListener?.('click',e=>{ if(e.target.closest?.('[data-retry]')){ PG.co=null; route(); } });
+
+// == thème, menus, démarrage =================================================================
+const THEMES=['auto','light','dark'], THEME_L={auto:'automatique',light:'clair',dark:'sombre'};
+function themeGet(){ try{ const t=localStorage.getItem('strate-theme'); return THEMES.includes(t)?t:'auto'; }catch{ return 'auto'; } }
+function themeSet(t){
+  try{ if(t==='auto') localStorage.removeItem('strate-theme'); else localStorage.setItem('strate-theme',t); }catch{}
+  const r=document.documentElement; if(t==='auto') r.removeAttribute('data-theme'); else r.setAttribute('data-theme',t);
+  $('#theme').setAttribute('aria-label','Thème : '+THEME_L[t]); $('#theme').title='Thème : '+THEME_L[t]+' (cliquer pour changer)';
+  chartTheme();
+}
+function chartTheme(){ try{ if(Chart.defaults){ Chart.defaults.font.family=tok('--font','system-ui'); Chart.defaults.font.size=11;
+  Chart.defaults.color=tok('--muted','#55585c'); Chart.defaults.borderColor=tok('--grid','#e4e4df'); } }catch(e){ console.error(e); } }
+// les couleurs des graphiques sont lues à la création : changer de thème redessine la page courante
+function rerender(){ if(VIEW==='site'&&CURRENT) open(CURRENT); else if(VIEW==='veille') vLoad(); else route(); }
+function menus(){
+  const btns=[...document.querySelectorAll('.menu-btn')];
+  const close=(keep)=>btns.forEach(b=>{ if(b!==keep){ b.setAttribute('aria-expanded','false'); $('#'+b.getAttribute('aria-controls')).hidden=true; } });
+  btns.forEach((b,bi)=>{
+    const list=$('#'+b.getAttribute('aria-controls')), items=()=>[...list.querySelectorAll('a')];
+    const openM=focus=>{ close(b); b.setAttribute('aria-expanded','true'); list.hidden=false; if(focus==='first') items()[0]?.focus(); if(focus==='last') items().at(-1)?.focus(); };
+    b.addEventListener('click',()=>{ if(b.getAttribute('aria-expanded')==='true') close(); else openM(); });
+    b.addEventListener('keydown',e=>{
+      if(e.key==='ArrowDown'){ e.preventDefault(); openM('first'); }
+      else if(e.key==='ArrowUp'){ e.preventDefault(); openM('last'); }
+      else if(e.key==='Escape'){ close(); }
+      else if(e.key==='ArrowRight'||e.key==='ArrowLeft'){ e.preventDefault(); const n=btns[(bi+(e.key==='ArrowRight'?1:-1)+btns.length)%btns.length];
+        const was=b.getAttribute('aria-expanded')==='true'; close(); n.focus(); if(was) n.click(); } });
+    list.addEventListener('keydown',e=>{ const it=items(), i=it.indexOf(document.activeElement);
+      if(e.key==='ArrowDown'){ e.preventDefault(); it[(i+1)%it.length].focus(); }
+      else if(e.key==='ArrowUp'){ e.preventDefault(); it[(i-1+it.length)%it.length].focus(); }
+      else if(e.key==='Home'){ e.preventDefault(); it[0].focus(); } else if(e.key==='End'){ e.preventDefault(); it.at(-1).focus(); }
+      else if(e.key==='Escape'){ e.preventDefault(); close(); b.focus(); }
+      else if(e.key==='Tab'){ close(); } });
+    list.addEventListener('click',()=>{ close(); $('.tabs').classList.remove('open'); $('#navtoggle').setAttribute('aria-expanded','false'); });
+  });
+  document.addEventListener('click',e=>{ if(!e.target.closest('.menu')) close(); });
+  $('#navtoggle').addEventListener('click',()=>{ const o=$('.tabs').classList.toggle('open'); $('#navtoggle').setAttribute('aria-expanded',String(o)); });
+  // « / » : la recherche globale, sauf pendant une saisie
+  document.addEventListener('keydown',e=>{ const t=e.target, typing=t&&(/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)||t.isContentEditable);
+    if(e.key==='/'&&!typing&&!e.metaKey&&!e.ctrlKey){ e.preventDefault(); $('#cmd').focus(); } });
+  $('#theme').addEventListener('click',()=>{ themeSet(THEMES[(THEMES.indexOf(themeGet())+1)%THEMES.length]); rerender(); });
+  window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change',()=>{ if(themeGet()==='auto'){ chartTheme(); rerender(); } });
+  $('#theme').setAttribute('aria-label','Thème : '+THEME_L[themeGet()]);
+}
+if(document.addEventListener){ try{ menus(); }catch(e){ console.error(e); } }
+chartTheme();
+window.addEventListener('hashchange',route);
+const BOOT=init();
+route();
+BOOT.then(jobsPoll).catch(e=>{$('#status').textContent='Erreur de chargement';console.error(e)});
 vBeat();
 </script>
 </body>
