@@ -28,7 +28,10 @@ La taille d'une mine vue du ciel dit l'ordre de grandeur de sa production ; ses 
 année sur l'autre ne disent presque rien des variations de production. Strate publie les deux
 résultats. Graphiques régénérables avec `uv run python scripts/figures.py`.
 
-![Fiche d'une mine dans Strate](docs/img/fiche-mine.jpg)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/fiche-mine-sombre.jpg">
+  <img alt="Fiche de la mine Super Pit dans Strate : menus Explorer, Veille, Sociétés, Prévisions et Méthode ; ordre de grandeur de production d'après l'emprise avec son intervalle à 90 % ; calibration citée avec IC et n ; carte des mines voisines." src="docs/img/fiche-mine.jpg">
+</picture>
 
 ## Ce que fait Strate
 
@@ -39,8 +42,9 @@ résultats. Graphiques régénérables avec `uv run python scripts/figures.py`.
 | **Satellite** | Analyse à la demande de n'importe quelle mine : Sentinel-2 (surface nue, eau, défrichement) et Sentinel-1 radar (à travers nuages et neige), mois par mois depuis 2020. |
 | **Calibration** | Signaux confrontés à la production réelle d'environ 130 mines, avec jeu de test tenu à l'écart. Résultats détaillés dans [docs/calibration.md](docs/calibration.md). |
 | **Veille** | Chaîne qui tourne en continu : collecte de l'actualité minière mondiale (GDELT, anglais et ~65 langues traduites), vérification, rattachement de chaque article à une mine, classement (accident, grève, juridique, environnement, production, finance), puis test statistique du lien avec les anomalies satellite. Voir [docs/veille.md](docs/veille.md). |
-| **Sociétés** *(en cours)* | CAPEX, chiffre d'affaires, dépenses d'exploration et effectifs (SEC EDGAR XBRL, Wikidata), investissements annoncés classés par type, corrélations CAPEX ↔ production. |
-| **Prévisions** *(en cours)* | Prévision de la production par mine, évaluée par rétro-test (« walk-forward ») sur 2015–2021 contre une prévision naïve, avec registre daté des prévisions pour les noter quand le réel arrive. Voir [docs/previsions-societes.md](docs/previsions-societes.md). |
+| **Sociétés** | CAPEX, chiffre d'affaires, dépenses d'exploration, actifs miniers et effectifs (SEC EDGAR XBRL, Wikidata), détention datée des mines, investissements annoncés extraits de la veille et classés par type ; corrélations société ↔ mines sur les croissances annuelles, avec q-valeurs de Benjamini-Hochberg. Voir [docs/previsions-societes.md](docs/previsions-societes.md). |
+| **Prévisions** | Prévision de la production par mine jusqu'à 10 ans, évaluée par rétro-test (« walk-forward » : réglage sur 2000–2014, test sur 2015–2021) contre la prévision naïve, avec couverture mesurée des intervalles et registre daté des prévisions pour les noter quand le réel arrive. |
+| **Interface** | Menus Explorer, Veille, Sociétés, Prévisions et Méthode ; chaque relation affichée porte une pastille avec coefficient, IC 90 %, n et verdict. Thème clair et sombre. |
 
 ## Ce que disent les données
 
@@ -52,11 +56,15 @@ Strate publie ses conclusions négatives au même titre que les positives.
 | L'image satellite ajoute-t-elle de l'information à la taille ? | Peu : 0,17 (0,00 – 0,33) |
 | Les variations annuelles de surface suivent-elles celles de la production ? | **Non** : bon sens dans 54 % des cas (48 – 60 %) |
 | Le radar suit-il les variations de production ? | **Non démontré** : 56 % (47 – 64 %) |
+| Un modèle prévoit-il la production d'une mine mieux que « comme l'an dernier » ? | **Non** : gain moyen −0,7 % (−1,3 – −0,01 %) sur 676 mines, horizons 1 à 10 ans ; la prévision naïve est retenue |
+| Les intervalles de prévision tiennent-ils leur promesse ? | **Presque** : les intervalles à 90 % contiennent le réel dans 88,5 à 89,5 % des cas, ceux à 80 % dans 77 à 80 % |
+| Le CAPEX d'une société annonce-t-il la production de ses mines ? | **Pas encore testable** : avec une détention datée, 2 groupes de sociétés indépendants seulement ; Strate n'affiche aucun verdict sous ce seuil |
 | Ordre de grandeur de production d'après l'emprise | Erreur typique ×2,5 (minerai, 245 mines) et ×2,2 (charbon, 165 mines) |
 
 Conséquence : les alertes satellite décrivent des changements physiques d'un site (expansion,
 défrichement, résidus), pas sa production. La seule estimation publiée est un ordre de grandeur,
-toujours affiché avec son intervalle.
+toujours affiché avec son intervalle. Les prévisions publiées sont celles du modèle naïf, avec leurs
+intervalles mesurés, et l'outil se note lui-même à mesure que les productions réelles arrivent.
 
 ## Démarrer
 
@@ -119,9 +127,9 @@ récupère depuis leur source d'origine.
 
 ## État du projet
 
-En développement actif. Prochaines étapes : interface refondue (menus, pages dédiées), pages
-Sociétés et Prévisions, vérité terrain récente (rapports trimestriels 2020 →) pour valider sur les
-années récentes.
+En développement actif. Prochaines étapes : vérité terrain récente (rapports trimestriels 2020 →) pour
+valider sur les années récentes, rattachement plus fin des articles aux mines homonymes, historique des
+propriétaires au-delà des mines suivies.
 
 ## Licence
 
