@@ -131,12 +131,14 @@ def test_error_quantiles_extrapolate_with_sqrt():
 def test_backtest_structure(trend_bt):
     bt = trend_bt
     assert bt["statut"] == "ok" and bt["periode"] == {"reglage": "≤2014", "test": "2015–2021"}
-    assert {(r["model"], r["horizon"]) for r in bt["rows"]} == {(m, h) for m in fc.MODELS for h in (1, 2, 3)}
+    assert bt["horizons_mesures"] == list(fc.HORIZONS) and bt["horizon_max_publie"] == fc.H_MAX
+    assert {(r["model"], r["horizon"]) for r in bt["rows"]} == {(m, h) for m in fc.MODELS
+                                                                 for h in fc.HORIZONS}
     keys = {"model", "horizon", "n_mines", "n_points", "r", "r_lo", "r_hi", "rho", "rho_lo", "rho_hi",
             "skill", "facteur_median", "bon_sens", "couverture80", "couverture90"}
     assert all(keys <= set(r) for r in bt["rows"])
-    assert set(bt["retenu"]) == {"1", "2", "3"} and isinstance(bt["methode"], str)
-    assert [d["horizon"] for d in bt["diagnostic_tendance_brute"]] == [1, 2, 3]
+    assert set(bt["retenu"]) == {str(h) for h in fc.HORIZONS} and isinstance(bt["methode"], str)
+    assert [d["horizon"] for d in bt["diagnostic_tendance_brute"]] == list(fc.HORIZONS)
     assert bt["diagnostic_tendance_brute"][0]["skill"] > 0.3  # séries en tendance : φ = 1 aide aussi
 
 
@@ -148,15 +150,18 @@ def test_trend_beats_naive_on_trending_mines(trend_bt):
 
 
 def test_intervals_have_honest_coverage(trend_bt):
-    for r in trend_bt["rows"]:
-        assert 0.65 <= r["couverture80"] <= 0.92
-        assert 0.78 <= r["couverture90"] <= 0.98
+    for r in trend_bt["rows"]:  # couverture mesurée à chaque horizon publié
+        if r["horizon"] <= 3:
+            assert 0.65 <= r["couverture80"] <= 0.92
+            assert 0.78 <= r["couverture90"] <= 0.98
+        else:  # peu d'erreurs de réglage aux longs horizons (cibles 2012–2014 pour h = 10)
+            assert 0.65 <= r["couverture80"] <= 1 and 0.75 <= r["couverture90"] <= 1
         assert r["couverture90"] >= r["couverture80"]
 
 
 def test_random_walk_keeps_naive():
     bt = fc.run_backtest(_panel("rw", n=60, seed=3), n_boot=100, today=TODAY)
-    assert bt["retenu"] == {"1": "naif", "2": "naif", "3": "naif"}
+    assert set(bt["retenu"].values()) == {"naif"}
     assert _row(bt, "naif", 1)["skill"] == 0
 
 
@@ -241,6 +246,30 @@ def test_forecast_site_is_read_only(tmp_path):
     assert not (tmp_path / "backtest.json").exists() and list(tmp_path.iterdir()) == []
     assert r["prevision"] == [] and r["message"] and len(r["historique"]) == 20
     assert r["serie"] == "minerai extrait" and r["qualite"] == {"n": 0}
+
+
+def test_measured_needs_rows_and_unextrapolated_quantiles():
+    rows = [{"model": m, "horizon": h, "n_points": 50} for m in fc.MODELS for h in (1, 2, 3)]
+    rows += [{"model": m, "horizon": 4, "n_points": 3} for m in fc.MODELS]  # trop peu de cas de test
+    q = {m: {h: {"q": [-1, -0.5, 0.5, 1], "n": 40, "extrapole": h == 3} for h in (1, 2, 3, 4)}
+         for m in fc.MODELS}
+    assert fc._measured(rows, q) == [1, 2]
+
+
+def test_future_capped_at_longest_measured_horizon(tmp_path):
+    p = _panel("trend", n=20, y1=2019)
+    bt = fc.backtest(out=tmp_path, n_boot=30, panel=p, today=TODAY)
+    r = fc.forecast_site("m001", out=tmp_path, panel=p, today=TODAY)
+    assert [x["horizon"] for x in r["prevision"]] == list(range(1, TODAY.year + 2 - 2019))
+    assert all(x["mesure"] is True for x in r["prevision"])
+    assert max(q["horizon"] for q in r["qualite_par_horizon"]) == bt["horizon_max_publie"]
+    bt["horizon_max_publie"], bt["horizons_mesures"] = 7, list(range(1, 8))  # 2026 = h 7 : dernier publié
+    (tmp_path / "backtest.json").write_text(json.dumps(bt), "utf-8")
+    r = fc.forecast_site("m001", out=tmp_path, panel=p, today=TODAY)
+    assert [x["year"] for x in r["prevision"]] == list(range(2020, 2027))
+    bt["horizon_max_publie"], bt["horizons_mesures"] = 6, list(range(1, 7))  # année en cours non mesurée
+    (tmp_path / "backtest.json").write_text(json.dumps(bt), "utf-8")
+    assert fc.forecast_site("m001", out=tmp_path, panel=p, today=TODAY)["prevision"] == []
 
 
 def test_stale_series_gets_no_forecast(tmp_path):

@@ -46,8 +46,8 @@ LEDGER_COLS = ["made_at", "site_id", "serie", "target_year", "model", "value", "
 
 FIRST_TARGET, LAST_TARGET = 2005, 2021
 TUNE_END = 2014  # réglages ≤ 2014, évaluation 2015–2021
-HORIZONS = (1, 2, 3)  # horizons publiés dans le tableau du rétro-test
-H_MAX = 10  # erreurs empiriques jusqu'à 10 ans : intervalles des prévisions d'avenir
+H_MAX = 10  # horizon le plus long rejoué (2005–2021 et des données depuis 2000 le permettent)
+HORIZONS = tuple(range(1, H_MAX + 1))  # tous rejoués hors échantillon ; seuls les mesurés sont publiés
 WINDOW, MIN_WINDOW = 5, 3  # tendance : 5 dernières années, au moins 3 observées
 PHI_GRID = tuple(round(float(x), 2) for x in np.arange(0.0, 1.0001, 0.05))
 KAPPA_GRID = (0.0, 0.005, 0.01, 0.02, 0.03, 0.05, 0.075, 0.1, 0.15, 0.2, 0.3, 0.5, 1.0)
@@ -62,7 +62,7 @@ Q = (0.05, 0.10, 0.90, 0.95)  # quantiles des erreurs : intervalles 90 % et 80 %
 
 METHODE = (
     "Rétro-test walk-forward : pour chaque mine et chaque année cible t de 2005 à 2021, seules les "
-    "données ≤ t − h servent (h = 1, 2, 3 ans). Réglages (amortissement φ, rappel λ vers l'emprise, "
+    "données ≤ t − h servent (h = 1 à 10 ans). Réglages (amortissement φ, rappel λ vers l'emprise, "
     "quantiles des intervalles) choisis sur les cibles ≤ 2014 ; mesures sur 2015–2021, jamais vues. "
     "r (Pearson) et ρ (Spearman) comparent variation prévue et variation réelle du log de la production "
     "depuis la dernière valeur connue (le naïf, qui ne prévoit aucune variation, n'a pas de r ; un "
@@ -72,7 +72,11 @@ METHODE = (
     "log. facteur_median : erreur multiplicative médiane. bon_sens : part des variations réelles dont le "
     "sens est bien prévu (prévision immobile = ½). Couvertures : part des valeurs réelles 2015–2021 dans "
     "les intervalles 80 % / 90 % bâtis avec les erreurs ≤ 2014 seulement. Un seul φ et un seul κ, réglés "
-    "sur la moyenne des MSE relatives des horizons 1 à 3. Un modèle n'est retenu que si "
+    "sur la moyenne des MSE relatives des horizons 1 à 10 (chaque horizon pèse autant). Un horizon est "
+    "« mesuré » s'il a au moins 8 cas de test pour chaque modèle et des quantiles d'erreur ≤ 2014 non "
+    "extrapolés (au moins 30 erreurs) ; les prévisions d'avenir s'arrêtent au plus long horizon mesuré "
+    "sans trou depuis h = 1, et leurs intervalles sont ceux dont la couverture 2015–2021 est publiée "
+    "(quantiles des erreurs ≤ 2014). Un modèle n'est retenu que si "
     "la borne basse de l'IC 90 % de son skill est > 0 ; sinon le naïf reste retenu. Le modèle d'emprise "
     "est ré-estimé à chaque origine sur la coupe des productions de l'année d'origine (≤ t − h) ; les "
     "prévisions d'avenir utilisent ce même ajustement, à l'année de la dernière valeur connue de la mine.")
@@ -404,6 +408,32 @@ def choose(rows: list[dict], horizons=HORIZONS) -> dict[str, str]:
     return out
 
 
+def _measured(rows: list[dict], q_tune: dict) -> list[int]:
+    """Horizons mesurés hors échantillon : une ligne de test (≥ MIN_N cas) pour chaque modèle, et des
+    quantiles d'erreur de réglage non extrapolés (la couverture publiée vaut pour ces intervalles)."""
+    out = []
+    for h in HORIZONS:
+        have = {r["model"] for r in rows if r["horizon"] == h and r.get("n_points", 0) >= MIN_N}
+        q_ok = all((x := (q_tune.get(m) or {}).get(h)) is not None and not x["extrapole"] for m in MODELS)
+        if have >= set(MODELS) and q_ok:
+            out.append(h)
+    return out
+
+
+def _width(quant: dict, model: str, h: int) -> float:
+    q = _q(quant, model, h)
+    return float(q[3] - q[0]) if q is not None else math.nan
+
+
+def _h_pub(bt: dict) -> int:
+    """Plus long horizon publié ; ancien format : le plus long horizon des lignes du rétro-test."""
+    v = bt.get("horizon_max_publie")
+    if isinstance(v, int):
+        return v
+    hs = [int(r["horizon"]) for r in bt.get("rows") or [] if isinstance(r.get("horizon"), int)]
+    return max(hs) if hs else 0
+
+
 def _finite(v) -> bool:
     return v is not None and isinstance(v, (int, float)) and math.isfinite(v)
 
@@ -470,7 +500,7 @@ def run_backtest(panel: pd.DataFrame, n_boot: int = N_BOOT, today: date | None =
         return base | {"statut": "insuffisant", "raison": "trop peu d'années pour un rétro-test"}
     phi, kappa = tune(tune_c)
     preds_tune, preds_test = predict(tune_c, phi, kappa), predict(test_c, phi, kappa)
-    q_tune = error_quantiles(_errors(tune_c, preds_tune))  # intervalles du test : erreurs ≤ 2014 seulement
+    q_tune = error_quantiles(_errors(tune_c, preds_tune))  # intervalles : erreurs ≤ 2014 seulement
     rows, rows_reglage, diag = [], [], []
     raw = predict(test_c, 1.0, kappa)["tendance"]  # tendance brute (φ = 1) : ce que le réglage a écarté
     for h in HORIZONS:
@@ -487,16 +517,24 @@ def run_backtest(panel: pd.DataFrame, n_boot: int = N_BOOT, today: date | None =
             if label == "test":
                 mt = metrics(_eval_frame(c[m], raw[m], preds["naif"][m], None), max(n_boot // 5, 100), seed=h)
                 diag.append({"model": "tendance (φ = 1)", "horizon": h, **{k: mt[k] for k in DIAG_KEYS}})
-    retenu = choose(rows)
+    mesures = _measured(rows, q_tune)
+    h_pub = next((h - 1 for h in range(1, H_MAX + 2) if h not in mesures), H_MAX)  # sans trou depuis h = 1
+    retenu = choose(rows, mesures)
     petit = [r for r in rows if retenu.get(str(r["horizon"])) == r["model"] != "naif" and r["skill"] < 0.05]
-    all_c = pd.concat([tune_c, test_c])
-    q_all = error_quantiles(_errors(all_c, predict(all_c, phi, kappa)))  # avenir : toutes les erreurs
+    all_c = pd.concat([tune_c, test_c])  # diagnostic : quantiles bâtis sur toutes les erreurs ≤ 2021
+    q_all = error_quantiles(_errors(all_c, predict(all_c, phi, kappa)))
+    largeur = {m: {h: _width(q_all, m, h) / _width(q_tune, m, h) for h in mesures
+                   if _width(q_tune, m, h) > 0} for m in MODELS}
     years = panel["year"].astype(int)
     res = base | {
         "statut": "ok", "rows": rows, "retenu": retenu, "rows_reglage": rows_reglage,
         "reglages": {"phi": phi, "kappa": kappa,
                      "rappel_par_horizon": {h: float(pull(kappa, h)) for h in range(1, H_MAX + 1)}},
-        "intervalles": {"test": q_tune, "avenir": q_all, "quantiles": list(Q)},
+        "horizons_mesures": mesures, "horizon_max_publie": h_pub,
+        "intervalles": {"test": q_tune, "avenir": q_tune, "quantiles": list(Q),
+                        "source_avenir": f"erreurs des cibles ≤ {TUNE_END} (celles dont la couverture "
+                                         f"{TUNE_END + 1}–{LAST_TARGET} est mesurée)",
+                        "largeur_toutes_erreurs_sur_reglage": largeur},
         "emprise": {"par_origine": [[k, o, *v] for (k, o), v in sorted(coefs.items())],
                     "source_avenir": "par_origine, à l'année de la dernière valeur connue de la mine (même "
                                      "famille de modèle que pour le réglage de κ et les intervalles)"},
@@ -565,18 +603,23 @@ def _future_anchor(kind, lfp: float, bt: dict, origin: int) -> float:
 
 def site_forecast_frame(g: pd.DataFrame, bt: dict, today: date | None = None) -> pd.DataFrame:
     """Prévisions des trois modèles d'une mine (lignes du panel), de la dernière année connue + 1 à
-    l'année en cours + 1. Vide si la série est insuffisante (pente non calculable, ou trop ancienne)."""
+    l'année en cours + 1, sans dépasser le plus long horizon mesuré hors échantillon. Vide si la série est
+    insuffisante (pente non calculable) ou trop ancienne (l'année en cours serait hors des horizons
+    mesurés). Colonne mesure : horizon mesuré dans le rétro-test (toujours vrai avec ce plafond)."""
     today = today or date.today()
-    cols = ["site_id", "serie", "target_year", "h", "model", "value", "lo80", "hi80", "lo90", "hi90"]
+    cols = ["site_id", "serie", "target_year", "h", "mesure", "model", "value", "lo80", "hi80", "lo90",
+            "hi90"]
     g = g[g["value"] > 0].sort_values("year")
     if g.empty or bt.get("statut") != "ok":
         return pd.DataFrame(columns=cols)
     years, lv = g["year"].to_numpy(int), np.log(g["value"].to_numpy(float))
     o = int(years[-1])
     l0, sl = _origin_state(years, lv, o)
-    hs = np.arange(1, today.year + 2 - o)
-    if not np.isfinite(sl) or len(hs) == 0 or hs[-1] > H_MAX:
+    h_pub = _h_pub(bt)
+    if not np.isfinite(sl) or today.year - o > h_pub or today.year + 1 - o < 1:
         return pd.DataFrame(columns=cols)
+    hs = np.arange(1, min(today.year + 1 - o, h_pub) + 1)
+    mes = set(bt.get("horizons_mesures") or range(1, h_pub + 1))
     kind, fp = g["emprise_type"].iat[0], g["footprint_km2"].iat[0]
     lfp = math.log10(fp) if isinstance(kind, str) and np.isfinite(fp) else math.nan
     c = pd.DataFrame({"h": hs, "l0": l0, "slope": sl, "anchor": _future_anchor(kind, lfp, bt, o)})
@@ -586,7 +629,8 @@ def site_forecast_frame(g: pd.DataFrame, bt: dict, today: date | None = None) ->
     for model, p in preds.items():
         lo90, lo80, hi80, hi90 = _bounds(p, hs, quant, model)
         frames.append(pd.DataFrame({"site_id": g["site_id"].iat[0], "serie": g["serie"].iat[0],
-                                    "target_year": o + hs, "h": hs, "model": model, "value": np.exp(p),
+                                    "target_year": o + hs, "h": hs,
+                                    "mesure": [int(h) in mes for h in hs], "model": model, "value": np.exp(p),
                                     "lo80": np.exp(lo80), "hi80": np.exp(hi80), "lo90": np.exp(lo90),
                                     "hi90": np.exp(hi90)}))
     return pd.concat(frames, ignore_index=True)[cols]
@@ -662,7 +706,8 @@ def forecast_site(site_id: str, out: Path | None = None, panel: pd.DataFrame | N
                 env = np.r_[np.minimum(off[:2], env[:2]), np.maximum(off[2:], env[2:])]
                 off = env
             b = v * np.exp(off)
-            prev.append({"year": int(r["target_year"]), "model": r["model"], "value": v,
+            prev.append({"year": int(r["target_year"]), "horizon": int(h), "mesure": bool(r["mesure"]),
+                         "model": r["model"], "value": v,
                          "lo90": b[0], "lo80": b[1], "hi80": b[2], "hi90": b[3]})
     rows = bt.get("rows") or []
 
@@ -679,7 +724,7 @@ def forecast_site(site_id: str, out: Path | None = None, panel: pd.DataFrame | N
     return _clean(ident | {
         "prevision": prev,
         "qualite": q1 if q1 is not None else {"n": 0},
-        "qualite_par_horizon": [q for h in HORIZONS if (q := qual(h)) is not None],
+        "qualite_par_horizon": [q for h in HORIZONS if h <= _h_pub(bt) and (q := qual(h)) is not None],
         "suivi_site": _site_track(g, bt, _retenu(bt, 1)),
         "note": None if prev else "série insuffisante ou trop ancienne pour une prévision",
         "backtest_run_at": bt.get("run_at")})
