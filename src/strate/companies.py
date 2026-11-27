@@ -1030,13 +1030,22 @@ NOT_INVEST = re.compile(
     r"impairment\w*|write ?downs?|write ?offs?|writedowns?|depreciation\w*|deterioro|baixa contabil|"
     r"wertminderung\w*|abschreibung\w*|"
     r"reject\w*|rebuff\w*|spurn\w*|rejett\w*|rejete\w*|rechaz\w*|rejeit\w*|abgelehnt|lehnt)\b")
-# offre ou projet retiré, abandonné, annulé : cherché dans tout le titre (« BHP walks away from $49bn Anglo
-# bid »), le mot pouvant être loin du montant ; un titre qui annonce aussi un autre investissement est perdu,
-# choix assumé : un faux montant d'abandon pèse plus qu'un investissement manqué (en, fr, es, pt, de)
+# offre ou projet retiré, abandonné, annulé, arrêté, suspendu ou réduit : cherché dans tout le titre (« BHP
+# walks away from $49bn Anglo bid »), le mot pouvant être loin du montant ; un titre qui annonce aussi un
+# autre investissement est perdu, choix assumé : un faux montant d'abandon pèse plus qu'un investissement
+# manqué (en, fr, es, pt, de). « cut », « slash », « reduce », « slow » ne comptent que suivis d'un montant
+# ou d'un mot de dépense : « invests $500m to cut emissions » reste un investissement.
+_SPEND = (r"(?:capex|spending|investments?|budgets?|capital (?:spending|expenditures?|budgets?)|guidance|"
+          r"outlays?)")
+_CUT = (r"(?:cut(?:s|ting)?|slash(?:es|ed|ing)?|trim(?:s|med|ming)?|reduc(?:e|es|ed|ing)|scal(?:e|es|ed|ing) "
+        r"back)(?= (?:\S*\$|\d[\d.,]*\s?(?:bn|billions?|millions?|mn|mln|m|b)\b)|.{0,25}\b" + _SPEND + r"\b)|"
+        r"slow(?:s|ed|ing)?(?: down)?(?=.{0,25}\b(?:" + _SPEND + r"|development|construction|works?)\b)")
 WITHDRAWN = re.compile(
     r"\b(walk(?:s|ed|ing)? away|withdr[ae]w\w*|abandon(?:s|ing)?|abandoned (?!mines?|pits?|sites?)\w+|"
     r"scrapp(?:ed|ing)|(?:scraps|drop(?:s|ped)?)(?=.{0,30}\b(?:bid|offer|takeover|deal|plan|project)s?\b)|"
     r"call(?:s|ed)? off|cancel\w*|shelv\w*|"
+    r"halt(?:s|ed|ing)?|suspen\w*|paus(?:e|es|ed|ing)|terminat(?:e|es|ed|ing|ion)|freez(?:e|es|ing)|froze|"
+    r"mothball\w*|interromp\w*|paralis\w*|paraliz\w*|stopp\w*|" + _CUT + r"|"
     r"renonc\w*|retire (?:son|sa|leur) \w*|abandonn\w* (?:son|sa|ses|le|la|les|leur) \w*|annul\w*|"
     r"desist\w*|abandona\w* (?:su|sua|el|la|o|a|los|las) \w*|retira\w* (?:su |sua |a |o )?\w*|cancela\w*|"
     r"zuruckgezogen|zieht\w* (?:sich )?\w* ?zuruck|verzicht\w*|abgesagt)\b")

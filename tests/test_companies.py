@@ -622,6 +622,36 @@ def test_extract_investment_currency_prefix_needs_word_boundary(title, devise):
     assert got is not None and got["devise"] == devise
 
 
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Barrick terminates $2bn Lumwana expansion",
+        "First Quantum halts $1bn Cobre Panama investment",
+        "Teck suspends $3 billion expansion",
+        "Vale suspende investimento de R$ 2 bilhões",
+        "Codelco cuts $1bn from investment plan",
+        "BHP to cut capex by $1bn after expansion review",
+        "Codelco reduces investment budget to $3bn",
+        "Anglo American slows spending on $9bn Woodsmith project",
+    ],
+)
+def test_extract_investment_rejects_stopped_or_reduced_projects(title):
+    # projet arrêté, suspendu ou coupé : le montant n'est pas un investissement engagé
+    assert C.extract_investment(title) is None
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Glencore invests $500m to cut emissions at its smelter",  # « cut » sans montant ni dépense
+        "Rio Tinto to invest $1bn to reduce costs at its project",
+        "Anglo cuts 500 jobs, invests $2bn in new plant",  # 500 emplois, pas 500 millions
+    ],
+)
+def test_extract_investment_keeps_cut_words_without_spending(title):
+    assert C.extract_investment(title) is not None
+
+
 def test_parse_number_locales():
     assert C.parse_number("1,200") == 1200 and C.parse_number("1,5") == 1.5
     assert C.parse_number("1.500") == 1500 and C.parse_number("2.75") == 2.75
