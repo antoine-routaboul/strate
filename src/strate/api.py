@@ -860,11 +860,16 @@ BT_ROW = {"model": ("modele",), "horizon": ("h",), "n_mines": (), "n_points": ("
 QUALITE = {"model": ("modele",), "horizon": ("h",), "r": (), "r_lo": (), "r_hi": (), "rho": (), "rho_lo": (),
            "rho_hi": (), "r_niveau": (), "r_niveau_lo": (), "r_niveau_hi": (), "rho_niveau": (),
            "rho_niveau_lo": (), "rho_niveau_hi": (), "skill": (), "skill_lo": (), "skill_hi": (),
-           "couverture80": (), "couverture90": (), "facteur_median": (), "n": ("n_points",), "n_mines": (),
-           "portee": (), "note": ()}
+           "couverture80": (), "couverture90": (), "facteur_median": (), "n": ("n_points",), "unite_n": (),
+           "n_mines": (), "periode": (), "portee": (), "note": ()}
+# suivi propre à la mine : description sans IC (au plus 7 années cibles, dépendantes) ; la note le dit
+SUIVI = {"model": ("modele",), "horizon": ("h",), "periode": (), "n": (), "unite_n": (), "facteur_median": (),
+         "facteur_max": (), "note": ()}
 NOTE_NAIF = ("Le modèle ne prévoit aucune variation : r et ρ (variation prévue ↔ variation réelle) "
              "n'existent pas ; r_niveau et ρ_niveau comparent les niveaux (log), dominés par les écarts de "
              "taille entre mines.")
+NOTE_SUIVI = ("Description de cette mine sur la période de test (au plus 7 années cibles, dépendantes) : "
+              "pas d'IC, pas un test.")
 NOTE_PORTEE = ("Score global du modèle retenu sur la période de test 2015–2021 (toutes les mines), pas la "
                "précision propre à cette mine : voir suivi_site.")
 
@@ -938,6 +943,15 @@ def _qualite(q) -> dict | None:
     return out
 
 
+def _suivi(s) -> dict | None:
+    """Suivi propre à la mine, avec la note du module qui dit pourquoi il n'a pas d'IC."""
+    if not isinstance(s, dict):
+        return None
+    out = {**_shape(s, SUIVI), "portee": "mine"}
+    out["note"] = out["note"] or NOTE_SUIVI
+    return out
+
+
 def _prevision(rows: list[dict], last_year, measured: set[int]) -> list[dict]:
     out = []
     for r in rows:
@@ -977,16 +991,13 @@ def forecast_site(site: str):
     if not isinstance(last, int):
         years = [h["year"] for h in hist if isinstance(h["year"], int) and h["value"] is not None]
         last = max(years) if years else None
-    suivi = d.get("suivi_site")
     out = {"site_id": _finite(d.get("site_id")), "nom": _finite(d.get("nom")),
            "serie": _finite(d.get("serie")), "unite": _finite(d.get("unite")),
            "derniere_annee": _finite(last), "historique": hist,
            "prevision": _prevision(_rows(d.get("prevision")), last, _measured_horizons()),
            "qualite": _qualite(d.get("qualite")),
            "qualite_par_horizon": [q for q in map(_qualite, _rows(d.get("qualite_par_horizon"))) if q],
-           "suivi_site": {**_shape(suivi, {"model": ("modele",), "horizon": ("h",), "n": (),
-                                           "facteur_median": ()}), "portee": "mine"}
-           if isinstance(suivi, dict) else None,
+           "suivi_site": _suivi(d.get("suivi_site")),
            "backtest_run_at": _finite(d.get("backtest_run_at"))}
     msg = next((m for m in (d.get("message"), d.get("note")) if isinstance(m, str) and m), None)
     if msg is None and _backtest_file()[0] is None:

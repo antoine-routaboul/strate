@@ -240,9 +240,28 @@ def test_forecast_site_ok(client, env, monkeypatch):
     assert "global" in q["note"].lower()
     naif = d["qualite_par_horizon"][1]
     assert naif["r"] is None and naif["r_niveau_lo"] == 0.97 and "aucune variation" in naif["note"]
-    assert d["suivi_site"] == {"model": "tendance", "horizon": 1, "n": 6, "facteur_median": 1.2,
-                               "portee": "mine"}
+    s = d["suivi_site"]
+    assert set(s) == {*api.SUIVI, "portee"}
+    assert (s["model"], s["horizon"], s["n"], s["facteur_median"]) == ("tendance", 1, 6, 1.2)
+    assert s["portee"] == "mine"
+    assert s["note"] == api.NOTE_SUIVI  # le module n'en donne pas : la note par défaut dit pourquoi pas d'IC
     json.dumps(d, allow_nan=False)
+
+
+def test_forecast_site_keeps_module_site_caveat(client, env, monkeypatch):
+    """Le suivi propre à la mine n'a pas d'IC (n ≤ 7, années dépendantes) : la note du module, la période
+    et le facteur maximal arrivent jusqu'au client, comme l'unité de n et la période de la qualité globale."""
+    suivi = {"modele": "naif", "horizon": 1, "periode": "2015–2021", "n": 6, "facteur_median": 1.08,
+             "facteur_max": 1.25, "note": "Description de cette mine : pas d'IC, pas un test."}
+    qual = {**QUAL, "unite_n": "points (mine × année cible)", "periode": "2015–2021"}
+    fake(monkeypatch, "forecast", forecast_site=lambda s: {**SITE, "qualite": qual, "suivi_site": suivi})
+    write_bt(env)
+    d = client.get("/api/forecast/site", params={"site": "x"}).json()
+    assert d["suivi_site"] == {"model": "naif", "horizon": 1, "periode": "2015–2021", "n": 6,
+                               "unite_n": None, "facteur_median": 1.08, "facteur_max": 1.25,
+                               "note": "Description de cette mine : pas d'IC, pas un test.", "portee": "mine"}
+    q = d["qualite"]
+    assert (q["unite_n"], q["periode"], q["n"]) == ("points (mine × année cible)", "2015–2021", 40)
 
 
 def test_forecast_site_module_horizon_and_mesure_win(client, env, monkeypatch):
