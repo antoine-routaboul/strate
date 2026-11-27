@@ -1823,8 +1823,14 @@ def _age_days(stamp: str | None) -> float:
 
 
 # -- mise à jour ---------------------------------------------------------------------------------------------
-def _carry_ids(co: pd.DataFrame) -> pd.DataFrame:
-    """QID, pays et CIK trouvés lors d'une mise à jour précédente : gardés sans relire le réseau."""
+KEPT_NOTE = " ; repris de la mise à jour précédente (table SEC indisponible)"
+
+
+def _carry_ids(co: pd.DataFrame, any_cik: bool = False) -> pd.DataFrame:
+    """QID, pays et CIK trouvés lors d'une mise à jour précédente : gardés sans relire le réseau.
+    any_cik=True (table ticker ↔ CIK de la SEC illisible ou vide) : tout CIK précédent est repris, quelle
+    que soit sa source, avec les tickers alors copiés de la SEC ; sans cela les CIK trouvés par ticker ou
+    par nom disparaîtraient le temps d'un lancement et purge_stale_facts effacerait leurs faits."""
     old = load("companies")
     if old.empty or not {"id", "qid", "cik", "pays"} <= set(old.columns):
         return co
@@ -1843,8 +1849,16 @@ def _carry_ids(co: pd.DataFrame) -> pd.DataFrame:
         # CIK : seul celui venu de Wikidata (relu une fois par mois) est repris ; graine et registre SEC
         # sont recalculés à chaque fois, une règle corrigée s'applique donc tout de suite
         src = prev.at[cid, "cik_source"]
-        if not isinstance(co.at[i, "cik"], str) and isinstance(src, str) and src.startswith("Wikidata"):
+        if isinstance(co.at[i, "cik"], str) or not isinstance(prev.at[cid, "cik"], str):
+            continue
+        if isinstance(src, str) and src.startswith("Wikidata"):
             co.at[i, "cik"], co.at[i, "cik_source"] = prev.at[cid, "cik"], src
+        elif any_cik:
+            src = src if isinstance(src, str) else "mise à jour précédente"
+            co.at[i, "cik"] = prev.at[cid, "cik"]
+            co.at[i, "cik_source"] = src if src.endswith(KEPT_NOTE) else src + KEPT_NOTE
+            if "tickers" in prev and isinstance(prev.at[cid, "tickers"], str):
+                _add_tickers(co, i, _split_list(prev.at[cid, "tickers"]))
     return co
 
 
@@ -1889,13 +1903,17 @@ def update(limit: int | None = MAX_COMPANIES, *, http=None, force: bool = False,
     if twins is None:
         twins = _twins()
     co, lk = build_entities(cat, graph, twins)
-    co = _carry_ids(co)
 
     tick = []
     try:
         tick = sec_tickers(http, force=force)
-    except Exception as e:  # réseau : on garde les CIK déjà connus
-        errors.append(f"SEC company_tickers : {type(e).__name__}")
+    except Exception as e:  # réseau, cache illisible, format inattendu
+        errors.append(f"SEC company_tickers : {type(e).__name__} ; CIK de la mise à jour précédente repris")
+    else:
+        if not tick:
+            errors.append("SEC company_tickers : table vide ; CIK de la mise à jour précédente repris")
+    # table absente : les CIK déjà connus sont gardés tels quels, aucun fait n'est purgé pour cette raison
+    co = _carry_ids(co, any_cik=not tick)
     wd: dict[str, dict] = {}
     if wikidata and (force or _age_days(state.get("wikidata_ids_at")) >= WIKIDATA_DAYS):
         pick = co[(co["n_mines"] >= 2) | co["suivie"] | co["cik"].notna() | co["qid"].notna()]

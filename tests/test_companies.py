@@ -1163,3 +1163,30 @@ def test_readers_empty_before_first_refresh():
     assert C.table().empty and list(C.table().columns) == C.TABLE_COLS
     assert C.company("newmont") is None
     assert C.correlations()["rows"] == []
+
+
+@pytest.mark.parametrize("panne", [RuntimeError("SEC indisponible"), None])
+def test_missing_ticker_table_keeps_name_matched_cik_and_facts(tmp_path, panne):
+    # déposant fabriqué pour le test : trouvé par son nom dans la table SEC, secteur minier
+    cat = pd.concat([fake_catalog(), pd.DataFrame([dict(id="icmm9", name="Vault", owner="Equinox Gold Corp.",
+                                                        operator=None, jasansky=None, commodities="gold")]
+                                                  ).set_index("id", drop=False)])
+    routes = _routes()
+    tick = fixture("sec_tickers_exchange.json")
+    tick["data"].append([1756607, "Equinox Gold Corp.", "EQX", "NYSE"])
+    routes = {"submissions/CIK0001756607.json": {"sic": "1040", "sicDescription": "Gold and Silver Ores"},
+              "CIK0001756607.json": fixture("sec_newmont_companyfacts.json"), **routes}
+    routes["company_tickers_exchange.json"] = tick
+    C.refresh(max_companies=500, **_refresh_kw(FakeHttp(routes, _sparql), tmp_path, cat=cat))
+    co = C.load("companies").set_index("id")
+    cid = next(i for i, k in co["cik"].items() if k == "0001756607")
+    n = int((C.load("facts")["company_id"] == cid).sum())
+    assert n > 0 and "EQX" in co.at[cid, "tickers"]
+    C.TICKERS_CACHE.unlink()  # ni cache ni réponse : table vide ; ou exception à la lecture
+    routes["company_tickers_exchange.json"] = panne
+    st = C.refresh(max_companies=500, force=True, **_refresh_kw(FakeHttp(routes, _sparql), tmp_path, cat=cat))
+    co2 = C.load("companies").set_index("id")
+    assert co2.at[cid, "cik"] == "0001756607" and co2.at[cid, "cik_source"].endswith(C.KEPT_NOTE)
+    assert "EQX" in co2.at[cid, "tickers"]
+    assert st["faits_purges"] == 0 and int((C.load("facts")["company_id"] == cid).sum()) == n
+    assert any(e.startswith("SEC company_tickers") and "repris" in e for e in st["erreurs"])
