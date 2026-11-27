@@ -722,10 +722,26 @@ _COUNTRY_RE = re.compile(r"(?<![a-z0-9])(?:" + "|".join(
 def _distinctive(name: str) -> frozenset[str]:
     """Mots qui désignent vraiment une mine : ni génériques (relief, substance, « North »…), ni numéros,
     ni pays (« Peru », « Papua New Guinea »), ni gentilés (« Chinese »), ni seulement des régions
-    (« Nevada », « Katanga ») ; vide = nom inutilisable."""
-    rest = _COUNTRY_RE.sub(" ", entities.fold(name))
+    (« Nevada », « Katanga »), ni un pays ou une région suivi d'une étendue (« Atacama Desert », « Chile
+    Plateau ») ; vide = nom inutilisable."""
+    folded = entities.fold(name)
+    rest = _COUNTRY_RE.sub(" ", folded)
     core = frozenset(t for t in catalog._core(catalog._tokens(rest)) if t not in _DEMONYMS)
-    return frozenset() if core <= _REGIONS else core
+    geo_named = rest != folded or bool(core & _REGIONS)
+    if core <= _REGIONS or (geo_named and core - _GEO_FEATURES <= _REGIONS and not _has_mine_word(name)):
+        return frozenset()
+    return core
+
+
+# mot d'ouvrage DANS le nom : la phrase exacte « Turkey Creek Mine » ne désigne que la mine, alors que
+# « Ural Mountains » ou « Copper Chile » sans lui désignent un lieu ou une tournure de titre
+_MINE_TYPE = frozenset("""
+mine mines pit pits colliery collieries quarry quarries shaft shafts mina minas tajo kopalnia rudnik
+""".split())
+
+
+def _has_mine_word(name: str) -> bool:
+    return bool(_MINE_TYPE.intersection(re.findall(r"[a-z0-9]+", entities.fold(name))))
 
 
 # Mots de lieu (relief, eau, orientation, taille, couleur) : non distinctifs seuls, mais à plusieurs ils
@@ -741,6 +757,18 @@ _PAYS = "zzpays"   # marque d'un nom de pays dans `_place_name_key`
 _REGION_MAKERS = frozenset("""
 north south east west northern southern eastern western central upper lower new old great little big
 norte sur este oeste nueva nuevo novo nova san santa santo sao saint st""".split())
+# avec un pays ou une région, un mot de relief ou d'étendue nomme un lieu géographique, pas une mine
+# (« Ural Mountains », « Lake Victoria », « Atacama Desert », « Pilbara Coast »)
+_GEO_FEATURES = _PLACE_WORDS | frozenset("""
+desert plateau basin range ranges coast coastal highlands highland lowlands plain plains peninsula gulf
+sea delta forest belt region province district state territory""".split())
+# substances et mots du secteur en anglais : avec un pays ou une région, ils forment une tournure de titre
+# de la traduction anglaise que l'API cherche (« Chile copper », « Gold Peru », « Coal Victoria »),
+# quel que soit l'ordre. Une substance dans une autre langue (« Cobre Panama ») reste un nom propre.
+_EN_SECTOR = frozenset("""
+gold copper coal iron ore silver zinc nickel tin lead lithium uranium cobalt platinum palladium diamond
+diamonds potash phosphate bauxite manganese graphite tungsten molybdenum vanadium chrome chromite rare
+earth earths steel metal metals mineral minerals resources oil gas energy""".split())
 
 
 def _place_name_key(name: str) -> frozenset[str] | None:
@@ -748,14 +776,22 @@ def _place_name_key(name: str) -> frozenset[str] | None:
     Mountain », « Cobre Panama ») : utilisable en phrase exacte (très précise pour GDELT), seulement pour
     le nom du catalogue ou de la liste suivie, jamais pour un alias (« Southern Mine », « Copper Mountain »
     en alias d'une autre mine). Il faut au moins deux mots hors numéros et un mot de lieu, de pays ou de
-    région ; jamais un pays ou une région (« South Africa », « New Mexico »). Sans mot de lieu, le pays
-    ou la région ne doit pas ouvrir le nom : « Chile Copper », « Nevada Gold » sont des tournures
-    courantes des titres, pas des noms ; « Cobre Panama » en est un."""
+    région. Avec un pays ou une région, le reste du nom doit contenir un mot qui n'est ni un mot
+    d'orientation (« South Africa », « New Mexico »), ni un relief ou une étendue (« Ural Mountains »,
+    « Lake Victoria » : des lieux géographiques), ni une substance ou un mot du secteur en anglais
+    (« Chile Copper », « Gold Peru » : des tournures de titres), sauf si le nom porte lui-même un mot
+    d'ouvrage (« Turkey Creek Mine », « New Jersey Zinc Pit » : la phrase exacte est précise). Sans mot de
+    lieu, le pays ou la région ne doit pas non plus ouvrir le nom. « Cobre Panama » passe : « cobre » n'est
+    pas de l'anglais. Coût connu : « Cerro Colorado » (Chili) est refusé, « colorado » étant aussi un État
+    américain ; la règle ne distingue pas l'adjectif espagnol du nom de région."""
     f = _COUNTRY_RE.sub(lambda m: " " + _PAYS + m.group(0).replace(" ", "") + " ", entities.fold(name))
     toks = catalog._tokens(f)
     words = {t for t in toks if not t.isdigit() and t not in _DEMONYMS and len(t) > 1}
     geo = {t for t in words if t.startswith(_PAYS) or t in _REGIONS}
-    if len(words) < 2 or not (words & _PLACE_WORDS or geo) or (geo and words - geo <= _REGION_MAKERS):
+    if len(words) < 2 or not (words & _PLACE_WORDS or geo):
+        return None
+    if geo and not words - geo - _REGION_MAKERS - _GEO_FEATURES - _EN_SECTOR \
+            and (not _has_mine_word(name) or not words - geo - _REGION_MAKERS):
         return None
     if not words & _PLACE_WORDS:
         first = next((t for t in re.findall(r"[a-z0-9]+", f) if t in toks), None)
