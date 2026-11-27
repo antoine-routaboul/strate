@@ -1,16 +1,21 @@
 """Veille : service (cycle isolé par étape, alignement au quart d'heure, arrêt sur SIGTERM, battement),
-CLI `strate veille`, service launchd (sans rien installer) et routes /api/veille/* en lecture seule."""
+CLI `strate veille`, services launchd et systemd (sans rien installer) et routes /api/veille/* en lecture
+seule."""
 
 from __future__ import annotations
 
 import json
+import os
 import plistlib
+import shutil
 import signal
 import sqlite3
+import subprocess
 import sys
 import time
 import types
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -218,8 +223,8 @@ def test_install_writes_plist_and_bootstraps(tmp_path, monkeypatch):
     ran = []
     monkeypatch.setattr(daemon, "_launchctl",
                         lambda *a: ran.append(a) or SimpleNamespace(returncode=0, stdout="", stderr=""))
-    r = daemon.install()
-    assert r["charge"]
+    r = daemon.install(manager="launchd")
+    assert r["charge"] and r["gestionnaire"] == "launchd"
     pl = plistlib.loads(plist.read_bytes())
     assert pl["Label"] == "com.strate.veille" and pl["KeepAlive"] is True and pl["RunAtLoad"] is True
     assert pl["ProgramArguments"][0].endswith("/uv") and pl["ProgramArguments"][0].startswith("/")
@@ -231,8 +236,8 @@ def test_install_writes_plist_and_bootstraps(tmp_path, monkeypatch):
     dom = f"gui/{daemon.os.getuid()}"
     assert ran == [("bootout", f"{dom}/com.strate.veille"), ("bootstrap", dom, str(plist))]
     ran.clear()
-    u = daemon.uninstall()
-    assert u["plist_retire"] and not plist.exists()
+    u = daemon.uninstall(manager="launchd")
+    assert u["plist_retire"] and u["fichier_retire"] and not plist.exists()
     assert ran == [("bootout", f"{dom}/com.strate.veille")]
 
 
@@ -240,13 +245,150 @@ def test_install_dry_run_writes_nothing(tmp_path, monkeypatch):
     plist = tmp_path / "com.strate.veille.plist"
     monkeypatch.setattr(daemon, "PLIST_PATH", plist)
     monkeypatch.setattr(daemon, "_launchctl", lambda *a: pytest.fail("launchctl ne doit pas être appelé"))
-    r = daemon.install(dry_run=True)
-    assert not plist.exists() and r["contenu"]["KeepAlive"] is True
+    r = daemon.install(dry_run=True, manager="launchd")
+    assert not plist.exists() and r["contenu"]["KeepAlive"] is True and "<plist" in r["texte"]
+
+
+# -- systemd (Linux, machine virtuelle : systemctl et loginctl sont simulés) --------------------------------
+def _fake_run(ran, linger="no", fail=()):
+    def run(prog):
+        def f(*a):
+            ran.append((prog, *a))
+            bad = any(a[:len(x)] == x for x in fail)
+            out = linger if prog == "loginctl" and a[:1] == ("show-user",) else ""
+            return SimpleNamespace(returncode=1 if bad else 0, stdout=out, stderr="refusé" if bad else "")
+        return f
+    return run
+
+
+def test_systemd_install_writes_unit_enables_restarts_and_lingers(tmp_path, monkeypatch):
+    unit = tmp_path / "systemd" / "user" / "strate-veille.service"
+    logp = tmp_path / "logs" / "veille.log"
+    monkeypatch.setattr(daemon, "UNIT_PATH", unit)
+    monkeypatch.setattr(daemon, "LOG_PATH", logp)
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: "/home/azureuser/.local/bin/uv")
+    monkeypatch.setattr(daemon, "_user", lambda: "azureuser")
+    ran: list = []
+    run = _fake_run(ran)
+    monkeypatch.setattr(daemon, "_systemctl", run("systemctl"))
+    monkeypatch.setattr(daemon, "_loginctl", run("loginctl"))
+    r = daemon.install(manager="systemd")
+    assert r["charge"] and r["linger"] and r["message"] == "" and r["gestionnaire"] == "systemd"
+    text = unit.read_text()
+    assert text == r["texte"] and logp.parent.is_dir()
+    lines = text.splitlines()
+    exe = f'ExecStart="/home/azureuser/.local/bin/uv" run --project "{daemon.PROJECT_DIR}" strate veille run'
+    assert exe in lines
+    for want in ("Restart=always", "RestartSec=60", "StartLimitIntervalSec=0", "KillMode=mixed",
+                 "TimeoutStopSec=60", "WantedBy=default.target", f"StandardOutput=append:{logp}",
+                 f"StandardError=append:{logp}", 'Environment="PYTHONUNBUFFERED=1"'):
+        assert want in lines, want
+    assert not any(line.startswith("Nice=") for line in lines)  # os.nice suffit, pas de double baisse
+    assert [x for x in ran if x[0] == "systemctl"] == [
+        ("systemctl", "daemon-reload"), ("systemctl", "enable", "strate-veille.service"),
+        ("systemctl", "restart", "strate-veille.service")]
+    assert ("loginctl", "enable-linger", "azureuser") in ran
+    ran.clear()
+    u = daemon.uninstall(manager="systemd")
+    assert u["arrete"] and u["fichier_retire"] and not unit.exists()
+    assert ran == [("systemctl", "disable", "--now", "strate-veille.service"), ("systemctl", "daemon-reload")]
+
+
+def test_systemd_linger_refused_is_reported_not_fatal(tmp_path, monkeypatch):
+    monkeypatch.setattr(daemon, "UNIT_PATH", tmp_path / "strate-veille.service")
+    monkeypatch.setattr(daemon, "LOG_PATH", tmp_path / "logs" / "veille.log")
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(daemon, "_user", lambda: "azureuser")
+    ran: list = []
+    run = _fake_run(ran, fail=(("enable-linger",),))
+    monkeypatch.setattr(daemon, "_systemctl", run("systemctl"))
+    monkeypatch.setattr(daemon, "_loginctl", run("loginctl"))
+    monkeypatch.setattr(daemon, "_sudo_loginctl", run("sudo"))
+    r = daemon.install(manager="systemd")
+    assert ("sudo", "enable-linger", "azureuser") in ran  # sudo -n tenté avant d'abandonner
+    assert r["charge"] and r["linger"] is False
+    assert "sudo loginctl enable-linger azureuser" in r["message"]
+
+
+def test_systemd_linger_already_on_is_not_requested_again(tmp_path, monkeypatch):
+    monkeypatch.setattr(daemon, "_user", lambda: "azureuser")
+    ran: list = []
+    monkeypatch.setattr(daemon, "_loginctl", _fake_run(ran, linger="yes")("loginctl"))
+    assert daemon._linger() == {"linger": True, "message": ""}
+    assert ran == [("loginctl", "show-user", "azureuser", "-p", "Linger", "--value")]
+
+
+def test_systemd_failed_enable_stops_and_reports(tmp_path, monkeypatch):
+    monkeypatch.setattr(daemon, "UNIT_PATH", tmp_path / "strate-veille.service")
+    monkeypatch.setattr(daemon, "LOG_PATH", tmp_path / "logs" / "veille.log")
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(daemon, "_user", lambda: "azureuser")
+    ran: list = []
+    run = _fake_run(ran, linger="yes", fail=(("enable",),))
+    monkeypatch.setattr(daemon, "_systemctl", run("systemctl"))
+    monkeypatch.setattr(daemon, "_loginctl", run("loginctl"))
+    r = daemon.install(manager="systemd")
+    assert r["charge"] is False and "systemctl --user enable" in r["message"]
+    assert ("systemctl", "restart", "strate-veille.service") not in ran
+
+
+def test_systemd_dry_run_writes_nothing(tmp_path, monkeypatch):
+    unit = tmp_path / "strate-veille.service"
+    monkeypatch.setattr(daemon, "UNIT_PATH", unit)
+    monkeypatch.setattr(daemon.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(daemon, "_systemctl", lambda *a: pytest.fail("systemctl ne doit pas être appelé"))
+    monkeypatch.setattr(daemon, "_loginctl", lambda *a: pytest.fail("loginctl ne doit pas être appelé"))
+    r = daemon.install(dry_run=True, manager="systemd")
+    assert not unit.exists() and "[Service]" in r["texte"]
+
+
+def test_systemd_unit_escapes_spaces_percent_dollar_and_quotes(monkeypatch):
+    monkeypatch.setenv("STRATE_DATA", "/srv/strate data/100%/$HOME")
+    text = daemon.unit_text('/opt/my tools/uv', Path("/home/a/my $proj"), Path("/var/log/st%rate.log"))
+    lines = text.splitlines()
+    assert 'ExecStart="/opt/my tools/uv" run --project "/home/a/my $$proj" strate veille run' in lines
+    assert "WorkingDirectory=/home/a/my $proj" in lines
+    assert 'Environment="STRATE_DATA=/srv/strate data/100%%/$HOME"' in lines  # Environment= : $ tel quel
+    assert "StandardOutput=append:/var/log/st%%rate.log" in lines
+    assert 'Environment="PATH=/opt/my tools:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"' in lines
+    assert daemon._systemd_escape('a"b\\c', True) == '"a\\"b\\\\c"'
+    assert daemon._systemd_escape("$x", True, dollar=True) == '"$$x"'
+    assert daemon._systemd_escape("$x", True) == '"$x"'
+    with pytest.raises(ValueError):
+        daemon.unit_text("/usr/bin/uv", Path("/home/a/bad\nname"))
+
+
+def test_systemd_state_parses_systemctl_show(tmp_path, monkeypatch):
+    unit = tmp_path / "strate-veille.service"
+    monkeypatch.setattr(daemon, "UNIT_PATH", unit)
+    assert daemon.systemd_state() == {"installe": False, "charge": False}
+    unit.write_text("[Service]\n")
+    out = "ActiveState=active\nSubState=running\nMainPID=4242\nNRestarts=1\nExecMainStatus=0\n"
+    monkeypatch.setattr(daemon, "_systemctl", lambda *a: SimpleNamespace(returncode=0, stdout=out, stderr=""))
+    st = daemon.systemd_state()
+    assert st == {"installe": True, "charge": True, "state": "active", "substate": "running", "pid": "4242",
+                  "restarts": "1", "last_exit_code": "0"}
+    out = "ActiveState=failed\nSubState=failed\nMainPID=0\nNRestarts=3\nExecMainStatus=1\n"
+    assert daemon.systemd_state()["charge"] is False
+    monkeypatch.setattr(daemon, "_systemctl", lambda *a: SimpleNamespace(
+        returncode=1, stdout="", stderr="Failed to connect to bus: No medium found"))
+    st = daemon.systemd_state()  # gestionnaire injoignable : inconnu, pas « arrêté »
+    assert st["charge"] is None and "bus" in st["erreur"]
+
+
+def test_service_manager_by_platform(monkeypatch):
+    assert daemon.service_manager("darwin") == "launchd"
+    assert daemon.service_manager("linux") == "systemd"
+    with pytest.raises(RuntimeError):
+        daemon.service_manager("win32")
+    monkeypatch.setattr(daemon, "service_manager", lambda: (_ for _ in ()).throw(RuntimeError("x")))
+    assert daemon.manager_state() == {"gestionnaire": None, "installe": False, "charge": False}
 
 
 # -- CLI -----------------------------------------------------------------------------------------------
 def test_cli_status_and_once(db, monkeypatch, capsys):
-    monkeypatch.setattr(daemon, "launchd_state", lambda: {"installe": False, "charge": False})
+    monkeypatch.setattr(daemon, "manager_state",
+                        lambda: {"gestionnaire": "launchd", "installe": False, "charge": False})
     monkeypatch.setattr(sys, "argv", ["strate", "veille", "status"])
     cli.main()
     out = capsys.readouterr().out
@@ -506,7 +648,8 @@ def test_corrupt_database_gives_empty_answers(db, monkeypatch, capsys):
     for r in ROUTES:
         assert c.get(r).status_code == 200, r
     assert c.get("/api/veille/status").json()["stages"] == []
-    monkeypatch.setattr(daemon, "launchd_state", lambda: {"installe": False, "charge": False})
+    monkeypatch.setattr(daemon, "manager_state",
+                        lambda: {"gestionnaire": "launchd", "installe": False, "charge": False})
     monkeypatch.setattr(sys, "argv", ["strate", "veille", "status"])
     cli.main()  # pas de trace d'erreur
     out = capsys.readouterr().out
@@ -530,7 +673,8 @@ def test_service_counters_not_an_object(db, monkeypatch):
                 {"last_run": None, "counters": {"interval_s": "x", "dernier_cycle": 7}}):
         st = daemon.service_state(row)
         assert st["actif"] in (True, False) and st["dernier_cycle"] is None
-    monkeypatch.setattr(daemon, "launchd_state", lambda: {"installe": False, "charge": False})
+    monkeypatch.setattr(daemon, "manager_state",
+                        lambda: {"gestionnaire": "launchd", "installe": False, "charge": False})
     monkeypatch.setattr(sys, "argv", ["strate", "veille", "status"])
     cli.main()  # pas de trace d'erreur
 
@@ -657,3 +801,36 @@ def test_status_watch_does_not_replace_set_status_and_is_per_thread(db):
     store.set_status(con, "correlation", True, "hors relevé")    # hors du contexte : rien n'est relevé
     assert "correlation" not in seen
     con.close()
+
+
+@pytest.mark.skipif(not shutil.which("systemd-analyze") or not shutil.which("uv"),
+                    reason="systemd-analyze absent (macOS) : vérifié sur la CI Linux")
+def test_systemd_unit_passes_systemd_analyze_verify(tmp_path, monkeypatch):
+    """L'unité générée est lue par le vrai systemd (CI Ubuntu) : syntaxe, ExecStart, guillemets."""
+    unit = tmp_path / "strate-veille.service"
+    unit.write_text(daemon.unit_text(os.path.abspath(shutil.which("uv")), log_path=tmp_path / "veille.log"))
+    r = subprocess.run(["systemd-analyze", "--user", "verify", str(unit)], capture_output=True, text=True,
+                       check=False)
+    problems = [ln for ln in (r.stderr + r.stdout).splitlines() if "strate-veille" in ln]
+    assert r.returncode == 0 and not problems, r.stderr + r.stdout
+
+
+def test_linger_falls_back_to_passwordless_sudo(monkeypatch):
+    monkeypatch.setattr(daemon, "_user", lambda: "azureuser")
+    ran: list = []
+    run = _fake_run(ran, fail=(("enable-linger",),))
+    monkeypatch.setattr(daemon, "_loginctl", run("loginctl"))
+    monkeypatch.setattr(daemon, "_sudo_loginctl", _fake_run(ran)("sudo"))
+    assert daemon._linger() == {"linger": True, "message": ""}
+
+
+def test_user_env_restores_runtime_dir_outside_a_login_session(monkeypatch, tmp_path):
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    real = daemon.Path
+
+    def fake_path(p, *a):
+        return real(tmp_path) if str(p).startswith("/run/user/") else real(p, *a)
+    monkeypatch.setattr(daemon, "Path", fake_path)
+    assert daemon._user_env()["XDG_RUNTIME_DIR"] == str(tmp_path)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/deja/la")
+    assert daemon._user_env()["XDG_RUNTIME_DIR"] == "/deja/la"

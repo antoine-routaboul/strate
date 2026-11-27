@@ -2,7 +2,8 @@
 
     uv run strate veille once      # un cycle, puis rend la main
     uv run strate veille run       # boucle sans fin (ce que lance launchd)
-    uv run strate veille install   # service launchd « com.strate.veille » (démarre avec la session)
+    uv run strate veille install   # service « com.strate.veille » (launchd, Mac) ou « strate-veille »
+                                   # (systemd utilisateur, Linux : une machine virtuelle dans le cloud)
 
 Pourquoi ces choix :
 - chaque étape est isolée : une panne réseau de la collecte n'empêche pas de normaliser ce qui est déjà
@@ -11,11 +12,12 @@ Pourquoi ces choix :
 - le cycle démarre au quart d'heure pile, au rythme où GDELT publie ses fichiers ;
 - l'attente suit l'horloge murale par petits pas : après une mise en veille du Mac, le cycle manqué part
   au réveil au lieu d'attendre encore le reste de l'intervalle ;
-- SIGTERM (launchctl, extinction) : plus aucune étape ne démarre ; l'étape en cours peut finir dans le
-  délai ExitTimeOut de launchd (60 s). Une étape plus longue (corrélation avec analyses satellite) est
-  tuée par launchd : SQLite annule sa transaction non validée (rien d'incohérent) et le battement
-  « arrêté » manque, mais l'état du service le voit inactif (pid disparu). Une étape longue peut
-  interroger `stop_requested()` entre deux unités de travail pour s'arrêter à temps ;
+- SIGTERM (launchctl, systemctl, extinction) : plus aucune étape ne démarre ; l'étape en cours peut
+  finir dans le délai d'arrêt du service (60 s, ExitTimeOut de launchd ou TimeoutStopSec de systemd).
+  Une étape plus longue (corrélation avec analyses satellite) est tuée : SQLite annule sa transaction
+  non validée (rien d'incohérent) et le battement « arrêté » manque, mais l'état du service le voit
+  inactif (pid disparu). Une étape longue peut interroger `stop_requested()` entre deux unités de
+  travail pour s'arrêter à temps ;
 - priorité basse (os.nice) : la veille ne doit jamais ralentir le Mac ;
 - un verrou de fichier empêche deux cycles simultanés (service + `veille once` lancé à la main).
 """
@@ -34,6 +36,7 @@ import shutil
 import signal
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 from datetime import UTC, datetime
@@ -62,6 +65,8 @@ LABEL = "com.strate.veille"
 PROJECT_DIR = Path(__file__).resolve().parents[3]
 LOG_PATH = PROJECT_DIR / "logs" / "veille.log"
 PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+UNIT = "strate-veille.service"
+UNIT_PATH = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "systemd" / "user" / UNIT
 
 _stop = threading.Event()
 _signals = 0
@@ -399,7 +404,7 @@ def _launchctl(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["launchctl", *args], capture_output=True, text=True, check=False)
 
 
-def install(dry_run: bool = False) -> dict:
+def _launchd_install(dry_run: bool = False) -> dict:
     """Écrit ~/Library/LaunchAgents/com.strate.veille.plist et le charge (launchctl bootstrap)."""
     uv = shutil.which("uv")
     if not uv:
@@ -407,22 +412,25 @@ def install(dry_run: bool = False) -> dict:
     # chemin absolu sans résoudre le lien : /opt/homebrew/bin/uv survit à `brew upgrade`, pas le Cellar
     pl = plist_dict(os.path.abspath(uv))
     if dry_run:
-        return {"plist": str(PLIST_PATH), "contenu": pl, "charge": False}
+        return {"gestionnaire": "launchd", "fichier": str(PLIST_PATH), "plist": str(PLIST_PATH),
+                "contenu": pl, "texte": plistlib.dumps(pl).decode(), "charge": False}
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
     _launchctl("bootout", f"{_domain()}/{LABEL}")  # réinstallation : l'ancienne version est d'abord arrêtée
     PLIST_PATH.write_bytes(plistlib.dumps(pl))
     r = _launchctl("bootstrap", _domain(), str(PLIST_PATH))
-    return {"plist": str(PLIST_PATH), "contenu": pl, "charge": r.returncode == 0,
-            "launchctl": (r.stderr or r.stdout).strip()}
+    return {"gestionnaire": "launchd", "fichier": str(PLIST_PATH), "plist": str(PLIST_PATH), "contenu": pl,
+            "texte": plistlib.dumps(pl).decode(), "charge": r.returncode == 0,
+            "message": (r.stderr or r.stdout).strip(), "launchctl": (r.stderr or r.stdout).strip()}
 
 
-def uninstall() -> dict:
+def _launchd_uninstall() -> dict:
     """Arrête le service (launchctl bootout) et retire son plist."""
     r = _launchctl("bootout", f"{_domain()}/{LABEL}")
     existed = PLIST_PATH.exists()
     PLIST_PATH.unlink(missing_ok=True)
-    return {"arrete": r.returncode == 0, "plist_retire": existed, "launchctl": (r.stderr or r.stdout).strip()}
+    return {"gestionnaire": "launchd", "arrete": r.returncode == 0, "plist_retire": existed,
+            "fichier_retire": existed, "launchctl": (r.stderr or r.stdout).strip()}
 
 
 def launchd_state() -> dict:
@@ -441,3 +449,202 @@ def launchd_state() -> dict:
         if k in ("state", "pid", "last exit code", "runs"):
             out[k.replace(" ", "_")] = v
     return out
+
+
+# -- systemd (Linux : machine virtuelle dans le cloud) ----------------------------------------------------
+def _systemd_escape(v: str, quote: bool, dollar: bool = False) -> str:
+    """Valeur sûre pour un fichier d'unité : % (spécificateurs) doublé ; entre guillemets, \\ et " échappés.
+    `dollar` : $ doublé, seulement pour ExecStart (qui développe $VAR ; Environment= ne le fait pas et
+    garderait $$ tel quel). Un retour à la ligne casserait l'unité."""
+    v = str(v)
+    if "\n" in v or "\r" in v:
+        raise ValueError(f"retour à la ligne interdit dans une unité systemd : {v!r}")
+    v = v.replace("%", "%%")
+    if not quote:
+        return v
+    v = v.replace("\\", "\\\\").replace('"', '\\"')
+    return '"' + (v.replace("$", "$$") if dollar else v) + '"'
+
+
+def unit_text(uv: str, project: Path | None = None, log_path: Path | None = None) -> str:
+    """Unité systemd utilisateur, équivalente au plist launchd :
+
+    - Restart=always + RestartSec=60 + StartLimitIntervalSec=0 : relancé s'il meurt, une fois par minute
+      au plus, sans jamais abandonner (KeepAlive + ThrottleInterval de launchd) ;
+    - KillMode=mixed : SIGTERM au seul processus principal (uv), qui le relaie à Python. Avec le mode par
+      défaut, Python recevrait aussi le SIGTERM de systemd : deux signaux, donc arrêt immédiat au lieu de
+      finir l'étape en cours ; SIGKILL à tout le groupe après TimeoutStopSec (60 s, comme ExitTimeOut) ;
+    - pas de Nice= : le service s'abaisse déjà lui-même (os.nice) ;
+    - journal en ajout dans logs/veille.log, tourné par _trim_log comme sur le Mac."""
+    project, log_path = project or PROJECT_DIR, log_path or LOG_PATH
+    path = f"{Path(uv).parent}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    env = [("PATH", path), ("PYTHONUNBUFFERED", "1")]
+    if os.environ.get("STRATE_DATA"):
+        env.append(("STRATE_DATA", os.environ["STRATE_DATA"]))
+    q = _systemd_escape
+    lines = [
+        "[Unit]",
+        "Description=Strate : veille d'actualité minière (collecte, normalisation, corrélation)",
+        "StartLimitIntervalSec=0",
+        "",
+        "[Service]",
+        "Type=simple",
+        f"WorkingDirectory={q(str(project), False)}",
+        f"ExecStart={q(uv, True, True)} run --project {q(str(project), True, True)} strate veille run",
+        *(f"Environment={q(f'{k}={v}', True)}" for k, v in env),
+        "Restart=always",
+        "RestartSec=60",
+        "KillMode=mixed",
+        "TimeoutStopSec=60",
+        f"StandardOutput=append:{q(str(log_path), False)}",
+        f"StandardError=append:{q(str(log_path), False)}",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def _user_env() -> dict:
+    """Hors session de connexion (sudo -u, su sans -l, cron), XDG_RUNTIME_DIR manque et systemctl --user
+    ne trouve pas le gestionnaire : on le rétablit quand le dossier existe (cas du linger)."""
+    env = dict(os.environ)
+    run_dir = Path(f"/run/user/{os.getuid()}")
+    if not env.get("XDG_RUNTIME_DIR") and run_dir.is_dir():
+        env["XDG_RUNTIME_DIR"] = str(run_dir)
+    return env
+
+
+def _systemctl(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True, check=False,
+                          env=_user_env())
+
+
+def _loginctl(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["loginctl", "--no-ask-password", *args], capture_output=True, text=True,
+                          check=False)
+
+
+def _sudo_loginctl(*args: str) -> subprocess.CompletedProcess:
+    """sudo sans mot de passe (-n) : l'utilisateur d'une machine Azure l'a d'ordinaire ; sinon échoue net."""
+    return subprocess.run(["sudo", "-n", "loginctl", *args], capture_output=True, text=True, check=False)
+
+
+def _user() -> str:
+    import getpass
+
+    return getpass.getuser()
+
+
+def _linger() -> dict:
+    """Sans « linger », systemd arrête les services utilisateur à la déconnexion SSH et ne les relance pas
+    au redémarrage : la veille ne tournerait que pendant qu'on est connecté. On l'active soi-même
+    (polkit l'autorise en général), sinon par sudo sans mot de passe ; à défaut, on dit quoi lancer."""
+    user = _user()
+    hint = f"sudo loginctl enable-linger {user}"
+    try:
+        r = _loginctl("show-user", user, "-p", "Linger", "--value")
+        if r.returncode == 0 and r.stdout.strip() == "yes":
+            return {"linger": True, "message": ""}
+        r = _loginctl("enable-linger", user)
+        if r.returncode != 0:
+            r2 = _sudo_loginctl("enable-linger", user)
+            r = r2 if r2.returncode == 0 else r
+    except OSError as e:
+        return {"linger": False, "message": f"loginctl indisponible ({e}) : {hint}"}
+    if r.returncode == 0:
+        return {"linger": True, "message": ""}
+    why = (r.stderr or r.stdout).strip()
+    return {"linger": False, "message": f"linger refusé ({why}) : lancer {hint}, sinon la veille s'arrête "
+                                        "à la déconnexion"}
+
+
+def _systemd_install(dry_run: bool = False) -> dict:
+    """Écrit ~/.config/systemd/user/strate-veille.service, l'active et le (re)démarre."""
+    uv = shutil.which("uv")
+    if not uv:
+        raise RuntimeError("uv introuvable dans le PATH : installer uv avant le service")
+    text = unit_text(os.path.abspath(uv))
+    base = {"gestionnaire": "systemd", "fichier": str(UNIT_PATH), "texte": text}
+    if dry_run:
+        return {**base, "charge": False}
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    UNIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+    UNIT_PATH.write_text(text)
+    msgs = []
+    ok = True
+    # restart et pas seulement enable --now : une réinstallation doit relancer avec la nouvelle unité
+    for step in (("daemon-reload",), ("enable", UNIT), ("restart", UNIT)):
+        r = _systemctl(*step)
+        if r.returncode != 0:
+            ok = False
+            msgs.append(f"systemctl --user {' '.join(step)} : {(r.stderr or r.stdout).strip()}")
+            break
+    lg = _linger()
+    if lg["message"]:
+        msgs.append(lg["message"])
+    return {**base, "charge": ok, "linger": lg["linger"], "message": " ; ".join(msgs)}
+
+
+def _systemd_uninstall() -> dict:
+    """Arrête et désactive le service, retire l'unité."""
+    r = _systemctl("disable", "--now", UNIT)
+    existed = UNIT_PATH.exists()
+    UNIT_PATH.unlink(missing_ok=True)
+    _systemctl("daemon-reload")
+    return {"gestionnaire": "systemd", "arrete": r.returncode == 0, "fichier_retire": existed,
+            "plist_retire": existed, "message": (r.stderr or r.stdout).strip()}
+
+
+def systemd_state() -> dict:
+    """État vu par systemd : actif ?, sous-état, pid, redémarrages, dernier code de sortie."""
+    if not UNIT_PATH.exists():
+        return {"installe": False, "charge": False}
+    props = ("ActiveState", "SubState", "MainPID", "NRestarts", "ExecMainStatus")
+    try:
+        r = _systemctl("show", UNIT, *(f"--property={p}" for p in props))
+    except OSError as e:
+        return {"installe": True, "charge": None, "erreur": str(e)}
+    if r.returncode != 0:  # `show` rend 0 même pour une unité inconnue : ici, gestionnaire injoignable
+        return {"installe": True, "charge": None, "erreur": (r.stderr or r.stdout).strip()}
+    kv = dict(line.partition("=")[::2] for line in r.stdout.splitlines() if "=" in line)
+    active = kv.get("ActiveState", "")
+    out: dict = {"installe": True, "charge": active in ("active", "activating", "reloading")}
+    for k, name in (("ActiveState", "state"), ("SubState", "substate"), ("MainPID", "pid"),
+                    ("NRestarts", "restarts"), ("ExecMainStatus", "last_exit_code")):
+        if kv.get(k, "") != "":
+            out[name] = kv[k]
+    return out
+
+
+# -- choix du gestionnaire de services -------------------------------------------------------------------
+def service_manager(platform: str | None = None) -> str:
+    """« launchd » sur macOS, « systemd » sur Linux ; ailleurs, pas de service (veille run à la main)."""
+    platform = platform or sys.platform
+    if platform == "darwin":
+        return "launchd"
+    if platform.startswith("linux"):
+        return "systemd"
+    raise RuntimeError(f"pas de service pour la plateforme {platform!r} : lancer `strate veille run`")
+
+
+def install(dry_run: bool = False, manager: str | None = None) -> dict:
+    """Installe le service de la plateforme (launchd sur Mac, systemd utilisateur sur Linux)."""
+    manager = manager or service_manager()
+    return _systemd_install(dry_run) if manager == "systemd" else _launchd_install(dry_run)
+
+
+def uninstall(manager: str | None = None) -> dict:
+    manager = manager or service_manager()
+    return _systemd_uninstall() if manager == "systemd" else _launchd_uninstall()
+
+
+def manager_state(manager: str | None = None) -> dict:
+    """État du service vu par le gestionnaire de la plateforme ({"installe": False} s'il n'y en a pas)."""
+    try:
+        manager = manager or service_manager()
+    except RuntimeError:
+        return {"gestionnaire": None, "installe": False, "charge": False}
+    st = systemd_state() if manager == "systemd" else launchd_state()
+    return {"gestionnaire": manager, **st}

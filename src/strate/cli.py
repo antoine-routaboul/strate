@@ -7,7 +7,8 @@
   uv run strate check          # contrôle des alertes sur les événements connus
   uv run strate serve          # API + interface sur http://127.0.0.1:7779
   uv run strate veille once    # un cycle de veille (collecte → normalisation → corrélation)
-  uv run strate veille run     # veille en continu (toutes les 15 min) ; install/uninstall : service launchd
+  uv run strate veille run     # veille en continu (toutes les 15 min) ; install/uninstall : service
+                               # launchd (Mac) ou systemd (Linux)
   uv run strate veille status  # état de chaque étape et du service
   uv run strate forecast backtest  # rétro-test walk-forward → data/forecast/backtest.json
   uv run strate forecast ledger    # prévisions datées ajoutées au registre (jamais réécrites)
@@ -102,7 +103,7 @@ def veille_cmd(args) -> None:
 
     from strate.veille import daemon
 
-    # journal horodaté : en service, launchd le redirige vers logs/veille.log
+    # journal horodaté : en service, launchd ou systemd le redirige vers logs/veille.log
     lg = logging.getLogger("strate")
     lg.setLevel(logging.INFO)
     if not lg.handlers:
@@ -121,19 +122,25 @@ def veille_cmd(args) -> None:
     elif args.action == "status":
         veille_status()
     elif args.action == "install":
-        r = daemon.install(dry_run=args.dry_run)
+        try:
+            r = daemon.install(dry_run=args.dry_run)
+        except RuntimeError as e:
+            raise SystemExit(str(e)) from None
         if args.dry_run:
-            import plistlib
-
-            print(plistlib.dumps(r["contenu"]).decode())
-        print(f"plist : {r['plist']}")
+            print(r["texte"])
+        print(f"{r['gestionnaire']} : {r['fichier']}")
         if not args.dry_run:
-            print("service chargé" if r["charge"] else f"chargement refusé : {r.get('launchctl')}")
+            print("service chargé" if r["charge"] else f"chargement refusé : {r.get('message')}")
+            if r["charge"] and r.get("message"):  # service lancé, mais avertissement (linger refusé…)
+                print(f"attention : {r['message']}")
             print(f"journal : {daemon.LOG_PATH}")
     elif args.action == "uninstall":
-        r = daemon.uninstall()
+        try:
+            r = daemon.uninstall()
+        except RuntimeError as e:
+            raise SystemExit(str(e)) from None
         print(("service arrêté" if r["arrete"] else "service non chargé")
-              + (", plist retiré" if r["plist_retire"] else ", aucun plist"))
+              + (", fichier du service retiré" if r["fichier_retire"] else ", aucun fichier de service"))
 
 
 def veille_status() -> None:
@@ -185,8 +192,9 @@ def veille_status() -> None:
         print("totaux : " + ", ".join(f"{k} {v:,}" for k, v in totals.items()))
     svc = daemon.service_state(next((r for r in rows if r["stage"] == daemon.SERVICE), None))
     print(f"service (base) : {'actif' if svc['actif'] else 'inactif'}, dernier cycle {svc['dernier_cycle']}")
-    ld = daemon.launchd_state()
-    print("launchd : " + ("non installé" if not ld["installe"] else
+    ld = daemon.manager_state()
+    name = ld.pop("gestionnaire", None) or "service système"
+    print(f"{name} : " + ("non installé" if not ld["installe"] else
                           ", ".join(f"{k}={v}" for k, v in ld.items() if k != "installe")))
 
 
@@ -318,7 +326,8 @@ def main() -> None:
     v.add_argument("--max-files", type=int, help="once : fichiers GDELT au plus par cycle")
     v.add_argument("--interval", type=_interval, default=900,
                    help="run : secondes entre deux cycles (au moins 60)")
-    v.add_argument("--dry-run", action="store_true", help="install : affiche le plist sans rien écrire")
+    v.add_argument("--dry-run", action="store_true",
+                   help="install : affiche le plist (Mac) ou l'unité systemd (Linux) sans rien écrire")
     v.set_defaults(fn=veille_cmd)
     f = sub.add_parser("forecast", help="prévisions de production auto-évaluées (rétro-test, registre)")
     f.add_argument("action", choices=["backtest", "ledger"],

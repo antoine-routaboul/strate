@@ -1218,7 +1218,7 @@ function vStatus(s,er){
   $('#v_tot').innerHTML=TOT.map(([k,l])=>`<div><b>${fmt(num(t[k]),0)}</b><span>${l}</span></div>`).join('');
   VEI.empty=!(num(t.docs)>0)&&!(num(t.events)>0);
   const em=$('#v_empty'); em.hidden=!VEI.empty;
-  em.innerHTML=VEI.empty?`${EMPTY}. <span class="meta">Un cycle à la main : <code>uv run strate veille once</code> · en continu (service launchd) : <code>uv run strate veille install</code>.</span>`:'';
+  em.innerHTML=VEI.empty?`${EMPTY}. <span class="meta">Un cycle à la main : <code>uv run strate veille once</code> · en continu (service launchd ou systemd) : <code>uv run strate veille install</code>.</span>`:'';
 }
 
 // -- fil d'actualité -------------------------------------------------------------------------

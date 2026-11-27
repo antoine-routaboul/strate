@@ -83,7 +83,7 @@ Commandes utiles :
 ```bash
 uv run strate update             # signaux satellite des mines suivies
 uv run strate veille once        # un cycle de veille (collecte → vérification → corrélations)
-uv run strate veille install     # veille en continu (service launchd sur macOS)
+uv run strate veille install     # veille en continu (launchd sur macOS, systemd sur Linux)
 uv run strate calibrate report   # régénère toute la calibration (plusieurs heures)
 uv run strate forecast backtest  # rétro-test des prévisions
 uv run strate companies refresh  # données sociétés (SEC, Wikidata)
