@@ -952,6 +952,25 @@ def test_summary_companies_label(client, monkeypatch):
     )
 
 
+def test_summary_companies_bootstrap_unit_from_module(client, monkeypatch):
+    """L'IC des sociétés rééchantillonne des grappes (partenaires d'une même mine réunis) : le résumé et la
+    route reprennent n_bootstrap_unit et unite_bootstrap du module, pas n_societes « sociétés »."""
+    rows = [{**CORR[0], "n_societes": 14, "n_grappes": 11, "n_bootstrap_unit": 11,
+             "unite_bootstrap": "grappes de sociétés sans mine commune"},
+            {**CORR[0], "x": "effectifs", "n_societes": 9, "n_grappes": 8},  # unité non déclarée
+            {**CORR[0], "x": "emprise", "n_bootstrap_unit": 7}]  # nombre seul
+    fake(monkeypatch, "companies", correlations=lambda: {"rows": rows, "methode": "m"})
+    a, b, c = client.get("/api/companies/correlations").json()["rows"]
+    assert (a["n_societes"], a["n_bootstrap_unit"], a["unite_bootstrap"]) == (
+        14, 11, "grappes de sociétés sans mine commune")
+    assert (b["n_bootstrap_unit"], b["unite_bootstrap"]) == (8, api.UNITE_GRAPPES)
+    assert (c["n_bootstrap_unit"], c["unite_bootstrap"]) == (7, "unités non précisées par le module")
+    so = [r for r in client.get("/api/correlations/summary").json()["rows"] if r["domaine"] == "sociétés"]
+    assert [(r["n_bootstrap_unit"], r["unite_bootstrap"]) for r in so[:2]] == [
+        (11, "grappes de sociétés sans mine commune")] * 2
+    assert so[0]["n"] == 120 and so[0]["unite_n"] == "paires société-année"
+
+
 def test_summary_robust_without_data(client, monkeypatch):
     def boom():
         raise RuntimeError("calibration cassée")

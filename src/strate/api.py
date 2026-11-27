@@ -1019,11 +1019,29 @@ CO_ROW = {"id": (), "nom": ("name",), "pays": ("country",), "tickers": (), "cik"
           "effectifs_annee": ("employees_year",), "ca_dernier": ("revenue",), "devise": ("currency",),
           "investissements_12m": ()}
 # verdict = verdict_rho (ancien format, calculé sur l'IC de ρ) ; verdict_r porte sur l'IC de r ; q_value :
-# Benjamini-Hochberg sur la famille de tests du même calcul ; n_societes = unité du bootstrap.
+# Benjamini-Hochberg sur la famille de tests du même calcul. Unité du bootstrap : celle que le module déclare
+# (n_bootstrap_unit, unite_bootstrap : grappes de sociétés sans mine commune), sinon les grappes, sinon les
+# sociétés (ancien format).
 CO_CORR = {"x": (), "y": (), "decalage": ("lag",), "r": ("pearson_r",), "r_lo": ("pearson_lo",),
            "r_hi": ("pearson_hi",), "rho": ("spearman_rho", "spearman"), "rho_lo": ("spearman_lo",),
            "rho_hi": ("spearman_hi",), "n_societes": ("n_companies",), "n_points": ("n",), "q_value": (),
-           "q_r": (), "q_rho": (), "verdict_r": (), "verdict_rho": ("verdict",), "verdict": ("verdict_rho",)}
+           "n_grappes": (), "n_bootstrap_unit": (), "unite_bootstrap": (), "q_r": (), "q_rho": (),
+           "verdict_r": (), "verdict_rho": ("verdict",), "verdict": ("verdict_rho",)}
+UNITE_GRAPPES = "grappes de sociétés sans mine commune"
+
+
+def _bootstrap_unit(out: dict) -> dict:
+    """Nombre et nature des unités rééchantillonnées : déclarés par le module, sinon déduits."""
+    if out["n_bootstrap_unit"] is None:
+        if out["n_grappes"] is not None:
+            out["n_bootstrap_unit"], out["unite_bootstrap"] = out["n_grappes"], UNITE_GRAPPES
+        else:
+            out["n_bootstrap_unit"] = out["n_societes"]
+            out["unite_bootstrap"] = "sociétés" if out["n_societes"] is not None else None
+    elif out["unite_bootstrap"] is None:
+        same = out["n_grappes"] is not None and out["n_bootstrap_unit"] == out["n_grappes"]
+        out["unite_bootstrap"] = UNITE_GRAPPES if same else "unités non précisées par le module"
+    return out
 Q_SOCIETES = 0.10  # « démontré » exige q < 0,10 (companies.Q_MAX)
 
 
@@ -1219,7 +1237,7 @@ def _companies_corr() -> tuple[list[dict], str | None, str, list[dict]]:
     if isinstance(res, dict) and isinstance(res.get("methode"), str) and res["methode"]:
         methode = res["methode"]
     raw = [r for r in _rows(res) if r.get("portee") in (None, "ensemble")]  # table globale seulement
-    rows = [_guard_verdicts(_shape(r, CO_CORR), r) for r in raw]
+    rows = [_bootstrap_unit(_guard_verdicts(_shape(r, CO_CORR), r)) for r in raw]
     return rows, None if rows else MSG_SOCIETES, methode, raw
 
 
@@ -1375,7 +1393,8 @@ def _companies_summary_rows() -> list[dict]:
                 r[f"{typ}_lo"], r[f"{typ}_hi"], 0.0, SYM[typ], "verdict du module absent (q-valeur et nombre "
                 "de sociétés non vérifiés)")
             out.append(_sum_row("sociétés", x, y, r[typ], typ, r[f"{typ}_lo"], r[f"{typ}_hi"], r["n_points"],
-                                "paires société-année", r["n_societes"], "sociétés", "data/companies", v))
+                                "paires société-année", r["n_bootstrap_unit"], r["unite_bootstrap"],
+                                "data/companies", v))
     return out
 
 
