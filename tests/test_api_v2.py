@@ -831,9 +831,11 @@ def test_summary_all_sources(client, env, monkeypatch):
         "sociétés": 3,
         "prévisions": 4,
     }
-    keys = {"domaine", "x", "y", "coefficient", "type", "lo", "hi", "n", "verdict", "source"}
+    keys = {"domaine", "x", "y", "coefficient", "type", "lo", "hi", "n", "unite_n", "n_bootstrap_unit",
+            "unite_bootstrap", "verdict", "source"}
     assert all(set(r) == keys for r in rows)
-    assert all(r["coefficient"] is not None and r["type"] in ("r", "rho", "lift") for r in rows)
+    assert all(r["coefficient"] is not None and r["type"] in ("r", "rho", "phi", "lift") for r in rows)
+    assert all(r["unite_n"] and r["verdict"] for r in rows)
     json.dumps(d, allow_nan=False)
 
     cal = [r for r in rows if r["domaine"] == "calibration"]
@@ -861,14 +863,25 @@ def test_summary_all_sources(client, env, monkeypatch):
     rho = next(r for r in ve if r["type"] == "rho")
     assert "décalage +1 mois" in rho["y"] and rho["x"] == "volume d'actualité"
 
+    assert (lift["unite_n"], lift["n_bootstrap_unit"], lift["unite_bootstrap"]) == ("mois-événements", 12,
+                                                                                    "mines")
+    assert rho["verdict"] == "non démontré" and rho["n_bootstrap_unit"] == 20  # volume : verdict de ρ
+
     so = [r for r in rows if r["domaine"] == "sociétés"]
     assert [r["type"] for r in so] == ["r", "rho", "rho"]  # r NaN de la 2e ligne retiré
     assert "décalage +1 an" in so[0]["y"] and so[0]["n"] == 120
+    assert (so[0]["unite_n"], so[0]["n_bootstrap_unit"], so[0]["unite_bootstrap"]) == (
+        "paires société-année", 14, "sociétés")
+    # le verdict « lien positif » du module porte sur ρ : la ligne r a le sien, jamais « démontré » sans q
+    assert so[1]["verdict"] == "lien positif" and so[0]["verdict"].startswith("non démontré")
 
     pr = [r for r in rows if r["domaine"] == "prévisions"]
     assert {r["type"] for r in pr} == {"r", "rho"}
     t2 = next(r for r in pr if "tendance" in r["x"] and r["type"] == "r")
     assert t2["verdict"].startswith("non démontré") and t2["n"] == 600 and "2 ans" in t2["x"]
+    assert t2["x"].startswith("variation prévue") and "variation réelle du log de la production" in t2["y"]
+    assert (t2["unite_n"], t2["n_bootstrap_unit"]) == ("points mine-année", 110)
+    assert t2["unite_bootstrap"] == "mines"
 
 
 def test_summary_companies_label(client, monkeypatch):
@@ -904,9 +917,60 @@ def test_verdicts():
     assert api._verdict(0.1, 0.3).startswith("lien positif")
     assert api._verdict(-0.3, -0.1).startswith("lien négatif")
     assert api._verdict(-0.1, 0.3).startswith("non démontré")
-    assert api._verdict(1.2, 3.0, 1.0).startswith("lien démontré")
-    assert "inclut 1" in api._verdict(0.8, 3.0, 1.0)
-    assert api._verdict(None, 0.2) == "IC 90 % indisponible"
+    assert api._verdict(1.2, 3.0, 1.0, "lift").startswith("risque accru")
+    assert "contient 1" in api._verdict(0.8, 3.0, 1.0, "lift")
+    assert api._verdict(None, 0.2, sym="r") == "IC 90 % de r indisponible"
+    assert api._verdict_sans_test(0.1, 0.3, 0.0, "r", "q absente").startswith("non démontré")
+    assert api._verdict_sans_test(-0.1, 0.3, 0.0, "r", "q absente").startswith("non démontré")
+
+
+def test_summary_verdict_from_each_row_own_ci(client, env, monkeypatch):
+    """Régression : le verdict du module calculé sur un coefficient n'est plus recopié sur l'autre."""
+    row = {**CORR[0], "r_lo": 0.01, "r_hi": 0.25, "rho_lo": -0.1, "rho_hi": 0.3,
+           "verdict": "lien positif démontré (IC 90 % de ρ au-dessus de 0)"}
+    fake(monkeypatch, "companies", correlations=lambda: [row])
+    so = [r for r in client.get("/api/correlations/summary").json()["rows"] if r["domaine"] == "sociétés"]
+    r_row = next(r for r in so if r["type"] == "r")
+    assert r_row["verdict"].startswith("non démontré") and "ρ" not in r_row["verdict"]
+    row = {**row, "verdict_r": "non démontré : q = 0,3 ≥ 0,10", "verdict_rho": "non démontré : IC contient 0"}
+    fake(monkeypatch, "companies", correlations=lambda: [row])
+    so = [r for r in client.get("/api/correlations/summary").json()["rows"] if r["domaine"] == "sociétés"]
+    assert [r["verdict"] for r in so] == ["non démontré : q = 0,3 ≥ 0,10", "non démontré : IC contient 0"]
+
+    # veille : le verdict du lift reste sur la ligne lift ; la ligne φ a verdict_rho ou un repli prudent
+    p = env / "veille" / "veille.db"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(p)
+    con.execute("CREATE TABLE correlations (run_at TEXT, scope TEXT, event_type TEXT, signal TEXT, "
+                "lag_months INTEGER, n_mines INTEGER, n_events INTEGER, lift REAL, lift_lo REAL, "
+                "lift_hi REAL, rho REAL, rho_lo REAL, rho_hi REAL, p_value REAL, q_value REAL, verdict TEXT, "
+                "details TEXT)")
+    con.execute("INSERT INTO correlations VALUES ('t', 'global', 'greve', 'bare_km2', 0, 12, 30, 2.1, 1.3, "
+                "3.4, 0.08, 0.02, 0.15, 0.01, 0.05, 'lien démontré', NULL)")
+    con.commit()
+    ve = [r for r in client.get("/api/correlations/summary").json()["rows"] if r["domaine"] == "veille"]
+    lift, phi = ve
+    assert lift["type"] == "lift" and lift["verdict"] == "lien démontré"
+    assert phi["type"] == "phi" and phi["verdict"].startswith("non démontré") and "φ" in phi["verdict"]
+    con.execute("ALTER TABLE correlations ADD COLUMN verdict_rho TEXT")
+    con.execute("UPDATE correlations SET verdict_rho = 'lien démontré (φ)'")
+    con.commit()
+    con.close()
+    phi = client.get("/api/correlations/summary").json()["rows"]
+    assert next(r for r in phi if r["type"] == "phi")["verdict"] == "lien démontré (φ)"
+    assert client.get("/api/veille/correlations").json()["rows"][0]["verdict_rho"] == "lien démontré (φ)"
+
+
+def test_summary_forecast_naive_rows_are_levels(client, env):
+    row = {**BT["rows"][0], "r": None, "r_lo": None, "r_hi": None, "rho": None, "rho_lo": None,
+           "rho_hi": None, "r_niveau": 0.98, "r_niveau_lo": 0.97, "r_niveau_hi": 0.99, "rho_niveau": 0.97,
+           "rho_niveau_lo": 0.96, "rho_niveau_hi": 0.98}
+    write_bt(env, {**BT, "rows": [row, {**row, "model": "tendance"}]})  # tendance réglée sur φ = 0
+    pr = [r for r in client.get("/api/correlations/summary").json()["rows"] if r["domaine"] == "prévisions"]
+    assert [(r["type"], r["coefficient"], r["lo"]) for r in pr] == [("r", 0.98, 0.97), ("rho", 0.97, 0.96)]
+    assert all(r["x"].startswith("niveau prévu (log)") and "niveau réel (log)" in r["y"] for r in pr)
+    assert "« naif » = « tendance »" in pr[0]["x"]
+    assert all("taille des mines" in r["source"] for r in pr)
 
 
 # -- CLI ----------------------------------------------------------------------------------------------

@@ -716,10 +716,12 @@ def veille_correlations(scope: str = "global"):
     """Dernier calcul des liens événements ↔ signaux satellite (risque relatif MH, rho, IC 90 %, p, q,
     verdict, famille principale/exploratoire). La méthode exacte vient de correlate.METHODE."""
     run_at = _v1("SELECT max(run_at) FROM correlations WHERE scope = ?", [scope], default=None)
+    # verdict_rho (verdict de φ / ρ sur son propre IC) : colonne d'un schéma récent, sinon null
+    has_vr = any(c.get("name") == "verdict_rho" for c in _vq("PRAGMA table_info(correlations)"))
     # famille principale = décalage 0 (seule à pouvoir conclure « lien démontré »), puis l'exploratoire
     rows = [] if run_at is None else _vq(
         "SELECT event_type, signal, lag_months, n_mines, n_events, lift, lift_lo, lift_hi, rho, rho_lo, "
-        "rho_hi, p_value, q_value, verdict, "
+        f"rho_hi, p_value, q_value, verdict, {'verdict_rho' if has_vr else 'NULL'} AS verdict_rho, "
         "CASE WHEN lag_months = 0 THEN 'principale' ELSE 'exploratoire' END AS famille "
         "FROM correlations WHERE scope = ? AND run_at = ? "
         "ORDER BY lag_months <> 0, q_value IS NULL, q_value, event_type, signal, lag_months", [scope, run_at])
@@ -1191,14 +1193,31 @@ def companies_correlations():
 
 
 # -- toutes les corrélations (page « Corrélations ») --
-def _verdict(lo, hi, null: float = 0.0) -> str:
+# Chaque ligne porte le verdict de SON coefficient : celui du module quand il l'a calculé sur ce coefficient
+# (verdict_r, verdict_rho, verdict du lift), sinon un verdict tiré de l'IC de la ligne. Ce dernier ne dit
+# jamais « démontré » là où le module exige davantage que l'IC (q-valeur, nombre d'unités indépendantes).
+SYM = {"r": "r", "rho": "ρ", "phi": "φ", "lift": "lift"}
+
+
+def _verdict(lo, hi, null: float = 0.0, sym: str = "ρ") -> str:
+    """Verdict de l'IC 90 % seul (calibration, prévisions : un test par coefficient publié)."""
     if lo is None or hi is None:
-        return "IC 90 % indisponible"
+        return f"IC 90 % de {sym} indisponible"
     if lo > null:
-        return "lien positif (IC 90 % exclut le hasard)" if null == 0 else "lien démontré (IC 90 % > 1)"
+        return f"lien positif : IC 90 % de {sym} au-dessus de {null:g}" if null == 0 \
+            else f"risque accru : IC 90 % du {sym} au-dessus de {null:g}"
     if hi < null:
-        return "lien négatif (IC 90 % exclut le hasard)" if null == 0 else "lien inverse (IC 90 % < 1)"
-    return "non démontré (IC 90 % inclut 0)" if null == 0 else "non démontré (IC 90 % inclut 1)"
+        return f"lien négatif : IC 90 % de {sym} sous {null:g}" if null == 0 \
+            else f"risque réduit : IC 90 % du {sym} sous {null:g}"
+    return f"non démontré : l'IC 90 % de {sym} contient {null:g}"
+
+
+def _verdict_sans_test(lo, hi, null: float, sym: str, manque: str) -> str:
+    """Verdict de repli pour un module dont la règle exige plus que l'IC : jamais « démontré »."""
+    v = _verdict(lo, hi, null, sym)
+    if v.startswith(("lien", "risque")):
+        return f"non démontré : IC 90 % de {sym} hors de {null:g}, mais {manque}"
+    return v
 
 
 def _approx_ci(rho, n) -> tuple[float | None, float | None]:
@@ -1210,12 +1229,16 @@ def _approx_ci(rho, n) -> tuple[float | None, float | None]:
     return math.tanh(z - Z90 * se), math.tanh(z + Z90 * se)
 
 
-def _sum_row(domaine, x, y, coef, typ, lo, hi, n, source, verdict=None) -> dict | None:
-    coef, lo, hi, n = (_finite(v) for v in (coef, lo, hi, n))
+def _sum_row(domaine, x, y, coef, typ, lo, hi, n, unite_n, n_boot, unite_boot, source,
+             verdict=None) -> dict | None:
+    coef, lo, hi, n, n_boot = (_finite(v) for v in (coef, lo, hi, n, n_boot))
     if coef is None:
         return None
+    if not (isinstance(verdict, str) and verdict.strip()):
+        verdict = _verdict(lo, hi, 1.0 if typ == "lift" else 0.0, SYM[typ])
     return {"domaine": domaine, "x": x, "y": y, "coefficient": coef, "type": typ, "lo": lo, "hi": hi, "n": n,
-            "verdict": verdict or _verdict(lo, hi, 1.0 if typ == "lift" else 0.0), "source": source}
+            "unite_n": unite_n, "n_bootstrap_unit": n_boot, "unite_bootstrap": unite_boot, "verdict": verdict,
+            "source": source}
 
 
 def _triple(v) -> tuple:
@@ -1231,33 +1254,42 @@ def _calibration_summary() -> list[dict]:
     if t:
         lo, hi = (t.get("ic90") or [None, None])[:2]
         out.append(_sum_row("calibration", "surface nue Sentinel-2 (fenêtre sur l'emprise)",
-                            "production annuelle (niveau)", t.get("rho"), "rho", lo, hi, t.get("mines"), src))
+                            "production annuelle (niveau)", t.get("rho"), "rho", lo, hi, t.get("mines"),
+                            "mines", t.get("mines"), "mines", src))
         for k, x in (("fenetre_seule", "taille de la fenêtre seule (sans image)"),
                      ("fraction_nue", "surface nue / fenêtre")):
             s = t.get(k) or {}
             out.append(_sum_row("calibration", x, "production annuelle (niveau)", s.get("rho"), "rho",
-                                s.get("ic90_bas"), s.get("ic90_haut"), s.get("mines"), src))
+                                s.get("ic90_bas"), s.get("ic90_haut"), s.get("mines"), "mines",
+                                s.get("mines"), "mines", src))
     v = c.get("variation") or {}
     if v:
         lo, hi = (v.get("ic90") or [None, None])[:2]
         out.append(_sum_row("calibration", "variation annuelle de la surface nue", "variation annuelle de la "
-                            "production", v.get("rho"), "rho", lo, hi, c.get("paires_annees"), src))
+                            "production", v.get("rho"), "rho", lo, hi, c.get("paires_annees"),
+                            "paires d'années", v.get("mines") or c.get("mines"), "mines", src))
     for k, m in (c.get("modele_emprise") or {}).items():
         if isinstance(m, dict) and m.get("rho") is not None:
             lo, hi = _approx_ci(m.get("rho"), m.get("n"))
             out.append(_sum_row("calibration", "emprise Maus (km²)", f"production ({k})", m["rho"], "rho",
-                                lo, hi, m.get("n"), src + " ; IC 90 % approché (Fisher z)"))
+                                lo, hi, m.get("n"), "mines", m.get("n"),
+                                "mines (IC analytique, pas de bootstrap)",
+                                src + " ; IC 90 % approché (Fisher z)"))
     r = c.get("radar") or {}
     for k, x, y in (("variation", "variation de l'activité radar Sentinel-1",
                      "variation annuelle de la production"),
                     ("intra_mine_niveau", "activité radar (écart à la moyenne de la mine)",
                      "production (écart à la moyenne de la mine)")):
         rho, lo, hi = _triple(r.get(k))
-        out.append(_sum_row("calibration", x, y, rho, "rho", lo, hi, r.get("mines_test"), src + " (radar)"))
+        out.append(_sum_row("calibration", x, y, rho, "rho", lo, hi, r.get("mines_test"), "mines",
+                            r.get("mines_test"), "mines", src + " (radar)"))
     return out
 
 
 def _veille_summary_rows() -> list[dict]:
+    """Lignes lift (verdict du module : q < 0,10, décalage 0, IC hors de 1) et φ / ρ (verdict_rho du
+    module, sinon repli prudent) ; n = mois-événements (mois avec actualité pour le volume), bootstrap sur
+    les mines."""
     d = veille_correlations("global")
     src = f"veille (calcul du {d['run_at']})" if d.get("run_at") else "veille"
     out = []
@@ -1265,15 +1297,29 @@ def _veille_summary_rows() -> list[dict]:
         lag = r.get("lag_months") or 0
         y = f"{r.get('signal')} (décalage {lag:+d} mois)" if lag else str(r.get("signal"))
         et = r.get("event_type")
-        x = "volume d'actualité" if et == "volume" else f"événement « {et} »"
+        volume = et == "volume"
+        x = "volume d'actualité" if volume else f"événement « {et} »"
+        unite = "mois avec actualité" if volume else "mois-événements"
         out.append(_sum_row("veille", x, y, r.get("lift"), "lift", r.get("lift_lo"), r.get("lift_hi"),
-                            r.get("n_events"), src, r.get("verdict")))
-        out.append(_sum_row("veille", x, y, r.get("rho"), "rho", r.get("rho_lo"), r.get("rho_hi"),
-                            r.get("n_events"), src, r.get("verdict")))
+                            r.get("n_events"), unite, r.get("n_mines"), "mines", src,
+                            r.get("verdict") or _verdict_sans_test(r.get("lift_lo"), r.get("lift_hi"), 1.0,
+                                                                   "lift", "verdict du module absent")))
+        typ = "rho" if volume else "phi"
+        vr = r.get("verdict_rho")
+        if not vr and volume:  # ligne de volume : le verdict du module porte sur ρ, seul coefficient
+            vr = r.get("verdict")
+        if not vr:
+            vr = "exploratoire" if lag else "trop peu de données" if r.get("q_value") is None \
+                else _verdict_sans_test(r.get("rho_lo"), r.get("rho_hi"), 0.0, SYM[typ], "sans test propre")
+        out.append(_sum_row("veille", x, y, r.get("rho"), typ, r.get("rho_lo"), r.get("rho_hi"),
+                            r.get("n_events"), unite, r.get("n_mines"), "mines", src, vr))
     return out
 
 
 def _companies_summary_rows() -> list[dict]:
+    """Table globale des sociétés : verdict_r pour r, verdict_rho (ou l'ancien verdict, calculé sur ρ) pour
+    ρ ; sans verdict du module, repli qui ne dit jamais « démontré » (règle : IC, q < 0,10 et assez de
+    sociétés)."""
     out = []
     rows, _, _, raw = _companies_corr()
     for r, b in zip(rows, raw, strict=True):
@@ -1283,29 +1329,57 @@ def _companies_summary_rows() -> list[dict]:
         if isinstance(b.get("label"), str) and b["label"]:  # libellé lisible du module (« CAPEX ↔ … »)
             x, _, yl = b["label"].partition(" ↔ ")
             y = yl or y
-        for typ, k in (("r", "r"), ("rho", "rho")):
-            out.append(_sum_row("sociétés", x, y, r[k], typ, r[f"{k}_lo"], r[f"{k}_hi"],
-                                r["n_points"], "data/companies", r.get("verdict")))
+        for typ in ("r", "rho"):
+            v = r.get(f"verdict_{typ}") or _verdict_sans_test(
+                r[f"{typ}_lo"], r[f"{typ}_hi"], 0.0, SYM[typ], "verdict du module absent (q-valeur et nombre "
+                "de sociétés non vérifiés)")
+            out.append(_sum_row("sociétés", x, y, r[typ], typ, r[f"{typ}_lo"], r[f"{typ}_hi"], r["n_points"],
+                                "paires société-année", r["n_societes"], "sociétés", "data/companies", v))
     return out
 
 
+NOTE_NIVEAUX = " ; niveaux : dominés par la taille des mines, pas une mesure de la prévision des variations"
+
+
 def _forecast_summary_rows() -> list[dict]:
+    """r et ρ du rétro-test : variation prévue ↔ variation réelle du log de la production (période de test).
+    Pour un modèle qui ne prévoit aucune variation (naïf, ou tendance réglée sur φ = 0), r et ρ n'existent
+    pas : une seule paire de lignes par horizon porte alors sur les niveaux (log), dominés par les écarts de
+    taille entre mines ; les modèles aux prévisions identiques y sont nommés ensemble."""
     d = _backtest_payload()
     src = "data/forecast/backtest.json" + (f" ({d['run_at']})" if d.get("run_at") else "")
-    out = []
+    test = (d.get("periode") or {}).get("test") or PERIODE["test"]
+
+    def a(models: list, h) -> str:
+        noms = " = ".join(f"« {m} »" for m in models)
+        return f"{noms} à {h} an{'s' if isinstance(h, int) and h > 1 else ''}"
+
+    out, niveaux = [], {}
     for r in d["rows"]:
-        h = r.get("horizon")
-        x = f"prévision « {r.get('model')} » à {h} an{'s' if isinstance(h, int) and h > 1 else ''}"
+        if r.get("r") is None and r.get("rho") is None:  # même prévision → mêmes mesures : regroupées
+            key = (r.get("horizon"), r.get("r_niveau"), r.get("rho_niveau"), r.get("n_points"))
+            niveaux.setdefault(key, (r, []))[1].append(r.get("model"))
+            continue
         for typ in ("r", "rho"):
-            out.append(_sum_row("prévisions", x, "production réelle (période de test)", r.get(typ), typ,
-                                r.get(f"{typ}_lo"), r.get(f"{typ}_hi"), r.get("n_points"), src))
+            out.append(_sum_row("prévisions", f"variation prévue par {a([r.get('model')], r.get('horizon'))}",
+                                f"variation réelle du log de la production, {test}", r.get(typ), typ,
+                                r.get(f"{typ}_lo"), r.get(f"{typ}_hi"), r.get("n_points"),
+                                "points mine-année", r.get("n_mines"), "mines", src))
+    for r, models in niveaux.values():
+        for typ in ("r", "rho"):
+            k = f"{typ}_niveau"
+            out.append(_sum_row("prévisions", f"niveau prévu (log) par {a(models, r.get('horizon'))}",
+                                f"niveau réel (log) de la production, {test}", r.get(k), typ,
+                                r.get(f"{k}_lo"), r.get(f"{k}_hi"), r.get("n_points"), "points mine-année",
+                                r.get("n_mines"), "mines", src + NOTE_NIVEAUX))
     return out
 
 
 @app.get("/api/correlations/summary")
 def correlations_summary():
-    """Toutes les corrélations connues de l'application, une ligne par coefficient (r, ρ ou lift) avec
-    IC 90 %, n, verdict et source : calibration, veille, sociétés, prévisions."""
+    """Toutes les corrélations connues de l'application, une ligne par coefficient (r, ρ, φ ou lift) avec
+    IC 90 %, n et ce qu'il compte (unite_n), nombre d'unités rééchantillonnées par le bootstrap, verdict de
+    ce coefficient et source : calibration, veille, sociétés, prévisions."""
     rows, domaines = [], []
     for nom, fn in (("calibration", _calibration_summary), ("veille", _veille_summary_rows),
                     ("sociétés", _companies_summary_rows), ("prévisions", _forecast_summary_rows)):
