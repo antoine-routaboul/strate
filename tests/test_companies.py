@@ -985,8 +985,18 @@ def test_refresh_bounded_resumable_and_api_shapes(monkeypatch, tmp_path):
     ns = t.set_index("id").loc["northern_star"]
     assert ns["pays"] == "Australia" and ns["effectifs"] == 4000 and ns["effectifs_annee"] == 2021
 
+    assert nem["pays"] == "Australia" and nem["pays_source"] == "mines"  # Boddington + Cadia contre Brucejack
+    assert nem["devise_capex"] == "USD" and nem["cloture"] == "12-31"
+    assert t["investissements_12m"].dtype.kind == "i" and (t["investissements_12m"] >= 0).all()
+
     d = C.company("newmont")
-    assert set(d) == {"profil", "mines", "faits", "investissements", "correlations"}
+    assert C.company is C.dossier
+    assert set(d) == {"profil", "mines", "faits", "investissements", "announcements", "correlations"}
+    assert d["correlations"] == []  # trop peu d'années appariées : liste vide, pas d'erreur
+    a = d["announcements"][0]
+    assert {"categorie", "montant", "devise", "devise_deduite"} <= set(a) and a["devise"] == "USD"
+    cad = next(m for m in d["mines"] if m["site_id"] == "cadia")
+    assert cad["depuis"] == "2023-11" and cad["pays"] == "Australia"
     assert d["profil"]["cik"] == "0001164727" and any(m["site_id"] == "boddington" for m in d["mines"])
     f = d["faits"][0]
     assert {"indicateur", "annee", "valeur", "unite", "devise", "source", "formulaire"} <= set(f)
@@ -996,6 +1006,8 @@ def test_refresh_bounded_resumable_and_api_shapes(monkeypatch, tmp_path):
 
     c = C.correlations()
     assert c["methode"] and len(c["rows"]) == len(C.PAIRS)
+    assert {"verdict_r", "verdict_rho", "q_value", "n_societes", "n_grappes", "n_bootstrap_unit"} <= set(
+        c["rows"][0])
     assert {
         "x",
         "y",
@@ -1106,6 +1118,45 @@ def test_permanent_404_is_not_retried_every_day():
     assert C.sec_queue(co, st) == ["b"]
     st["sec"]["c"]["at"] = "2026-01-01T00:00:00Z"  # échec réseau ancien : retenté après RETRY_DAYS
     assert set(C.sec_queue(co, st)) == {"b", "c"}
+
+
+def test_refresh_is_a_thin_wrapper_over_update(monkeypatch):
+    got = {}
+    monkeypatch.setattr(C, "update", lambda limit=None, **kw: got.update(limit=limit, **kw) or {"ok": 1})
+    assert C.refresh(max_companies=7, force=True) == {"ok": 1} and got == dict(limit=7, force=True)
+    C.refresh()
+    assert got["limit"] is None  # update(limit=None) lit MAX_COMPANIES sociétés
+
+
+def test_dossier_correlation_rows_follow_contract():
+    C._write("companies", pd.DataFrame([_co_row("x", "X Mining Holdings")], columns=C.COMPANY_COLS))
+    row = {k: np.nan for k in C.CORR_COLS} | dict(
+        portee="societe", company_id="x", x="CAPEX", y="production (mines détenues)", decalage=1, r=0.5,
+        r_lo=0.1, r_hi=0.8, rho=0.4, rho_lo=-0.1, rho_hi=0.7, n_points=9, verdict_r="lien positif démontré",
+        verdict_rho="non démontré", verdict="non démontré")
+    C._write("correlations", pd.DataFrame([row], columns=C.CORR_COLS))
+    c = C.dossier("x")["correlations"]
+    assert len(c) == 1
+    want = {"x", "y", "lag", "n", "r", "r_lo", "r_hi", "rho", "rho_lo", "rho_hi", "verdict_r", "verdict_rho"}
+    assert want <= set(c[0]) and c[0]["lag"] == 1 and c[0]["n"] == 9 and c[0]["verdict_r"] != c[0]["verdict"]
+    json.dumps(c, allow_nan=False)
+
+
+def test_carry_ids_keeps_resolved_label_of_qid_only_entity():
+    prev = pd.DataFrame([_co_row("q123456", "Minera Ejemplo") | dict(qid="Q123456")], columns=C.COMPANY_COLS)
+    C._write("companies", prev)
+    now = pd.DataFrame([_co_row("q123456", "Q123456") | dict(qid="Q123456", cle=None)],
+                       columns=C.COMPANY_COLS)
+    out = C._carry_ids(now)
+    assert out.iloc[0]["nom"] == "Minera Ejemplo" and out.iloc[0]["cle"] == "minera ejemplo"
+
+
+def test_mine_countries_majority_then_share():
+    lk = pd.DataFrame([dict(company_id="a", site_id="1", part=0.2, pays="Chile", jusqu=None),
+                       dict(company_id="a", site_id="2", part=0.9, pays="Peru", jusqu=None),
+                       dict(company_id="a", site_id="3", part=1.0, pays="Chile", jusqu="2020-01"),
+                       dict(company_id="b", site_id="4", part=np.nan, pays="Canada", jusqu=None)])
+    assert C.mine_countries(lk) == {"a": "Peru", "b": "Canada"}  # égalité 1–1 : la plus grosse part
 
 
 def test_readers_empty_before_first_refresh():

@@ -9,7 +9,8 @@ Règles explicites seulement, aucun modèle de langage :
     liens      corrélations r, ρ, IC 90 % bootstrap, n — par société et sur l'ensemble des sociétés
 
 SEC : ≤ 8 requêtes/s (limite officielle 10), User-Agent lu dans STRATE_SEC_UA, sinon générique (jamais
-d'adresse personnelle). Mise à jour bornée (`max_companies`) et reprenable (state.json).
+d'adresse personnelle). Mise à jour bornée (refresh(max_companies), update(limit)) et reprenable
+(state.json).
 
 Sorties (data/companies/) : companies, mines, facts, investments, correlations (.parquet), sec_tickers.json,
 state.json, status.json.
@@ -1831,6 +1832,10 @@ def _carry_ids(co: pd.DataFrame) -> pd.DataFrame:
         for col in ("qid", "pays"):
             if not isinstance(co.at[i, col], str) and isinstance(prev.at[cid, col], str):
                 co.at[i, col] = prev.at[cid, col]
+        # libellé Wikidata d'une entité connue par son seul QID : gardé entre deux lectures mensuelles
+        pn = prev.at[cid, "nom"] if "nom" in prev else None
+        if _QID.fullmatch(str(co.at[i, "nom"])) and isinstance(pn, str) and not _QID.fullmatch(pn):
+            co.at[i, "nom"], co.at[i, "cle"] = pn, norm_key(pn)
         # CIK : seul celui venu de Wikidata (relu une fois par mois) est repris ; graine et registre SEC
         # sont recalculés à chaque fois, une règle corrigée s'applique donc tout de suite
         src = prev.at[cid, "cik_source"]
@@ -1854,15 +1859,23 @@ def sec_queue(co: pd.DataFrame, state: dict, force: bool = False) -> list[str]:
     return sorted(todo, key=lambda c: per.get(c, {}).get("at") or "")
 
 
-def refresh(max_companies: int = MAX_COMPANIES, *, http=None, force: bool = False, wikidata: bool = True,
-            cat: pd.DataFrame | None = None, graph=None, twins: dict[str, str] | None = None,
-            veille_db: Path | None = None, with_correlations: bool = True, n_boot: int = 1000,
-            prod: pd.DataFrame | None = None, reader: Callable[[str], pd.DataFrame] | None = None,
-            say: Callable[[str], None] = log.info) -> dict:
-    """Met à jour data/companies/ : entités, identifiants, faits SEC (au plus `max_companies` sociétés par
-    appel, chacune écrite dès qu'elle est lue : un arrêt ne perd rien et l'appel suivant reprend), faits
-    Wikidata, investissements annoncés, corrélations. Retourne le statut écrit dans status.json."""
+def refresh(max_companies: int | None = None, **kw) -> dict:
+    """Point d'entrée de la CLI et de l'API : update(limit=max_companies) ; None → MAX_COMPANIES."""
+    return update(limit=max_companies, **kw)
+
+
+def update(limit: int | None = MAX_COMPANIES, *, http=None, force: bool = False, wikidata: bool = True,
+           cat: pd.DataFrame | None = None, graph=None, twins: dict[str, str] | None = None,
+           veille_db: Path | None = None, with_correlations: bool = True, n_boot: int = 1000,
+           n_perm: int = N_PERM, prod: pd.DataFrame | None = None,
+           reader: Callable[[str], pd.DataFrame] | None = None,
+           say: Callable[[str], None] = log.info) -> dict:
+    """Met à jour data/companies/ : entités, identifiants, faits SEC (au plus `limit` sociétés par appel,
+    MAX_COMPANIES si None, chacune écrite dès qu'elle est lue : un arrêt ne perd rien et l'appel suivant
+    reprend), faits Wikidata, investissements annoncés, corrélations. Retourne le statut (status.json)."""
     from strate import catalog
+
+    max_companies = MAX_COMPANIES if limit is None else int(limit)
 
     http = http or Http()
     state = _read_json(STATE)
@@ -1973,7 +1986,7 @@ def refresh(max_companies: int = MAX_COMPANIES, *, http=None, force: bool = Fals
     facts = facts if set(FACT_COLS) <= set(facts.columns) else pd.DataFrame(columns=FACT_COLS)
     if with_correlations:
         _write("correlations", correlate(facts, lk, cat=cat, prod=prod, twins=twins, n_boot=n_boot,
-                                         reader=reader or _optical))
+                                         n_perm=n_perm, reader=reader or _optical))
     rest = len(sec_queue(co, state))
     st = dict(
         mis_a_jour=_now(), user_agent_personnalise=bool(os.environ.get("STRATE_SEC_UA", "").strip()),
@@ -2027,11 +2040,38 @@ def _last(f: pd.DataFrame, ind: str) -> pd.DataFrame:
 
 
 TABLE_COLS = ["id", "nom", "pays", "tickers", "cik", "qid", "n_mines", "capex_dernier", "capex_annee",
-              "effectifs", "effectifs_annee", "ca_dernier", "devise", "investissements_12m"]
+              "effectifs", "effectifs_annee", "ca_dernier", "devise", "investissements_12m", "devise_capex",
+              "devise_ca", "ca_annee", "cloture", "pays_source"]
+
+
+def mine_countries(lk: pd.DataFrame) -> dict[str, str]:
+    """Société → pays majoritaire de ses mines en cours (liens sans date de fin). Égalité : le pays dont
+    les parts détenues (1 si inconnues) font le plus, puis l'ordre alphabétique."""
+    if not _new_format(lk, ["company_id", "site_id", "pays"]):
+        return {}
+    d = _current(lk)
+    d = d[d["pays"].notna()]
+    out = {}
+    for cid, g in d.groupby("company_id"):
+        w = g["part"].where(g["part"] > 0, 1.0).fillna(1.0) if "part" in g else pd.Series(1.0, g.index)
+        tab = pd.DataFrame(dict(pays=g["pays"], n=1, w=w)).groupby("pays")[["n", "w"]].sum()
+        tab = tab.reset_index().sort_values(["n", "w", "pays"], ascending=[False, False, True])
+        out[cid] = tab.iloc[0]["pays"]
+    return out
+
+
+def _country(cid: str, wd_pays, by_mines: dict[str, str]) -> tuple[str | None, str | None]:
+    if cid in by_mines:
+        return by_mines[cid], "mines"
+    if isinstance(wd_pays, str) and wd_pays:
+        return wd_pays, "Wikidata P17"
+    return None, None
 
 
 def table(today: date | None = None) -> pd.DataFrame:
-    """Une ligne par société (champs de GET /api/companies). Vide tant que refresh() n'a pas tourné."""
+    """Une ligne par société (champs de GET /api/companies). Vide tant que refresh() n'a pas tourné.
+    pays : pays majoritaire des mines liées, sinon Wikidata P17, sinon None ; investissements_12m : nombre
+    d'annonces des 365 derniers jours (un compte : additionner mélangerait les devises)."""
     co = load("companies")
     if not _new_format(co, COMPANY_COLS):
         return pd.DataFrame(columns=TABLE_COLS)
@@ -2040,36 +2080,55 @@ def table(today: date | None = None) -> pd.DataFrame:
     capex, emp, ca = _last(f, "capex"), _last(f, "effectifs"), _last(f, "chiffre_affaires")
     inv = load("investments")
     since = ((today or date.today()) - timedelta(days=365)).isoformat()
-    n12 = (inv[inv["date"].fillna("") >= since].groupby("company_id").size()
+    n12 = (inv[inv["date"].fillna("") >= since].groupby("company_id")["doc_id"].nunique()
            if _new_format(inv, INV_COLS) else pd.Series(dtype=int))
+    by_mines = mine_countries(load("mines"))
 
     def get(df, cid, col):
         return df.at[cid, col] if len(df) and cid in df.index else None
 
     rows = []
     for r in co.itertuples(index=False):
-        cur = get(capex, r.id, "devise") or get(ca, r.id, "devise")
-        rows.append(dict(id=r.id, nom=r.nom, pays=r.pays, tickers=_split_list(r.tickers), cik=r.cik,
-                         qid=r.qid,
-                         n_mines=int(r.n_mines), capex_dernier=get(capex, r.id, "valeur"),
+        dc, dr = get(capex, r.id, "devise"), get(ca, r.id, "devise")
+        pays, src = _country(r.id, r.pays, by_mines)
+        fin = get(capex, r.id, "fin_exercice") or get(ca, r.id, "fin_exercice")
+        rows.append(dict(id=r.id, nom=r.nom, pays=pays, pays_source=src, tickers=_split_list(r.tickers),
+                         cik=r.cik, qid=r.qid, n_mines=int(r.n_mines),
+                         capex_dernier=get(capex, r.id, "valeur"),
                          capex_annee=get(capex, r.id, "annee"), effectifs=get(emp, r.id, "valeur"),
                          effectifs_annee=get(emp, r.id, "annee"), ca_dernier=get(ca, r.id, "valeur"),
-                         devise=cur, investissements_12m=int(n12.get(r.id, 0))))
+                         ca_annee=get(ca, r.id, "annee"),
+                         # « devise » : celle du CAPEX, sinon du CA ; devise_capex / devise_ca : chacune la
+                         # sienne (les deux séries peuvent venir de sources différentes)
+                         devise=dc or dr, devise_capex=dc, devise_ca=dr,
+                         cloture=fin[5:10] if isinstance(fin, str) and len(fin) >= 10 else None,
+                         investissements_12m=int(n12.get(r.id, 0))))
     out = pd.DataFrame(rows, columns=TABLE_COLS)
-    for c in ("capex_annee", "effectifs_annee"):
+    for c in ("capex_annee", "effectifs_annee", "ca_annee"):
         out[c] = out[c].astype("Int64")
     return out
 
 
-def company(company_id: str) -> dict | None:
-    """Fiche d'une société (champs de GET /api/company) ; None si inconnue."""
+def _corr_row(row: dict) -> dict:
+    """Ligne de corrélation d'une société au format du contrat (clés lag et n en plus des noms internes)."""
+    out = {k: _clean(row.get(k)) for k in CO_CORR_KEYS}
+    out["lag"] = _clean(row.get("decalage"))
+    out["n"] = int(row["n_points"]) if _clean(row.get("n_points")) is not None else None
+    return out
+
+
+def dossier(company_id: str) -> dict | None:
+    """Fiche d'une société (champs de GET /api/company) ; None si inconnue. correlations : lignes de la
+    société {x, y, lag, n, r, r_lo, r_hi, rho, rho_lo, rho_hi, verdict_r, verdict_rho…}, liste vide quand
+    elle a trop peu d'années appariées ; announcements (= investissements) : categorie, montant, devise."""
     co = load("companies")
     if not _new_format(co, COMPANY_COLS) or company_id not in set(co["id"]):
         return None
     r = co[co["id"] == company_id].iloc[0]
     lk, facts, inv, corr = load("mines"), load("facts"), load("investments"), load("correlations")
     m = lk[lk["company_id"] == company_id].sort_values(["part", "site_id"], ascending=[False, True]) \
-        if _new_format(lk, LINK_COLS) else pd.DataFrame(columns=LINK_COLS)
+        if _new_format(lk, ["company_id", "site_id"]) else pd.DataFrame(columns=LINK_COLS)
+    m = m.reindex(columns=LINK_COLS)
     f = facts[facts["company_id"] == company_id] if _new_format(facts, FACT_COLS) \
         else pd.DataFrame(columns=FACT_COLS)
     retenu = set(map(tuple, best_facts(f)[["indicateur", "annee", "origine"]].to_numpy())) \
@@ -2077,13 +2136,18 @@ def company(company_id: str) -> dict | None:
     f = f.sort_values(["indicateur", "annee", "origine"])
     i = inv[inv["company_id"] == company_id] if _new_format(inv, INV_COLS) else pd.DataFrame(columns=INV_COLS)
     c = corr[(corr["portee"] == "societe") & (corr["company_id"] == company_id)] \
-        if _new_format(corr, CORR_COLS) else pd.DataFrame(columns=CORR_COLS)
+        if _new_format(corr, ["portee", "company_id", "x", "y", "decalage", "n_points"]) \
+        else pd.DataFrame(columns=CORR_COLS)
+    c = c.reindex(columns=CORR_COLS)
     cik, qid = _clean(r["cik"]), _clean(r["qid"])
+    pays, pays_src = _country(company_id, _clean(r["pays"]), mine_countries(lk))
+    closes = [x for x in f.loc[f["origine"] == "sec", "fin_exercice"] if isinstance(x, str)] if len(f) else []
     profil = dict(
         id=r["id"], nom=r["nom"], alias=_split_list(r["alias"]), tickers=_split_list(r["tickers"]), cik=cik,
-        cik_source=_clean(r["cik_source"]), qid=qid, pays=_clean(r["pays"]),
+        cik_source=_clean(r["cik_source"]), qid=qid, pays=pays, pays_source=pays_src,
         sources=_split_list(r["sources"]),
         suivie=bool(r["suivie"]), n_mines=int(r["n_mines"]),
+        cloture=f"{_close_month(pd.Series(closes)):02d}" if closes else None,
         sec_url=f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}" if cik else None,
         wikidata_url=f"https://www.wikidata.org/wiki/{qid}" if qid else None)
     faits = [dict(indicateur=x.indicateur, libelle=LABELS.get(x.indicateur, x.indicateur), annee=int(x.annee),
@@ -2091,28 +2155,36 @@ def company(company_id: str) -> dict | None:
                   formulaire=_clean(x.formulaire), concept=x.concept, fin_exercice=_clean(x.fin_exercice),
                   origine=x.origine, retenu=(x.indicateur, x.annee, x.origine) in retenu)
              for x in f.itertuples(index=False)]
+    annonces = [dict(date=_clean(x.date), montant=_clean(x.montant), devise=_clean(x.devise),
+                     devise_deduite=bool(x.devise_deduite) if _clean(x.devise_deduite) is not None else None,
+                     categorie=_clean(x.categorie), titre=x.titre, url=x.url, site_id=_clean(x.site_id),
+                     rattachement=x.rattachement)
+                for x in i.itertuples(index=False)]
     return _deep(dict(
         profil=profil,
-        mines=[dict(site_id=x.site_id, nom=_clean(x.nom), part=_clean(x.part), role=x.role, source=x.source)
+        mines=[dict(site_id=x.site_id, nom=_clean(x.nom), part=_clean(x.part), role=x.role, source=x.source,
+                    depuis=_clean(x.depuis), jusqu=_clean(x.jusqu), pays=_clean(x.pays))
                for x in m.itertuples(index=False)],
         faits=faits,
-        investissements=[dict(date=x.date, montant=x.montant, devise=x.devise, categorie=x.categorie,
-                              titre=x.titre, url=x.url, site_id=_clean(x.site_id),
-                              rattachement=x.rattachement)
-                         for x in i.itertuples(index=False)],
-        correlations=[{k: _clean(row[k]) for k in CO_CORR_KEYS} | {"n": int(row["n_points"])}
-                      for row in c.to_dict("records")],
+        investissements=annonces,
+        announcements=annonces,
+        correlations=[_corr_row(row) for row in c.to_dict("records")],
     ))
 
 
-CO_CORR_KEYS = ("x", "y", "decalage", "r", "r_lo", "r_hi", "rho", "rho_lo", "rho_hi", "n_points", "verdict")
+company = dossier  # nom lu par l'API
+
+CO_CORR_KEYS = ("x", "y", "decalage", "r", "r_lo", "r_hi", "rho", "rho_lo", "rho_hi", "p_r", "p_rho", "q_r",
+                "q_rho", "q_value", "n_points", "n_points_decales", "n_bootstrap_unit", "unite_bootstrap",
+                "verdict_r", "verdict_rho", "verdict")
 
 
 def correlations() -> dict:
     """Corrélations sur l'ensemble des sociétés (champs de GET /api/companies/correlations)."""
     c = load("correlations")
     rows = []
-    if _new_format(c, CORR_COLS):
+    if _new_format(c, ["portee", "x", "y", "decalage", "r", "rho", "n_points"]):
+        c = c.reindex(columns=CORR_COLS)
         rows = _records(c[c["portee"] == "ensemble"].drop(columns=["portee", "company_id"]))
     return dict(rows=rows, methode=METHODE_CORRELATIONS)
 
