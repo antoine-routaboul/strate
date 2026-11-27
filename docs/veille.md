@@ -56,8 +56,13 @@ chaîne : elle est notée et retentée au cycle suivant.
   (`maxrecords=250`, `sort=datedesc` → `raw_docs` avec `hint_site`). Requête = nom(s) de la mine entre
   guillemets + « mine ». Noms refusés : sans mot distinctif, pays ou région seuls, et pays/région +
   relief, étendue ou substance anglaise (« Ural Mountains », « Lake Victoria », « Copper Chile ») sauf si
-  le nom porte un mot d'ouvrage (« Turkey Creek Mine »). Un nom principal fait de mots de lieu (« Red
-  Lake », « Cobre Panama ») est gardé en phrase exacte.
+  le nom porte un mot d'ouvrage (« Turkey Creek Mine »). Hors de la liste des régions, un nom propre
+  suivi d'une grande étendue (basin, mountains, ranges, sea, ocean, desert, plateau, peninsula, gulf :
+  « Athabasca Basin », « Rocky Mountains », « Black Sea ») est aussi refusé, sauf avec un mot d'ouvrage
+  (« Shirley Basin Mine ») ; 8 noms du catalogue (sur 79 562) sont touchés, tous des régions ou des
+  massifs. Reste admis faute de règle sûre : « Lake X » (« Lake Tanganyika », mais aussi « Lake Way »,
+  un projet). Un nom principal fait de mots de lieu (« Red Lake », « Cobre Panama ») est gardé en
+  phrase exacte.
 - `fetch_names(con) -> int` : noms de chaque mine du catalogue **dans toutes les langues** (libellés et
   alias Wikidata, par lots `VALUES`, en POST) → `data/veille/names.parquet` (`site_id, name, lang`),
   rafraîchi au plus une fois par semaine.

@@ -865,3 +865,11 @@ def test_ambiguous_names_without_documented_record_stay_unattached():
     for title in ("Twin Peaks Mine strike", "Nowhere Ridge mine strike"):   # deux documentées / aucune
         m, st = N.match(_doc(title), ix)
         assert m == [] and st["ambigus"] == 1, title
+
+
+def test_broad_region_names_need_a_nearby_place():
+    # « Athabasca Basin » n'est pas dans la liste des régions mais nomme une région : comme « Ural
+    # Mountains », clé de lieu (lieu à moins de 50 km ou requête de la mine), jamais un nom seul
+    for name in ("Athabasca Basin", "Rocky Mountains", "Black Sea"):
+        assert N.word_key(name) is None and N.place_key(name) is not None, name
+    assert N.word_key("Shirley Basin Mine") == ("shirley", "basin")

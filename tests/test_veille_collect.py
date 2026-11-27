@@ -769,7 +769,10 @@ def test_mine_names_keeps_country_word_name_of_major_mine(monkeypatch):
 
 @pytest.mark.parametrize("name", ["Ural Mountains", "Lake Victoria", "Atacama Desert", "Kivu Lake",
                                   "Copper Chile", "Gold Peru", "Gold Canada", "Copper Arizona",
-                                  "Coal Victoria", "Peru Copper"])
+                                  "Coal Victoria", "Peru Copper",
+                                  # hors de la liste des régions : nom propre + grande étendue
+                                  "Athabasca Basin", "Murray Basin", "Andes Mountains", "Rocky Mountains",
+                                  "Black Sea", "Bowen Basin Coal"])
 def test_region_plus_place_or_sector_word_is_not_a_query_name(monkeypatch, name):
     # pays ou région + relief (« Ural Mountains ») : un lieu ; + substance anglaise (« Copper Chile ») :
     # une tournure de titre. Aucun des deux ne désigne une mine, quel que soit l'ordre des mots.
@@ -782,5 +785,7 @@ def test_place_names_without_region_still_query_names(monkeypatch):
     monkeypatch.setattr(collect.catalog, "load", lambda: pd.DataFrame())
     # un mot d'ouvrage dans le nom rend la phrase exacte précise, même avec un pays ou une région
     for name in ("Red Lake", "Copper Mountain", "Big Hill", "Cobre Panama", "New Denmark Colliery",
-                 "Turkey Creek Mine", "New Jersey Zinc Pit", "Atacama Desert Mine"):
+                 "Turkey Creek Mine", "New Jersey Zinc Pit", "Atacama Desert Mine",
+                 # étendue en tête, après un mot de lieu, ou avec un mot d'ouvrage : nom de mine possible
+                 "Desert Queen", "Basin Creek", "Big Basin", "Shirley Basin Mine"):
         assert collect.mine_names("liste:x", name) == [name], name

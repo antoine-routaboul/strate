@@ -754,8 +754,19 @@ def region_like(name: str) -> bool:
     substances anglaises (« Ural Mountains », « Lake Victoria », « Copper Chile », « Cerro Colorado ») :
     un lieu géographique ou une tournure de titre, pas un nom de mine. Les mots d'ouvrage (« Mine »)
     sont ignorés ; partagé avec `normalize`, qui ne cherche ces noms qu'avec un lieu à moins de 50 km."""
-    _, words, geo = _geo_words(name)
-    return bool(geo) and not words - geo - _REGION_MAKERS - _GEO_FEATURES - _EN_SECTOR
+    f, words, geo = _geo_words(name)
+    if geo and not words - geo - _REGION_MAKERS - _GEO_FEATURES - _EN_SECTOR:
+        return True
+    # hors de la liste des régions : un nom propre suivi d'une grande étendue (« Athabasca Basin »,
+    # « Rocky Mountains », « Black Sea ») nomme une région. L'étendue en tête (« Desert Queen », « Basin
+    # Creek »), après un mot de lieu (« Big Basin ») ou avec un mot d'ouvrage (« Shirley Basin Mine ») reste
+    # un nom de mine possible ; une mer reste une mer après une couleur (« Black Sea », « Red Sea »).
+    if _has_mine_word(name):
+        return False
+    rest = [t for t in dict.fromkeys(re.findall(r"[a-z0-9]+", f))
+            if t in words and t not in _EN_SECTOR]
+    return len(rest) == 2 and rest[1] in _BROAD and rest[0] not in _BROAD and (
+        rest[0] not in _PLACE_WORDS or rest[1] in _SEAS)
 
 
 # Mots de lieu (relief, eau, orientation, taille, couleur) : non distinctifs seuls, mais à plusieurs ils
@@ -776,6 +787,12 @@ norte sur este oeste nueva nuevo novo nova san santa santo sao saint st""".split
 _GEO_FEATURES = _PLACE_WORDS | frozenset("""
 desert plateau basin range ranges coast coastal highlands highland lowlands plain plains peninsula gulf
 sea delta forest belt region province district state territory""".split())
+# grandes étendues : deux mots dont l'un d'eux nomment une région même hors de la liste des régions.
+# « Lake », « Valley », « Delta » n'y sont pas : « Lake Way », « Red Lake », « Hunter Valley Operations »,
+# « Delta » sont des mines ou des projets.
+_BROAD = frozenset("""
+mountains ranges basin basins sea ocean desert plateau peninsula gulf archipelago""".split())
+_SEAS = frozenset({"sea", "ocean", "gulf"})
 # substances et mots du secteur en anglais : avec un pays ou une région, ils forment une tournure de titre
 # de la traduction anglaise que l'API cherche (« Chile copper », « Gold Peru », « Coal Victoria »),
 # quel que soit l'ordre. Une substance dans une autre langue (« Cobre Panama ») reste un nom propre.
