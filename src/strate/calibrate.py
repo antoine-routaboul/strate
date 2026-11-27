@@ -823,12 +823,10 @@ def radar_holdout(df: pd.DataFrame | None = None, n_boot: int = 2000) -> dict:
 
 
 # -- 7. modèle « emprise Maus → production » (pour le screener, toutes les mines) --------------------
-def footprint_model(seed: int = 0) -> dict:
-    """log10(tonnes/an) ~ log10(emprise Maus km²), par type (minerai extrait, charbon).
+def footprint_points() -> pd.DataFrame:
+    """Les mines du modèle d'emprise : id · type (minerai | charbon) · P (t/an, médiane 2017–2020) · emprise.
 
-    Emprise Maus = contours tracés sur Sentinel-2 2019 → production médiane 2017–2020. Mines purement
-    souterraines exclues. Erreur mesurée deux fois : validation croisée (une mine retirée à la fois) et
-    moitié tenue à l'écart (jamais vue par l'ajustement).
+    Séparé du modèle pour que les graphiques (scripts/figures.py) montrent exactement ces points-là.
     """
     import geopandas as gpd
 
@@ -847,7 +845,17 @@ def footprint_model(seed: int = 0) -> dict:
             if len(v):
                 rows.append({"id": r.id, "type": key, "P": float(v.median()), "emprise": r.footprint_km2})
                 break
-    d = pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=["id", "type", "P", "emprise"])
+
+
+def footprint_model(seed: int = 0) -> dict:
+    """log10(tonnes/an) ~ log10(emprise Maus km²), par type (minerai extrait, charbon).
+
+    Emprise Maus = contours tracés sur Sentinel-2 2019 → production médiane 2017–2020. Mines purement
+    souterraines exclues. Erreur mesurée deux fois : validation croisée (une mine retirée à la fois) et
+    moitié tenue à l'écart (jamais vue par l'ajustement).
+    """
+    d = footprint_points()
     out = {}
     rng = np.random.default_rng(seed)
     for key, g in d.groupby("type"):
