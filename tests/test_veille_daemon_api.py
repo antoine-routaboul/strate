@@ -608,3 +608,52 @@ def test_old_database_gains_verdict_rho_column(tmp_path):
     assert cols[-1] == "verdict_rho" and con.execute("SELECT COUNT(*) FROM correlations").fetchone()[0] == 1
     store.init(db).close()                                 # deuxième passage : rien à ajouter, pas d'erreur
     con.close()
+
+
+def test_stage_status_rolled_back_by_the_stage_is_not_trusted(db, monkeypatch):
+    # l'étape écrit son statut puis annule sa propre transaction : ligne absente (1er cycle) ou ligne du
+    # cycle précédent. Avant correction : TypeError sur after[1] et étape notée en erreur.
+    calls: list = []
+    _install_stages(monkeypatch, calls)
+    norm = sys.modules["strate.veille.normalize"]
+
+    def run_once(con, **kw):
+        store.set_status(con, "normalisation", False, "échec provisoire", lus=0)
+        con.rollback()
+        return {"lus": 7}
+
+    norm.run_once = run_once
+    res = daemon.run_cycle(stages=("normalisation",))
+    assert res["normalisation"]["ok"] is True and res["normalisation"]["lus"] == 7
+    st = _status(db)["normalisation"]
+    assert st["ok"] == 1 and "annulé" in st["message"] and json.loads(st["counters"]) == {"lus": 7}
+    # 2e cycle : la ligne du 1er cycle est toujours là, différente de celle que l'étape a écrite et annulée
+    res = daemon.run_cycle(stages=("normalisation",))
+    assert res["normalisation"]["ok"] is True and "annulé" in _status(db)["normalisation"]["message"]
+
+
+def test_status_watch_does_not_replace_set_status_and_is_per_thread(db):
+    import threading
+    orig = store.set_status
+    con = store.init(db)
+    other: dict = {}
+
+    def in_thread():
+        c2 = store.init(db)
+        with store.watch_status() as w2:
+            store.set_status(c2, "collecte", True, "fil")
+        other.update(w2)
+        c2.commit()
+        c2.close()
+
+    with store.watch_status() as seen:
+        assert store.set_status is orig                     # aucun remplacement dans le module
+        th = threading.Thread(target=in_thread)
+        th.start()
+        th.join()
+        store.set_status(con, "normalisation", True, "principal")
+    con.commit()
+    assert set(seen) == {"normalisation"} and set(other) == {"collecte"}
+    store.set_status(con, "correlation", True, "hors relevé")    # hors du contexte : rien n'est relevé
+    assert "correlation" not in seen
+    con.close()

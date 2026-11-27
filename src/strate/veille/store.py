@@ -11,6 +11,7 @@ SQLite en mode WAL : l'API lit pendant que les étapes écrivent.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import sqlite3
 import threading
@@ -206,8 +207,31 @@ def session(path: Path | None = None):
         con.close()
 
 
+# Statuts écrits par set_status pendant `watch_status()` : {étape: ligne écrite}. Variable de contexte,
+# propre à chaque fil (et à chaque tâche asyncio) : un cycle lancé dans un fil de l'API ne voit jamais les
+# écritures d'un autre, et rien n'est remplacé dans le module (aucun « monkeypatch » de set_status).
+_written: contextvars.ContextVar[dict[str, tuple] | None] = contextvars.ContextVar(
+    "veille_status_written", default=None)
+
+
+@contextmanager
+def watch_status():
+    """Relève les statuts écrits par set_status dans ce contexte : {étape: (last_run, ok, message,
+    counters)}, exactement la ligne écrite, pour que l'appelant vérifie qu'elle a bien été validée."""
+    seen: dict[str, tuple] = {}
+    token = _written.set(seen)
+    try:
+        yield seen
+    finally:
+        _written.reset(token)
+
+
 def set_status(con: sqlite3.Connection, stage: str, ok: bool, message: str = "", **counters) -> None:
+    row = (now(), int(ok), message, json.dumps(counters, ensure_ascii=False))
     con.execute(
         "INSERT OR REPLACE INTO pipeline_status(stage, last_run, ok, message, counters) VALUES (?,?,?,?,?)",
-        (stage, now(), int(ok), message, json.dumps(counters, ensure_ascii=False)),
+        (stage, *row),
     )
+    seen = _written.get()
+    if seen is not None:
+        seen[stage] = row

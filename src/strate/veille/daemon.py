@@ -153,39 +153,25 @@ def _heartbeat(con: sqlite3.Connection, message: str, ok: bool = True, **counter
         log.warning("battement du service non écrit : %s", e)
 
 
-@contextlib.contextmanager
-def _watch_status(stage: str):
-    """Note si l'étape appelle elle-même store.set_status : la ligne seule ne suffit pas (deux cycles dans
-    la même seconde qui écrivent le même échec laissent une ligne identique)."""
-    wrote: list[bool] = []
-    orig = store.set_status
-
-    def rec(con, st, *a, **kw):
-        if st == stage:
-            wrote.append(True)
-        return orig(con, st, *a, **kw)
-
-    store.set_status = rec
-    try:
-        yield wrote
-    finally:
-        store.set_status = orig
-
-
 def _run_stage(con: sqlite3.Connection, stage: str, module: str, kwargs: dict) -> dict:
     """Lance une étape ; toute erreur (import, réseau, données) est notée et n'arrête pas la chaîne."""
     t0 = time.time()
-    before = _status_row(con, stage)
     try:
         mod = importlib.import_module(module)  # import tardif : un module absent ne casse que son étape
-        with _watch_status(stage) as wrote:
+        with store.watch_status() as written:
             res = _counters(_jsonable(mod.run_once(con, **kwargs)))
         after = _status_row(con, stage)
-        if not wrote and after == before:  # l'étape n'a pas écrit son statut : on le fait pour elle
-            store.set_status(con, stage, True, "terminé", **res)
-            ok, msg = True, "terminé"
-        else:  # l'étape a écrit son statut (elle peut avoir noté elle-même un échec) : c'est lui qui fait foi
+        mine = written.get(stage)
+        if mine is not None and after is not None and after == mine:
+            # l'étape a écrit son statut et il est toujours là (elle peut avoir noté elle-même un échec) :
+            # c'est lui qui fait foi
             ok, msg = bool(after[1]), after[2] or ""
+        else:
+            # pas de statut écrit, ou statut annulé par l'étape elle-même (rollback après set_status :
+            # ligne absente, ou ligne du cycle précédent) : on l'écrit pour elle, sans le prendre pour le sien
+            msg = "terminé" if mine is None else "terminé (statut de l'étape annulé par son rollback)"
+            store.set_status(con, stage, True, msg, **res)
+            ok = True
         con.commit()
         dt = round(time.time() - t0, 1)
         if ok:

@@ -137,6 +137,9 @@ chaîne : elle est notée et retentée au cycle suivant.
 
 - `run_forever(interval_s=900)` : boucle collect → normalize → correlate, isole les erreurs par étape,
   s'aligne sur le quart d'heure, s'arrête proprement sur SIGTERM, priorité basse (`os.nice`).
+  Le statut écrit par une étape fait foi s'il est encore en base à la fin de l'étape
+  (`store.watch_status`, variable de contexte propre à chaque fil) ; une étape qui l'a annulé par son
+  propre rollback, ou qui n'en a pas écrit, est notée « terminé » par le service.
 - CLI : `strate veille once | run | status | install | uninstall`. `install` écrit
   `~/Library/LaunchAgents/com.strate.veille.plist` (KeepAlive, journaux dans `logs/veille.log`) et le
   charge avec `launchctl` ; `uninstall` l'arrête et le retire.
