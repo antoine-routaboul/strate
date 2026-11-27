@@ -72,7 +72,13 @@ chaîne : elle est notée et retentée au cycle suivant.
   multilingues de `names.parquet`), comparaison sur les mots distinctifs (`catalog._tokens`, numéros de
   mine qui séparent). Un nom de mine doit apparaître **en entier** dans le titre ou les organisations.
   Les noms ambigus (plusieurs mines) sont tranchés par la géographie GDELT (lieu à < 50 km, sinon même
-  pays) ; sans arbitrage possible : pas de rattachement. `hint_site` (requête par mine) : rattachement
+  pays), puis, parmi les homonymes restants (ceux des pays de l'article s'il en cite), par la seule fiche
+  qui publie sa production, à défaut la seule qui a une emprise mesurée (méthode `…+priorité`, force
+  0,7 pour un nom de plusieurs mots, 0,4 pour un mot seul, donc sous le seuil 0,5 sans lieu proche).
+  Choix de jugement : une fiche sans données est le plus souvent mineure ou un doublon (« Escondida » :
+  la mine de BHP est la seule de ses 4 homonymes à publier sa production). Deux fiches de même rang :
+  pas de rattachement. Sur le catalogue de novembre 2026, 551 des 1 887 clés à homonymes sont ainsi
+  tranchées sans lieu. `hint_site` (requête par mine) : rattachement
   direct, confiance plus basse si le nom n'apparaît pas. Le nom est cherché parmi TOUS les noms de la
   fiche visée, même ceux que l'index de recherche écarte (fiche non étayée, trop d'homonymes, double
   d'une autre fiche à moins de 10 km).

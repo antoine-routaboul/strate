@@ -9,7 +9,9 @@ Pourquoi ces choix :
 - Rattacher un article à une mine est le point faible de toute veille automatique : « Victoria », « Eagle »
   ou « Gold Mine » désignent des dizaines de sites, et « Felix » est aussi un président. On exige donc le
   nom EN ENTIER (mots distinctifs, numéros de puits qui séparent), on écarte les noms génériques, et les
-  homonymes ne sont tranchés que par la géographie GDELT (lieu à moins de 50 km, sinon même pays).
+  homonymes sont tranchés par la géographie GDELT (lieu à moins de 50 km, sinon même pays), puis par
+  la seule fiche restante qui publie sa production (à défaut, la seule qui a une emprise mesurée) :
+  « priorité », force réduite ; sinon aucun rattachement.
   Mieux vaut rater un article que l'attribuer à la mauvaise mine : le corrélateur mesure des liens.
 - L'index des noms (~80 000 sites, plusieurs noms chacun, toutes langues) est construit une fois par
   processus : chaque document est comparé par recherche dans un dictionnaire (séquences de mots, ou
@@ -66,6 +68,8 @@ STRENGTH = {
     "mot+lieu": 0.9, "mot+pays": 0.45, "mot": 0.4,      # nom d'un seul mot (plus risqué)
     "contredit": 0.45,                                   # nom présent mais l'article parle d'un autre pays
     "requête+nom": 0.9, "requête": 0.5,
+    # homonymes sans lieu ni pays qui tranche : la seule fiche documentée (emprise ou production)
+    "nom+priorité": 0.7, "mot+priorité": 0.4,
 }
 ORG_FACTOR = 0.9         # nom trouvé seulement dans les organisations GDELT (extraites par machine)
 
@@ -445,6 +449,8 @@ class NameIndex:
     keys_of: dict[str, set[tuple[str, ...]]] = field(default_factory=dict)
     cjk_of: dict[str, set[str]] = field(default_factory=dict)
     notable: frozenset[str] = frozenset()  # fiche étayée : liste suivie, ICMM, Wikipedia, emprise, production
+    documented: frozenset[str] = frozenset()  # données propres : emprise ou production, ou liste suivie
+    producing: frozenset[str] = frozenset()   # production publiée (ou mine suivie au stade production)
     maxlen: int = 1
     dropped_generic: int = 0              # clés écartées : trop d'homonymes
     catalog_rows: int = 0                 # fiches du catalogue indexées (0 : catalogue absent)
@@ -476,6 +482,8 @@ def build_index(cat: pd.DataFrame | None, watch: list | None = None, names: pd.D
     idx.twin_of = {c: w for w, c in (twins or {}).items()}
     prio: dict[str, int] = {}
     notable: set[str] = set()
+    documented: set[str] = set()
+    producing: set[str] = set()
     raw_w: dict[tuple[str, ...], tuple[set[str], set[str]]] = {}
     raw_c: dict[str, tuple[set[str], set[str], list[bool]]] = {}
     places: set[tuple[str, ...]] = set()
@@ -515,6 +523,9 @@ def build_index(cat: pd.DataFrame | None, watch: list | None = None, names: pd.D
         idx.sites[s.id] = (s.name, _num(s.lat), _num(s.lon), entities.norm_country(s.country))
         prio[s.id] = 100
         notable.add(s.id)
+        documented.add(s.id)        # mine suivie : analysée par satellite (emprise mesurée)
+        if getattr(s, "stage", None) == "production":
+            producing.add(s.id)
         add(s.id, s.name, main=True)
     if cat is not None and len(cat):
         idx.catalog_rows = len(cat)
@@ -525,10 +536,14 @@ def build_index(cat: pd.DataFrame | None, watch: list | None = None, names: pd.D
             cid = str(cid)
             sid = idx.twin_of.get(cid, cid)
             nm = cols["name"][i]
+            fp, prod = _num(cols["footprint_km2"][i]) is not None, cols["has_production"][i] is True
+            if fp or prod:                 # sous l'id suivi pour une jumelle : c'est la même mine
+                documented.add(sid)
+            if prod:
+                producing.add(sid)
             if sid == cid:
                 idx.sites[cid] = (nm if isinstance(nm, str) else None, _num(cols["lat"][i]),
                                   _num(cols["lon"][i]), entities.norm_country(cols["country"][i]))
-                fp, prod = _num(cols["footprint_km2"][i]) is not None, cols["has_production"][i] is True
                 prio[cid] = 2 * fp + prod + isinstance(cols["wikidata"][i], str)
                 if fp or prod or isinstance(cols["icmm"][i], str) or isinstance(cols["wikipedia"][i], str):
                     notable.add(cid)
@@ -589,6 +604,8 @@ def build_index(cat: pd.DataFrame | None, watch: list | None = None, names: pd.D
     for lst in idx.cjk.values():
         lst.sort(key=lambda x: -len(x[0]))
     idx.notable = frozenset(notable)
+    idx.documented = frozenset(documented)
+    idx.producing = frozenset(producing)
     idx.place_keys = frozenset(k for k in places if k in idx.words)
     return idx
 
@@ -1346,9 +1363,14 @@ def _resolve(ids: tuple[str, ...], idx: NameIndex, pts: list[tuple[float, float,
     """Homonymes et confirmation géographique → (site, niveau, distance km).
 
     Niveaux : 'lieu' (lieu GDELT à < 50 km), 'pays' (seule mine de ce nom dans un pays de l'article),
-    'nom' (nom sans homonyme, article sans lieu), 'contredit' (article situé ailleurs), 'ambigu'.
-    Homonymes, exactement comme docs/veille.md : lieu à moins de 50 km, sinon une seule mine de ce nom
-    dans un pays de l'article, sinon AUCUN rattachement (aucune préférence « à la notoriété »).
+    'nom' (nom sans homonyme, article sans lieu), 'priorite', 'contredit' (article situé ailleurs),
+    'ambigu'. Homonymes, comme docs/veille.md : lieu à moins de 50 km, sinon une seule mine de ce nom
+    dans un pays de l'article, sinon — parmi les homonymes des pays de l'article, ou tous si l'article
+    n'a pas de pays — la seule fiche qui a une production publiée, ou à défaut d'aucune, la seule qui a
+    une emprise mesurée (« Escondida » : la mine de BHP, seule à publier sa production parmi quatre
+    fiches, dont deux petites emprises). Une fiche sans ces données est le plus souvent une entrée
+    mineure ou un doublon ; la force réduite (`STRENGTH`) dit que ce choix n'est pas une preuve. Deux
+    fiches de même rang : AUCUN rattachement.
     """
     best, best_d = None, None
     for sid in ids:
@@ -1368,6 +1390,14 @@ def _resolve(ids: tuple[str, ...], idx: NameIndex, pts: list[tuple[float, float,
         return ids[0], ("contredit" if countries else "nom"), None
     if len(same) == 1:
         return same[0], "pays", None
+    pool = same if countries else list(ids)
+    if len(pool) > 1:
+        for tier in (idx.producing, idx.documented):   # production publiée d'abord, puis emprise
+            doc = [sid for sid in pool if sid in tier]
+            if len(doc) == 1:
+                return doc[0], "priorite", None
+            if doc:
+                break                                   # plusieurs fiches de même rang : rien ne tranche
     return None, "ambigu", None
 
 
@@ -1375,6 +1405,7 @@ def _resolve(ids: tuple[str, ...], idx: NameIndex, pts: list[tuple[float, float,
 _LEVELS = {
     "lieu": ("nom+lieu", "mot+lieu", 1.0), "pays": ("nom+pays", "mot+pays", 1.0),
     "nom": ("nom", "mot", 1.0), "contredit": ("contredit", None, 1.0),
+    "priorite": ("nom+priorité", "mot+priorité", 1.0),
 }
 
 
@@ -1446,7 +1477,7 @@ def match(doc: dict, idx: NameIndex) -> tuple[list[dict], dict]:
             # moins de 50 km, sa force (0,4–0,45) le laisse sous le seuil 0,5 du corrélateur.
             exact_org = o.where == "organisations" and o.context
             if not (title_mining or exact_org) or (o.where == "organisations" and not exact_org) \
-                    or single is None or (level == "nom" and not o.context):
+                    or single is None or (level in ("nom", "priorite") and not o.context):
                 stats["ecartes"] += 1
                 continue
             method = single

@@ -142,12 +142,15 @@ def test_homonyms_resolved_by_place_then_country_only(idx):
     m, _ = N.match(_doc("Huelga en la mina La Escondida", [_loc("Coahuila, Mexico", 27.7, -101.4)],
                         lang="es"), idx)
     assert list(_sites(m)) == ["c_esc3"] and m[0]["method"] == "mot+lieu"
-    # deux « Los Bronces » au Chili : ni lieu proche ni pays ne tranchent → aucun rattachement
-    # (spécification), même si l'une des deux est la grande mine (pas de préférence « à la notoriété »)
+    # deux « Los Bronces » au Chili : ni lieu proche ni pays ne tranchent ; une seule fiche a une emprise
+    # ou une production (la grande mine) → elle, avec une force réduite (« priorité »)
     chile = [_loc("Chile", -30, -71, typ=1)]
     m, st = N.match(_doc("Anglo American halts Los Bronces copper mine", chile), idx)
-    assert m == [] and st["ambigus"] == 1
+    assert list(_sites(m)) == ["c_lb"] and m[0]["method"] == "nom+priorité" and m[0]["strength"] == 0.7
     m, st = N.match(_doc("Los Bronces mine expansion approved"), idx)       # article sans lieu
+    assert list(_sites(m)) == ["c_lb"] and m[0]["method"] == "nom+priorité"
+    # article situé dans un AUTRE pays : la priorité ne s'applique pas contre la géographie
+    m, st = N.match(_doc("Los Bronces mine expansion approved", [_loc("Peru", -10, -76, typ=1)]), idx)
     assert m == [] and st["ambigus"] == 1
     near = [_loc("Lo Barnechea, Chile", -33.2, -70.3)]
     m, _ = N.match(_doc("Anglo American halts Los Bronces copper mine", near), idx)
@@ -815,3 +818,22 @@ def test_doc_history_flags_follow_recognised_query_names(con, idx4, monkeypatch)
     assert N.flag_doc_names(con, idx4) == (1, 1)
     flags = dict(con.execute("SELECT key, value FROM meta WHERE key LIKE 'doc_reconnu:%'").fetchall())
     assert flags == {"doc_reconnu:p_rl": "1", "doc_reconnu:p_cm": "0"}
+
+
+def test_ambiguous_names_without_documented_record_stay_unattached():
+    cols = ["id", "name", "aliases", "lat", "lon", "country", "footprint_km2", "has_production", "icmm"]
+    rows = [("e1", "Escondida", None, -24.26, -69.08, "Chile", 231.0, True, "x"),
+            ("e2", "Escondida", None, -30.17, -70.97, "Chile", None, False, "x"),
+            ("e3", "La Escondida", None, -25.58, -70.17, "Chile", 1.2, False, "x"),   # emprise seule
+            ("t1", "Twin Peaks Mine", None, 40.0, -110.0, "United States", 5.0, False, "x"),
+            ("t2", "Twin Peaks Mine", None, 45.0, -115.0, "United States", 4.0, False, "x"),
+            ("n1", "Nowhere Ridge", None, 40.0, -100.0, "United States", None, False, "x"),
+            ("n2", "Nowhere Ridge", None, 45.0, -105.0, "United States", None, False, "x")]
+    ix = N.build_index(pd.DataFrame(rows, columns=cols).assign(wikidata=None, wikipedia=None))
+    antofagasta = [_loc("Antofagasta, Chile", -23.65, -70.4)]               # à 150 km : pas « lieu »
+    m, _ = N.match(_doc("Escondida mine strike", antofagasta), ix)
+    assert [(x["site_id"], x["method"]) for x in m] == [("e1", "mot+priorité")]
+    assert m[0]["strength"] < 0.5         # nom d'un seul mot : toujours sous le seuil sans lieu proche
+    for title in ("Twin Peaks Mine strike", "Nowhere Ridge mine strike"):   # deux documentées / aucune
+        m, st = N.match(_doc(title), ix)
+        assert m == [] and st["ambigus"] == 1, title
