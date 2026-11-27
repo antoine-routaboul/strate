@@ -1509,7 +1509,7 @@ $('#view-veille').addEventListener('keydown',e=>{
 // == sociétés, prévisions, méthode ==========================================================
 // Ne lisent que le contrat de docs/previsions-societes.md § 3 (et /api/calibration, /api/search, /api/screener,
 // /api/correlations/summary). Données absentes → le « message » du serveur, ou une phrase claire, dans le cadre.
-const PG={seq:{},charts:[],co:null,coSort:{k:'capex_dernier',desc:true},coShown:200,summary:null,corrDom:'tous',fcSeq:0};
+const PG={seq:{},charts:[],co:null,coSort:{k:'n_mines',desc:true},coShown:200,summary:null,corrDom:'tous',fcSeq:0};
 const box=(msg,cls='')=>`<div class="empty${cls?' '+cls:''}">${msg}</div>`;
 const loading=()=>'<p class="meta">Chargement…</p>';
 const errBox=(what,e)=>box(`${esc(what)} : ${esc(errTxt(e))}. <button class="btn-text" type="button" data-retry>Réessayer</button>`,'err');
@@ -1579,15 +1579,26 @@ async function coRows(){
 }
 
 // -- annuaire ----------------------------------------------------------------------------------
+// Montants (CAPEX, chiffre d'affaires) : jamais comparés d'une devise à l'autre sans change. Le tri par montant se
+// fait à l'intérieur de chaque devise ; les devises se suivent par nombre de sociétés (la plus fréquente d'abord),
+// montant inconnu ou sans devise en dernier. Par défaut, tri par nombre de mines (champ sans devise).
+const CO_MONEY=new Set(['capex_dernier','ca_dernier']);
+function coDevOrder(rows,k){
+  const c={}; rows.forEach(co=>{ if(num(co[k])!=null&&co.devise) c[co.devise]=(c[co.devise]||0)+1; });
+  return Object.entries(c).sort((a,b)=>b[1]-a[1]||String(a[0]).localeCompare(String(b[0]))).map(x=>String(x[0]));
+}
 function coTable(rows){
-  const S=PG.coSort, k=S.k, txt=new Set(['nom','pays']);
-  const key=co=>k==='investissements_12m'?cnt12(co[k]):co[k];
+  const S=PG.coSort, k=S.k, txt=new Set(['nom','pays']), byDev=CO_MONEY.has(k), devs=byDev?coDevOrder(rows,k):[];
+  const key=co=>k==='investissements_12m'?cnt12(co[k]):byDev?num(co[k]):co[k];
+  const dr=co=>{ const i=devs.indexOf(String(co.devise)); return i<0?devs.length:i; };
   const sorted=[...rows].sort((a,b)=>{ const x=key(a), y=key(b);
     if(x==null&&y==null) return 0; if(x==null) return 1; if(y==null) return -1;
+    if(byDev&&dr(a)!==dr(b)) return dr(a)-dr(b);  // une devise après l'autre, quel que soit le sens
     const c=txt.has(k)?String(x).localeCompare(String(y),'fr'):x-y; return S.desc?-c:c; });
   const th=(kk,l,n)=>`<th class="${n?'n':''}" data-k="${kk}" tabindex="0" aria-sort="${k===kk?(S.desc?'descending':'ascending'):'none'}" style="cursor:pointer">${l}${k===kk?(S.desc?' ↓':' ↑'):''}</th>`;
   const shown=sorted.slice(0,PG.coShown);
-  return `<div class="scrwrap"><table id="co_tab"><thead><tr>${th('nom','Société')}${th('pays','Pays')}${th('n_mines','Mines',1)}${th('capex_dernier','CAPEX dernier',1)}${th('effectifs','Effectifs',1)}${th('ca_dernier','Chiffre d’affaires',1)}${th('investissements_12m','Annonces 12 mois',1)}</tr></thead><tbody>${
+  const note=byDev&&devs.length?`<p class="note" style="margin:0 0 8px">Tri par montant à l’intérieur de chaque devise (${devs.slice(0,6).map(esc).join(', ')}${devs.length>6?'…':''}, puis montant sans devise) : les devises ne se comparent pas sans change.</p>`:'';
+  return `${note}<div class="scrwrap"><table id="co_tab"><thead><tr>${th('nom','Société')}${th('pays','Pays')}${th('n_mines','Mines',1)}${th('capex_dernier','CAPEX dernier',1)}${th('effectifs','Effectifs',1)}${th('ca_dernier','Chiffre d’affaires',1)}${th('investissements_12m','Annonces 12 mois',1)}</tr></thead><tbody>${
     shown.map(co=>`<tr class="row" data-href="#/societe/${esc(enc(co.id))}"><td><a class="nm" href="#/societe/${esc(enc(co.id))}">${esc(co.nom||co.id)}</a>${tickers(co.tickers).length?`<div class="meta" style="font-size:12px">${esc(tickers(co.tickers).slice(0,3).join(' · '))}${co.cik?` · CIK ${esc(co.cik)}`:''}</div>`:co.cik?`<div class="meta" style="font-size:12px">CIK ${esc(co.cik)}</div>`:''}</td>
       <td>${esc(co.pays||'—')}</td><td class="n">${fmt(num(co.n_mines),0)}</td><td class="n">${money(co.capex_dernier,co.devise)}${yr(co.capex_annee)}</td>
       <td class="n">${num(co.effectifs)==null?'—':fmt(co.effectifs,0)+yr(co.effectifs_annee)}</td><td class="n">${money(co.ca_dernier,co.devise)}</td>

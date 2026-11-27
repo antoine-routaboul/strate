@@ -354,6 +354,21 @@ const done=()=>fetches.forEach(f=>f.done=true);
     return (!h.includes('<script>')&&h.includes('&lt;script&gt;')&&h.includes('NYSE:&lt;X&gt;')
       &&h.includes('1,50 Md')&&!h.includes('"><b')&&clean(h))||h;
   });
+  await check('directory_sorts_amounts_within_currency',async()=>{
+    done(); P.PG.co=null; P.PG.coSort={k:'n_mines',desc:true}; P.show('societes','annuaire');
+    const co=(id,dev,cap,nm)=>({id,nom:id,devise:dev,capex_dernier:cap,n_mines:nm,tickers:[]});
+    take('/api/companies?limit=5000').ok({total:5,rows:[co('A','USD',1e9,3),co('B','CAD',5e9,1),
+      co('C','USD',2e9,2),co('D','AUD',3e9,9),co('E',null,null,4)]});
+    await flush(); const order=h=>[...h.matchAll(/data-href="#\/societe\/(\w)"/g)].map(m=>m[1]).join('');
+    const byMines=order($el('#co_list').innerHTML);
+    P.PG.coSort={k:'capex_dernier',desc:true}; P.show('societes','annuaire'); await flush();
+    const h=$el('#co_list').innerHTML, byCapex=order(h);
+    P.PG.coSort={k:'capex_dernier',desc:false}; P.show('societes','annuaire'); await flush();
+    const up=order($el('#co_list').innerHTML);
+    // B (5 Md CAD) et D (3 Md AUD) ne passent jamais devant les USD ; montant inconnu en dernier
+    return (byMines==='DEACB'&&byCapex==='CADBE'&&up==='ACDBE'&&h.includes('à l’intérieur de chaque devise')
+      &&h.includes('USD, AUD, CAD'))||JSON.stringify({byMines,byCapex,up});
+  });
   await check('company_sheet_with_badges',async()=>{
     done(); P.show('societes','fiche','rio');
     take('/api/company?id=rio').ok({profil:{name:'Rio',tickers:['NYSE:RIO'],cik:'0000863064'},
@@ -525,12 +540,11 @@ BOOT_SITE = r"""
 """
 
 CHECKS = ["badge", "badge_never_upgrades_server_verdict", "routes", "one_view_at_a_time",
-          "directory_empty_message", "directory_escapes_names", "company_sheet_with_badges",
-          "company_head_never_gets_raw_tickers",
+          "directory_empty_message", "directory_escapes_names", "directory_sorts_amounts_within_currency",
+          "company_sheet_with_badges", "company_head_never_gets_raw_tickers",
           "company_corr_verdicts_per_coefficient", "capex_page_empty", "backtest_page", "backtest_empty",
-          "forecast_without_series", "forecast_with_series",
-          "forecast_contract_quality_and_horizons", "forecast_naive_quality_in_levels",
-          "all_correlations_fallback", "calibration_page"]
+          "forecast_without_series", "forecast_with_series", "forecast_contract_quality_and_horizons",
+          "forecast_naive_quality_in_levels", "all_correlations_fallback", "calibration_page"]
 
 
 def _run(tmp_path_factory, body: str, hash_: str = "") -> dict:
