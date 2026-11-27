@@ -355,14 +355,14 @@ def test_assign_ids_rejects_truncated_single_word_and_subsidiary_names():
 
 def test_sic_filter_rejects_non_mining_filers():
     assert C.sic_ok("1040") and C.sic_ok(1221) and C.sic_ok("3334") and C.sic_ok("6795")
-    assert not any(map(C.sic_ok, ["6500", "3241", "1389", "6798", "2621", "4931", "2911", "", None]))
+    assert not any(map(C.sic_ok, ["6552", "3241", "1389", "6798", "2621", "4931", "2911", "", None]))
     co = pd.DataFrame([_co_row("x", "X Holdings", cik="0000000001", src="SEC company_tickers (nom)"),
                        _co_row("nem", "Newmont", cik="0001164727", src="graine vérifiée (SEC)")],
                       columns=C.COMPANY_COLS)
-    sic = {"0000000001": dict(sic="6500", description="Real Estate"),
-           "0001164727": dict(sic="6500", description="test")}
+    sic = {"0000000001": dict(sic="6552", description="Land Subdividers & Developers"),  # St. Joe Co
+           "0001164727": dict(sic="6552", description="test")}
     out = C.reject_non_mining(co, sic).set_index("id")
-    assert pd.isna(out.at["x", "cik"]) and "SIC 6500" in out.at["x", "cik_source"]
+    assert pd.isna(out.at["x", "cik"]) and "SIC 6552" in out.at["x", "cik_source"]
     assert out.at["nem", "cik"] == "0001164727"  # la graine vérifiée n'est pas filtrée
 
 

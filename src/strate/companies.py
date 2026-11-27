@@ -2,11 +2,13 @@
 
 Règles explicites seulement, aucun modèle de langage :
 
-    entités    liste suivie (sites.toml) + propriétaires/exploitants du catalogue (Wikidata P127/P137, ICMM)
-               dédoublonnées par nom normalisé puis par QID ; identifiants QID, CIK SEC, tickers
+    entités    liste suivie (sites.toml, périodes de détention depuis/jusqu et anciens propriétaires) +
+               propriétaires/exploitants du catalogue (Wikidata P127/P137, ICMM, sans date), dédoublonnés
+               par nom normalisé puis par QID ; identifiants QID, CIK SEC (filtré par code SIC), tickers
     faits      SEC companyfacts (us-gaap, ifrs-full, dei) + Wikidata P1128/P2139 datés (P585)
     annonces   titres de la veille (raw_docs) : montant + devise + verbe d'investissement → catégorie
-    liens      corrélations r, ρ, IC 90 % bootstrap, n — par société et sur l'ensemble des sociétés
+    liens      corrélations r, ρ, IC 90 % bootstrap, p de permutation, q de Benjamini-Hochberg, n — par
+               société et sur l'ensemble (grappes de sociétés), mines à détention datée seulement
 
 SEC : ≤ 8 requêtes/s (limite officielle 10), User-Agent lu dans STRATE_SEC_UA, sinon générique (jamais
 d'adresse personnelle). Mise à jour bornée (refresh(max_companies), update(limit)) et reprenable
@@ -102,8 +104,10 @@ METHODE_CORRELATIONS = (
 #   1400–1499  minéraux non métalliques hors combustibles (1400)
 #   3330–3339  première fusion et affinage des non-ferreux (3330, 3334 aluminium primaire)
 #   6795       négociants de redevances minières
-# Écartés par exemple : St. Joe Co (6500, immobilier), Cemex (3241, ciment), Halliburton (1389, services
-# pétroliers), Prologis (6798), International Paper (2621), Duke Energy (4931), Marathon Petroleum (2911).
+# Écartés par exemple (codes lus sur data.sec.gov le 2026-11-27) : St. Joe Co (6552, lotissement
+# immobilier), Cemex (3241, ciment) ; codes usuels de leur secteur, non relus ici : Halliburton (1389,
+# services pétroliers), Prologis (6798), International Paper (2621), Duke Energy (4931), Marathon Petroleum
+# (2911).
 MINING_SIC = (range(1000, 1100), range(1200, 1300), range(1400, 1500), range(3330, 3340), range(6795, 6796))
 
 
