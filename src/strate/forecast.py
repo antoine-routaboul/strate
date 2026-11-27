@@ -780,7 +780,7 @@ def _site_track(g: pd.DataFrame, bt: dict, model: str) -> dict:
     par = (bt.get("emprise") or {}).get("par_origine", [])
     coefs = {(x[0], int(x[1])): tuple(x[2:]) for x in par}
     c = add_anchor(make_cases(g, first=TUNE_END + 1, h_max=1), coefs)
-    base = {"modele": model, "horizon": 1, "periode": f"{TUNE_END + 1}–{LAST_TARGET}",
+    base = {"model": model, "horizon": 1, "periode": f"{TUNE_END + 1}–{LAST_TARGET}",
             "note": "Description de cette mine (au plus 7 années cibles, dépendantes) : pas d'IC, pas un "
                     "test."}
     if c.empty:
@@ -792,8 +792,9 @@ def _site_track(g: pd.DataFrame, bt: dict, model: str) -> dict:
 
 def forecast_site(site_id: str, out: Path | None = None, panel: pd.DataFrame | None = None,
                   today: date | None = None) -> dict | None:
-    """Historique, prévision (modèle retenu par horizon, intervalles 80/90 %) et qualité mesurée d'une mine.
-    None si la mine n'a pas de série de production.
+    """Historique, prévision (un seul modèle retenu pour tout le chemin, intervalles 80/90 %) et qualité
+    mesurée d'une mine. None si la mine n'a pas de série de production. La clé du modèle est « model »
+    partout : lignes de prevision, qualite, qualite_par_horizon et suivi_site.
 
     Lecture seule : lit backtest.json sans jamais lancer ni écrire le rétro-test. S'il manque, la réponse
     garde l'historique, une prévision vide et un champ « message »."""

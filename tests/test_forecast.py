@@ -269,6 +269,11 @@ def test_forecast_site(tmp_path):
     assert keys <= set(r["qualite"]) and r["qualite"]["portee"] == "global"
     st = r["suivi_site"]  # période de test seulement : cibles 2015–2019 à h = 1
     assert st["n"] == 5 and st["periode"] == "2015–2021" and st["facteur_max"] >= st["facteur_median"] >= 1
+    # même nom de clé pour le modèle partout dans la réponse
+    m = r["qualite"]["model"]
+    assert "modele" not in st and st["model"] == m
+    assert {x["model"] for x in r["prevision"]} == {m}
+    assert {q["model"] for q in r["qualite_par_horizon"]} == {m}
     assert fc.forecast_site("J001", out=tmp_path, panel=p, today=TODAY)["site_id"] == "m001"
 
 
