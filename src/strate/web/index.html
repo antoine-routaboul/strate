@@ -1549,11 +1549,23 @@ function factVal(f){ const v=num(f.valeur), u=String(f.unite??'');
   if(u==='ratio') return f2(v); if(u==='variation') return (v>0?'+':v<0?'−':'')+fmt(Math.abs(v)*100,1)+' %';
   if(/salari/.test(u)) return fmt(v,0)+` <span class="u">${esc(u)}</span>`;
   if(f.devise) return money(v,f.devise); return fmt(v,2)+(u?` <span class="u">${esc(u)}</span>`:''); }
-// relation société : deux badges (r et ρ) ; n = points (sociétés × années) et sociétés quand connu
-function ccRow(cc){
-  const n=num(cc.n_points)??num(cc.n), ns=num(cc.n_societes);
-  return `<div class="cbrow"><div class="rel"><b>${esc(varL(cc.x))} ↔ ${esc(varL(cc.y))}</b><small>${esc(lagY(cc.decalage).replace(/^ · /,''))||'même exercice'}${ns!=null?` · ${fmt(ns,0)} sociétés`:''}</small></div>
-    <div class="cblist">${corrBadge({type:'r',v:cc.r,lo:cc.r_lo,hi:cc.r_hi,n,nUnit:'points'})}${num(cc.rho)!=null?corrBadge({type:'rho',v:cc.rho,lo:cc.rho_lo,hi:cc.rho_hi,n,nUnit:'points',verdict:cc.verdict}):''}</div></div>`;
+// verdict d'un coefficient d'une corrélation société : verdict_r / verdict_rho du serveur ; un serveur plus ancien
+// n'a qu'un « verdict », calculé sur ρ : il ne vaut pour r que s'il dit « trop peu de données » (règle de n minimal,
+// commune aux deux coefficients). Sinon rien : le badge calcule le verdict de cet IC et le dit.
+function ccVerdict(cc,t){
+  const own=cc['verdict_'+t]; if(own!=null&&String(own).trim()) return String(own);
+  const g=cc.verdict!=null?String(cc.verdict):'';
+  return t==='rho'||/trop peu/i.test(g)?g||null:null;
+}
+// relation société : deux badges (r et ρ) ; n = points (sociétés × exercices, ou exercices sur une fiche),
+// IC par bootstrap sur les sociétés quand le serveur dit combien ; q = Benjamini-Hochberg de la famille calculée
+function ccRow(cc,unit='points'){
+  const n=num(cc.n_points)??num(cc.n), ns=num(cc.n_societes), q=num(cc.q_value), lag=cc.decalage??cc.lag;
+  const info=[esc(lagY(lag).replace(/^ · /,''))||'même exercice',ns!=null?`IC rééchantillonné sur ${fmt(ns,0)} ${plur(ns,'société')}`:'',
+    q!=null?`q (Benjamini-Hochberg) ${q<0.001?'&lt; 0,001':fmt(q,3)}`:''].filter(Boolean).join(' · ');
+  const b=t=>corrBadge({type:t,v:cc[t],lo:cc[t+'_lo'],hi:cc[t+'_hi'],n,nUnit:unit,verdict:ccVerdict(cc,t)});
+  return `<div class="cbrow"><div class="rel"><b>${esc(varL(cc.x))} ↔ ${esc(varL(cc.y))}</b><small>${info}</small></div>
+    <div class="cblist">${b('r')}${num(cc.rho)!=null?b('rho'):''}</div></div>`;
 }
 async function coRows(){
   if(PG.co) return PG.co;
@@ -1648,7 +1660,7 @@ async function coSheet(id){
       <div><h2 style="margin-top:0">Effectifs par exercice</h2><div class="card">${emp.length?'<canvas id="co_emp" height="160"></canvas>':'<p class="meta" style="margin:0">Pas d’effectifs déclarés.</p>'}</div></div>
     </div>
     <h2>Ce que disent les chiffres de cette société</h2>
-    ${cor.length?`<div class="panel" style="padding:4px 20px">${cor.map(ccRow).join('')}</div>`:box('Pas assez d’exercices pour une corrélation propre à cette société ; voir les corrélations sur l’ensemble des sociétés dans CAPEX &amp; investissements.')}
+    ${cor.length?`<div class="panel" style="padding:4px 20px">${cor.map(cc=>ccRow(cc,'exercices')).join('')}</div>`:box('Pas assez d’exercices pour une corrélation propre à cette société ; voir les corrélations sur l’ensemble des sociétés dans CAPEX &amp; investissements.')}
     <div class="grid-7-5">
       <div><h2>Derniers chiffres déclarés</h2>${latest.size?`<div class="tablebox"><table><thead><tr><th>Indicateur</th><th class="n">Exercice</th><th class="n">Valeur</th><th>Formulaire</th><th>Source</th></tr></thead><tbody>${[...latest.values()].map(factRow).join('')}</tbody></table></div>
         ${sortedF.length>latest.size?`<details style="margin-top:10px"><summary class="meta" style="cursor:pointer">Tous les faits (${fmt(sortedF.length,0)})</summary><div class="tablebox" style="margin-top:8px"><table><tbody>${sortedF.slice(0,400).map(factRow).join('')}</tbody></table></div></details>`:''}`:box('Aucun fait financier ou humain déclaré.')}</div>
@@ -1846,7 +1858,7 @@ function approxCI(rho,n){ if(num(rho)==null||num(n)==null||n<=3||rho<=-1||rho>=1
 // lignes de corrélation de calibration.json (même lecture que /api/correlations/summary) : {x, y, v, lo, hi, n, note}
 function calRows(){
   const c=CAL||{}, out=[], t=c.taille||{}, ci=v=>Array.isArray(v)?[num(v[0]),num(v[1])]:[null,null];
-  const add=(x,y,v,lo,hi,n,note='')=>{ if(num(v)!=null) out.push({x,y,v,lo:num(lo),hi:num(hi),n:num(n),note}); };
+  const add=(x,y,v,lo,hi,n,note='')=>{ if(num(v)!=null) out.push({x,y,v,lo:num(lo),hi:num(hi),n:num(n),note,unit:note.startsWith('n =')?'paires d’années':'mines'}); };
   if(t.rho!=null){ const [lo,hi]=ci(t.ic90); add('surface nue Sentinel-2 (fenêtre sur l’emprise)','production annuelle (niveau)',t.rho,lo,hi,t.mines); }
   const fs=t.fenetre_seule||{}, fr=t.fraction_nue||{};
   add('taille de la fenêtre seule (sans image)','production annuelle (niveau)',fs.rho,fs.ic90_bas,fs.ic90_haut,fs.mines);
@@ -1859,7 +1871,7 @@ function calRows(){
   if(tr(r.intra_mine_niveau).length) add('activité radar (écart à la moyenne de la mine)','production (écart à la moyenne de la mine)',tr(r.intra_mine_niveau)[0],tr(r.intra_mine_niveau)[1],tr(r.intra_mine_niveau)[2],r.mines_test);
   return out;
 }
-const calRow=c=>`<div class="cbrow"><div class="rel"><b>${esc(c.x)} ↔ ${esc(c.y)}</b>${c.note?`<small>${esc(c.note)}</small>`:''}</div><div>${corrBadge({type:'rho',v:c.v,lo:c.lo,hi:c.hi,n:c.n,nUnit:c.note.startsWith('n =')?'paires':'mines'})}</div></div>`;
+const calRow=c=>`<div class="cbrow"><div class="rel"><b>${esc(c.x)} ↔ ${esc(c.y)}</b>${c.note?`<small>${esc(c.note)}</small>`:''}</div><div>${corrBadge({type:'rho',v:c.v,lo:c.lo,hi:c.hi,n:c.n,nUnit:c.unit})}</div></div>`;
 // sous la note de calibration d'une fiche : les mêmes chiffres, avec leur intervalle et leur n
 function calBadges(compact){
   const rs=calRows(); if(!rs.length) return '';
@@ -1891,17 +1903,24 @@ function srcPage(){
 // toutes les corrélations : /api/correlations/summary ; sinon reconstruites depuis les routes du contrat
 async function corrFallback(){
   const out=[], dom=[];
-  const cr=calRows().map(c=>({domaine:'calibration',x:c.x,y:c.y,coefficient:c.v,type:'rho',lo:c.lo,hi:c.hi,n:c.n,verdict:null,source:'calibration.json'}));
+  const cr=calRows().map(c=>({domaine:'calibration',x:c.x,y:c.y,coefficient:c.v,type:'rho',lo:c.lo,hi:c.hi,n:c.n,unite_n:c.unit,verdict:null,source:'calibration.json'}));
   out.push(...cr); dom.push({domaine:'calibration',n:cr.length,message:cr.length?null:'aucune corrélation calculée'});
   const [rc,rb]=await Promise.allSettled([api('/api/companies/correlations'),api('/api/forecast/backtest')]);
   const cs=rc.status==='fulfilled'?arr(obj(rc.value).rows).map(obj):[];
-  for(const cc of cs) for(const t of ['r','rho']) if(num(cc[t])!=null) out.push({domaine:'sociétés',x:varL(cc.x),y:varL(cc.y)+lagY(cc.decalage),coefficient:cc[t],type:t,lo:cc[t+'_lo'],hi:cc[t+'_hi'],n:cc.n_points,verdict:cc.verdict,source:'data/companies'});
+  for(const cc of cs) for(const t of ['r','rho']) if(num(cc[t])!=null) out.push({domaine:'sociétés',x:varL(cc.x),y:varL(cc.y)+lagY(cc.decalage??cc.lag),coefficient:cc[t],type:t,lo:cc[t+'_lo'],hi:cc[t+'_hi'],n:cc.n_points,unite_n:'points',n_bootstrap_unit:cc.n_societes,verdict:ccVerdict(cc,t),source:'data/companies'});
   dom.push({domaine:'sociétés',n:out.filter(r=>r.domaine==='sociétés').length,message:rc.status==='fulfilled'?null:'source indisponible'});
   const bs=rb.status==='fulfilled'?arr(obj(rb.value).rows).map(obj):[];
-  for(const b of bs) for(const t of ['r','rho']) if(num(b[t])!=null) out.push({domaine:'prévisions',x:`prévision « ${b.model} » à ${b.horizon} an${b.horizon>1?'s':''}`,y:'production réelle (période de test)',coefficient:b[t],type:t,lo:b[t+'_lo'],hi:b[t+'_hi'],n:b.n_points,verdict:null,source:'data/forecast/backtest.json'});
+  for(const b of bs) for(const t of ['r','rho']) if(num(b[t])!=null) out.push({domaine:'prévisions',x:`prévision « ${b.model} » à ${b.horizon} an${b.horizon>1?'s':''}`,y:'production réelle (période de test)',coefficient:b[t],type:t,lo:b[t+'_lo'],hi:b[t+'_hi'],n:b.n_points,unite_n:'points',n_bootstrap_unit:b.n_mines,verdict:null,source:'data/forecast/backtest.json'});
   dom.push({domaine:'prévisions',n:out.filter(r=>r.domaine==='prévisions').length,message:rb.status==='fulfilled'?null:'source indisponible'});
   dom.push({domaine:'veille',n:0,message:'voir Veille › Corrélations événements ↔ satellite'});
   return {rows:out,domaines:dom};
+}
+// unité de n quand le serveur ne la donne pas (serveur plus ancien) : celle de chaque domaine
+const DOM_UNIT={calibration:'mines',veille:'mois-événements','sociétés':'points','prévisions':'points'};
+function srRow(sr){
+  const unit=typeof sr.unite_n==='string'&&sr.unite_n?sr.unite_n:Object.hasOwn(DOM_UNIT,String(sr.domaine))?DOM_UNIT[sr.domaine]:'';
+  const nb=num(sr.n_bootstrap_unit), info=[esc(sr.domaine),esc(sr.source||''),nb!=null?`IC rééchantillonné sur ${fmt(nb,0)} unités indépendantes`:''].filter(Boolean).join(' · ');
+  return `<div class="cbrow"><div class="rel"><b>${esc(sr.x)} ↔ ${esc(sr.y)}</b><small>${info}</small></div><div>${corrBadge({type:sr.type,v:sr.coefficient,lo:sr.lo,hi:sr.hi,n:sr.n,nUnit:unit,verdict:sr.verdict})}</div></div>`;
 }
 function allCorrDraw(){
   const d=PG.summary, el=$('#me_corr'); if(!d) return;
@@ -1912,7 +1931,7 @@ function allCorrDraw(){
   const nOf=n=>n==='tous'?rows.length:rows.filter(sr=>sr.domaine===n).length;
   const msgs=doms.filter(x=>x.message&&(PG.corrDom==='tous'||x.domaine===PG.corrDom)).map(x=>`<li>${esc(x.domaine)} : ${esc(x.message)}</li>`).join('');
   el.innerHTML=`<div class="seg" role="group" aria-label="Domaine">${names.map(n=>`<button type="button" data-dom="${esc(n)}" aria-pressed="${n===PG.corrDom}">${esc(n)} <span class="meta">${fmt(nOf(n),0)}</span></button>`).join('')}</div>
-    ${shown.length?`<div class="panel" style="padding:4px 20px">${shown.map(sr=>`<div class="cbrow"><div class="rel"><b>${esc(sr.x)} ↔ ${esc(sr.y)}</b><small>${esc(sr.domaine)} · ${esc(sr.source||'')}</small></div><div>${corrBadge({type:sr.type,v:sr.coefficient,lo:sr.lo,hi:sr.hi,n:sr.n,verdict:sr.verdict})}</div></div>`).join('')}</div>`:box('Aucune corrélation dans ce domaine pour l’instant.')}
+    ${shown.length?`<div class="panel" style="padding:4px 20px">${shown.map(srRow).join('')}</div>`:box('Aucune corrélation dans ce domaine pour l’instant.')}
     ${msgs?`<ul class="note" style="margin-top:12px;padding-left:18px">${msgs}</ul>`:''}`;
   el.querySelectorAll('button[data-dom]').forEach(b=>b.onclick=()=>{ PG.corrDom=b.dataset.dom; allCorrDraw(); });
 }

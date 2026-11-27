@@ -203,6 +203,9 @@ def test_pages_read_only_contract_fields():
     mines = _doc_fields(r"`GET /api/company\?", "mines")
     inv = _doc_fields(r"`GET /api/company\?", "investissements")
     summary = {"domaine", "x", "y", "coefficient", "type", "lo", "hi", "n", "verdict", "source"}
+    # contrat partagé de cette révision (producteurs : companies, forecast, api), lu défensivement par la page
+    corr |= {"verdict_r", "verdict_rho", "q_value", "lag", "rho_lo", "rho_hi"}
+    summary |= {"unite_n", "n_bootstrap_unit"}
     for var, allowed in (("co", companies), ("bt", backtest), ("bt2", backtest), ("cc", corr), ("fp", prev),
                          ("mi", mines), ("iv", inv), ("sr", summary)):
         got = _used(var, js)
@@ -220,9 +223,10 @@ def test_server_strings_never_interpolated_raw():
 def test_every_relationship_carries_the_badge():
     js = script()
     for fn in ("function ccRow", "function fcQuality", "async function btPage", "const calRow",
-               "function allCorrDraw", "const vBadge"):
+               "function srRow", "const vBadge"):
         body = js[js.index(fn):js.index(fn) + 2500]
         assert "corrBadge(" in body, fn
+    assert "shown.map(srRow)" in js  # page « toutes les corrélations »
     badge = js[js.index("function corrBadge"):js.index("// couleurs des types")]
     for part in ("IC 90 %", "n = ", "verdict", "aria-label"):
         assert part in badge, part
@@ -359,6 +363,30 @@ const done=()=>fetches.forEach(f=>f.done=true);
       &&h.includes('&lt;b&gt;Plan')
       &&charts.some(c=>c.el===$el('#co_cap'))&&clean(h))||h;
   });
+  await check('company_corr_verdicts_per_coefficient',async()=>{
+    done(); P.PG.co=null; P.show('societes','capex');
+    const base={x:'capex_glog',y:'prod_growth',r:0.5,r_lo:0.2,r_hi:0.7,rho:0.4,rho_lo:0.1,rho_hi:0.6,
+      n_points:30};
+    take('/api/companies/correlations').ok({methode:'m',rows:[
+      {...base,decalage:0,n_societes:4,q_value:0.04,verdict:'non démontré : l’IC 90 % de ρ contient 0',
+        verdict_r:'trop peu de données (n = 30, sociétés = 4)',verdict_rho:'non démontré (q ≥ 0,10)'},
+      {...base,decalage:1,n_societes:2,verdict:'trop peu de données (n = 30, sociétés = 2)'},
+      {...base,decalage:2,n_societes:40,verdict:'lien positif démontré (IC 90 % de ρ au-dessus de 0)'}]});
+    take('/api/companies?limit=5000').ok({total:0,rows:[]});
+    await flush(); const h=$el('#co_capex').innerHTML;
+    const rows=h.split('class="cbrow"').slice(1);
+    const pills=r=>[...r.matchAll(/class="pill ([\w-]+)">([^<]*)</g)].map(m=>[m[1],m[2]]);
+    const [a,b,c]=rows.map(pills);
+    // ligne 1 : chaque coefficient porte son propre verdict ; ligne 2 (serveur ancien) : « trop peu »
+    // vaut pour r ; ligne 3 : le verdict de ρ n'est jamais recopié sur r (verdict calculé, dit comme tel)
+    const ok=rows.length===3&&a[0][1].startsWith('trop peu')&&a[0][0]==='p-warn'
+      &&a[1][1]==='non démontré (q ≥ 0,10)'&&a[1][0]==='p-neu'
+      &&b[0][1].startsWith('trop peu')&&b[1][1].startsWith('trop peu')
+      &&c[0][1].includes('calculé')&&c[0][0]==='p-pos'&&c[1][0]==='p-acc'
+      &&rows[0].includes('q (Benjamini-Hochberg) 0,04')&&rows[0].includes('rééchantillonné sur 4 sociétés')
+      &&clean(h);
+    return ok||JSON.stringify([a,b,c]);
+  });
   await check('capex_page_empty',async()=>{
     done(); P.PG.co=null; P.show('societes','capex');
     take('/api/companies/correlations').ok({rows:[],methode:'m',message:'Aucune donnée société'});
@@ -419,10 +447,11 @@ const done=()=>fetches.forEach(f=>f.done=true);
 })();
 """
 
-CHECKS = ["badge", "badge_never_upgrades_server_verdict",
-          "routes", "one_view_at_a_time", "directory_empty_message", "directory_escapes_names",
-          "company_sheet_with_badges", "capex_page_empty", "backtest_page", "backtest_empty",
-          "forecast_without_series", "forecast_with_series", "all_correlations_fallback", "calibration_page"]
+CHECKS = ["badge", "badge_never_upgrades_server_verdict", "routes", "one_view_at_a_time",
+          "directory_empty_message", "directory_escapes_names", "company_sheet_with_badges",
+          "company_corr_verdicts_per_coefficient", "capex_page_empty", "backtest_page", "backtest_empty",
+          "forecast_without_series", "forecast_with_series", "all_correlations_fallback",
+          "calibration_page"]
 
 
 @pytest.fixture(scope="module")
