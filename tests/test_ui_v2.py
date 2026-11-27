@@ -173,7 +173,7 @@ def _api_routes() -> set[str]:
 
 def test_pages_only_use_contract_routes():
     contract = set(re.findall(r"`GET (/api/[\w/]+)", section3()))
-    assert len(contract) == 5
+    assert len(contract) >= 5  # les cinq routes d'origine, plus celles que la doc ajoute (synthèse)
     used = set(re.findall(r"'(/api/[\w/.]+)", script()))
     assert contract <= used, contract - used  # chaque route du § 3 sert à l'interface
     assert used <= _api_routes() | contract, used - _api_routes() - contract
