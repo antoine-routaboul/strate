@@ -273,14 +273,43 @@ const done=()=>fetches.forEach(f=>f.done=true);
     const d=P.corrBadge({type:'r',v:null}), e=P.corrBadge({type:'rho',v:0.3,n:20});
     const f=P.corrBadge({type:'r',v:0.14,lo:0.01,hi:0.25,n:50,verdict:'non démontré : contient 0'});
     const g=P.corrBadge({type:'rho',v:-0.0001,lo:-0.004,hi:0.3,n:9});
+    const h=P.corrBadge({type:'phi',v:0.12,lo:0.03,hi:0.2,n:14,nUnit:'mines',verdict:'non démontré'});
+    const i=P.corrBadge({type:'rho',v:0.3,n:20,ciNote:'intervalle non publié par le rétro-test'});
+    // sans verdict du serveur : verdict calculé, dit comme tel, jamais avec l'accent « démontré »
     const ok=a.includes('ρ')&&a.includes('+0,42')&&a.includes('IC 90 % +0,18 à +0,61')&&a.includes('n = 34')
-      &&a.includes('lien positif')&&a.includes('p-acc')
+      &&a.includes('lien positif (calculé d’après l’IC 90 % seul)')&&a.includes('p-pos')&&!a.includes('p-acc')
       &&!b.includes('<img')&&b.includes('&lt;img')&&b.includes('p-neu')
-      &&c.includes('lift ×')&&c.includes('2,50')&&c.includes('risque accru')&&c.includes('n = 40 mois')
+      &&c.includes('lift ×')&&c.includes('2,50')&&c.includes('risque accru (calculé')
+      &&c.includes('n = 40 mois')
       &&d.includes('non calculable')&&e.includes('IC 90 % indisponible')&&e.includes('p-warn')
-      &&f.includes('lien positif')&&!f.includes('contient 0')  // verdict contraire à cet IC : remplacé
-      &&g.includes('0,00')&&g.includes('−0,004')&&!g.includes('−0,00 ')&&[a,b,c,d,e,f,g].every(clean);
-    return ok||[a,b,c,d,e,f,g].join('\n');
+      // verdict du serveur affiché tel quel, même si l'IC affiché exclut 0 : le badge ne l'améliore pas
+      &&f.includes('non démontré : contient 0')&&!f.includes('lien positif')&&f.includes('p-neu')
+      &&g.includes('0,00')&&g.includes('−0,004')&&!g.includes('−0,00 ')
+      &&h.includes('φ')&&h.includes('n = 14 mines')&&h.includes('>non démontré<')&&h.includes('p-neu')
+      &&i.includes('intervalle non publié par le rétro-test')&&i.includes('cb-note')
+      &&[a,b,c,d,e,f,g,h,i].every(clean);
+    return ok||[a,b,c,d,e,f,g,h,i].join('\n');
+  });
+  await check('badge_never_upgrades_server_verdict',()=>{
+    // cas mesurés par la revue : chaque verdict du serveur reste tel quel, style neutre ou avertissement
+    const D='lien positif démontré (IC 90 % de ρ au-dessus de 0)';
+    const I='intervalle incalculable : chiffres indicatifs';
+    const cases=[[{type:'lift',v:2.1,lo:1.3,hi:3.4,n:20,verdict:'exploratoire'},'p-warn'],
+      [{type:'lift',v:1.8,lo:1.1,hi:2.9,n:30,verdict:'non démontré'},'p-neu'],
+      [{type:'lift',v:3,lo:1.2,hi:6,n:4,verdict:'trop peu de données'},'p-warn'],
+      [{type:'rho',v:0.7,lo:0.2,hi:0.9,n:6,verdict:'trop peu de données (n = 6, sociétés = 2)'},'p-warn'],
+      [{type:'rho',v:0.7,lo:0.2,hi:0.9,n:60,verdict:I},'p-warn'],
+      // verdict « démontré » mais IC affiché contenant 0 : texte gardé, style neutre (jamais l'accent)
+      [{type:'rho',v:0.1,lo:-0.1,hi:0.3,n:60,verdict:D},'p-neu'],
+      // l'appelant impose « demo » sur un verdict non démontré : refusé
+      [{type:'lift',v:2,lo:1.2,hi:3,n:40,verdict:'non démontré',state:'demo'},'p-neu']];
+    const bad=cases.filter(([o,cls])=>{ const h=P.corrBadge(o);
+      return !h.includes('>'+o.verdict.replace(/&/g,'&amp;')+'<')||!h.includes(cls)||h.includes('p-acc')
+        ||/risque accru|lien positif \(/.test(h.replace(o.verdict,'')); });
+    const demo=P.corrBadge({type:'rho',v:0.5,lo:0.2,hi:0.7,n:80,verdict:D});
+    const star=P.corrBadge({type:'lift',v:2,lo:1.3,hi:3,n:40,verdict:'★ lien démontré',state:'demo'});
+    return (!bad.length&&demo.includes('p-acc')&&star.includes('p-acc'))
+      ||JSON.stringify(bad.map(([o])=>P.corrBadge(o)))+demo+star;
   });
   await check('routes',()=>{
     const cases=[['',{v:'map'}],['#/carte',{v:'map'}],['#/screener',{v:'screener'}],
@@ -390,7 +419,8 @@ const done=()=>fetches.forEach(f=>f.done=true);
 })();
 """
 
-CHECKS = ["badge", "routes", "one_view_at_a_time", "directory_empty_message", "directory_escapes_names",
+CHECKS = ["badge", "badge_never_upgrades_server_verdict",
+          "routes", "one_view_at_a_time", "directory_empty_message", "directory_escapes_names",
           "company_sheet_with_badges", "capex_page_empty", "backtest_page", "backtest_empty",
           "forecast_without_series", "forecast_with_series", "all_correlations_fallback", "calibration_page"]
 

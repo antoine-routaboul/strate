@@ -182,6 +182,7 @@ td a.nm,td .nm{color:var(--text);font-weight:500}
 .cb-v{font-weight:600;font-size:13px;color:var(--text)}.cb-v i{font-style:normal;font-weight:400;color:var(--muted);margin-right:3px}
 .cb svg{display:block;width:84px;height:12px;flex:none}
 .cb-ci,.cb-n{color:var(--muted)}
+.cb-note{grid-column:1/-1;color:var(--muted);font-size:12px;line-height:16px}
 .cblist{display:flex;flex-direction:column}
 .panel{container-type:inline-size}
 .cbrow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,750px);gap:6px 24px;align-items:center;padding:12px 0;border-bottom:1px solid var(--rule)}
@@ -1008,29 +1009,41 @@ const f2=v=>Number(v).toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFra
 const fx2=v=>{ const a=Math.abs(v); return a>0&&a<0.01?a.toLocaleString('fr-FR',{minimumFractionDigits:3,maximumFractionDigits:3}):f2(a); };
 const sg2=v=>{ const r=Math.abs(v)<0.0005?0:v; return (r>0?'+':r<0?'−':'')+fx2(r); };
 // Badge de corrélation, unique composant pour toute relation affichée : coefficient, IC 90 %, n, verdict et bande
-// de l'intervalle (r et ρ sur [−1, 1], nul à 0 ; lift sur une échelle log ÷8…×8, nul à 1).
-// o = {type:'r'|'rho'|'lift', v, lo, hi, n, nUnit, verdict, state:'demo'|'nul'|'few'|'na'}. Tout est échappé.
+// de l'intervalle (r, ρ et φ sur [−1, 1], nul à 0 ; lift sur une échelle log ÷8…×8, nul à 1).
+// o = {type:'r'|'rho'|'phi'|'lift', v, lo, hi, n, nUnit, verdict, state:'demo'|'pos'|'nul'|'few'|'na', ciNote}.
+// Tout est échappé. Règle : le badge n'améliore jamais un verdict du serveur. Un verdict reçu est affiché tel quel,
+// avec le style qu'il implique (au mieux neutre si l'intervalle affiché contient la valeur nulle). Sans verdict reçu,
+// le badge en calcule un d'après l'IC seul et le dit : il ignore les règles du module (q-valeur, n minimal).
+// ciNote : pourquoi l'intervalle manque, en note discrète, plutôt qu'un chiffre nu.
+const CB_FEW=/trop peu|exploratoire|indisponible|incalculable|non calculable|indicatif/i;
+const CB_NUL=/non d[ée]montr|inclu|contient|aucun lien|pas de lien/i;
+const CB_DEMO=/d[ée]montr/i, CB_POS=/lien (positif|négatif|inverse)|risque (accru|réduit)|exclut/i;
 function corrBadge(o){
   o=o&&typeof o==='object'?o:{};
-  const t=o.type==='lift'?'lift':o.type==='r'?'r':'rho', sym=t==='lift'?'lift ×':t==='r'?'r':'ρ';
-  const v=num(o.v), lo=num(o.lo), hi=num(o.hi), n=num(o.n), nul=t==='lift'?1:0;
-  const ex=lo!=null&&hi!=null&&(lo>nul||hi<nul);
-  const auto=v==null?'non calculable':lo==null||hi==null?'IC 90 % indisponible'
-    :!ex?`non démontré (IC 90 % inclut ${nul})`:t==='lift'?(lo>1?'risque accru':'risque réduit'):(lo>0?'lien positif':'lien négatif');
-  // verdict du serveur gardé s'il dit la même chose que l'intervalle affiché ; sinon (verdict calculé sur un autre
-  // coefficient de la même ligne, par ex. ρ pour une ligne r) le verdict de cet intervalle. État imposé : verdict tel quel.
-  const sv=o.verdict!=null&&String(o.verdict).trim()?String(o.verdict):null, no=/non d[ée]montr|inclu|contient|trop peu|exploratoire|indisponible|calculable/i;
-  const verdict=sv&&(o.state||v==null||lo==null||hi==null||(ex?!no.test(sv):no.test(sv)))?sv:auto;
-  const state=['demo','nul','few','na'].includes(o.state)?o.state:v==null||lo==null||hi==null?'na':ex?'demo':'nul';
-  const pill={demo:'p-acc',nul:'p-neu',few:'p-warn',na:v==null?'p-neu':'p-warn'}[state];
+  const t=['lift','r','phi'].includes(o.type)?o.type:'rho', sym={lift:'lift ×',r:'r',phi:'φ',rho:'ρ'}[t];
+  const v=num(o.v), lo=num(o.lo), hi=num(o.hi), n=num(o.n), nul=t==='lift'?1:0, hasCI=lo!=null&&hi!=null;
+  const ex=hasCI&&(lo>nul||hi<nul);
+  const sv=o.verdict!=null&&String(o.verdict).trim()?String(o.verdict):null;
+  const dir=t==='lift'?(lo>1?'risque accru':'risque réduit'):(lo>0?'lien positif':'lien négatif');
+  const auto=v==null?'non calculable':!hasCI?'IC 90 % indisponible'
+    :!ex?`non démontré (IC 90 % inclut ${nul})`:`${dir} (calculé d’après l’IC 90 % seul)`;
+  const verdict=sv??auto;
+  // style impliqué par le verdict affiché ; « demo » (accent) seulement pour un verdict « démontré » cohérent avec l'IC
+  const kind=s=>CB_FEW.test(s)?'few':CB_NUL.test(s)?'nul':hasCI&&!ex?'nul':CB_DEMO.test(s)?'demo':CB_POS.test(s)?'pos':'nul';
+  let state=sv?kind(sv):v==null?'na':!hasCI?'na':ex?'pos':'nul';
+  // un état imposé par l'appelant peut abaisser le style, jamais le relever au-delà de ce que dit le verdict
+  const RANK={na:0,few:0,nul:0,pos:1,demo:2};
+  if(Object.hasOwn(RANK,String(o.state))&&RANK[o.state]<=RANK[state]) state=o.state;
+  const pill={demo:'p-acc',pos:'p-pos',nul:'p-neu',few:'p-warn',na:v==null?'p-neu':'p-warn'}[state];
   const X=x=>{ if(t==='lift'){ const l=Math.log2(Math.max(1/8,Math.min(8,x))); return 2+(l+3)/6*80; } return 2+(Math.max(-1,Math.min(1,x))+1)/2*80; };
   const ink=state==='demo'?'var(--accent)':'var(--muted)';
-  const svg=`<svg viewBox="0 0 84 12" aria-hidden="true"><line x1="2" y1="6" x2="82" y2="6" stroke="var(--rule)" stroke-width="2"/><line x1="${X(nul).toFixed(1)}" y1="1" x2="${X(nul).toFixed(1)}" y2="11" stroke="var(--faint)" stroke-width="1"/>${lo!=null&&hi!=null?`<rect x="${X(lo).toFixed(1)}" y="4" width="${Math.max(1,X(hi)-X(lo)).toFixed(1)}" height="4" rx="1" fill="${ink}" opacity=".55"/>`:''}${v!=null?`<rect x="${(X(v)-1).toFixed(1)}" y="1" width="2" height="10" fill="var(--text)"/>`:''}</svg>`;
+  const svg=`<svg viewBox="0 0 84 12" aria-hidden="true"><line x1="2" y1="6" x2="82" y2="6" stroke="var(--rule)" stroke-width="2"/><line x1="${X(nul).toFixed(1)}" y1="1" x2="${X(nul).toFixed(1)}" y2="11" stroke="var(--faint)" stroke-width="1"/>${hasCI?`<rect x="${X(lo).toFixed(1)}" y="4" width="${Math.max(1,X(hi)-X(lo)).toFixed(1)}" height="4" rx="1" fill="${ink}" opacity=".55"/>`:''}${v!=null?`<rect x="${(X(v)-1).toFixed(1)}" y="1" width="2" height="10" fill="var(--text)"/>`:''}</svg>`;
   const val=v==null?'—':t==='lift'?f2(v):sg2(v);
-  const ci=lo!=null&&hi!=null?`IC 90 % ${t==='lift'?f2(lo):sg2(lo)} à ${t==='lift'?f2(hi):sg2(hi)}`:'IC 90 % —';
+  const ci=hasCI?`IC 90 % ${t==='lift'?f2(lo):sg2(lo)} à ${t==='lift'?f2(hi):sg2(hi)}`:'IC 90 % —';
   const nn=n!=null?`n = ${fmt(n,0)}${o.nUnit?' '+String(o.nUnit):''}`:'n —';
-  const label=`${sym} ${val}, ${ci}, ${nn}, ${verdict}`;
-  return `<span class="cb" role="group" aria-label="${esc(label)}" title="${esc(label)}"><span class="cb-v"><i>${esc(sym)}</i>${esc(val)}</span>${svg}<span class="cb-ci">${esc(ci)}</span><span class="cb-n">${esc(nn)}</span><span class="pill ${pill}">${esc(verdict)}</span></span>`;
+  const why=!hasCI&&o.ciNote?String(o.ciNote):'';
+  const label=`${sym} ${val}, ${ci}${why?' ('+why+')':''}, ${nn}, ${verdict}`;
+  return `<span class="cb" role="group" aria-label="${esc(label)}" title="${esc(label)}"><span class="cb-v"><i>${esc(sym)}</i>${esc(val)}</span>${svg}<span class="cb-ci">${esc(ci)}</span><span class="cb-n">${esc(nn)}</span><span class="pill ${pill}">${esc(verdict)}</span>${why?`<span class="cb-note">${esc(why)}</span>`:''}</span>`;
 }
 // couleurs des types d'événements : teintes sourdes, une par type (catégories, pas des signaux)
 const VT_COL={accident:'#c2412d',securite:'#b5527a',social:'#c7832b',juridique:'#6f7f96',environnement:'#5b8a3a',
