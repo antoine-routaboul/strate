@@ -1023,7 +1023,30 @@ CO_ROW = {"id": (), "nom": ("name",), "pays": ("country",), "tickers": (), "cik"
 CO_CORR = {"x": (), "y": (), "decalage": ("lag",), "r": ("pearson_r",), "r_lo": ("pearson_lo",),
            "r_hi": ("pearson_hi",), "rho": ("spearman_rho", "spearman"), "rho_lo": ("spearman_lo",),
            "rho_hi": ("spearman_hi",), "n_societes": ("n_companies",), "n_points": ("n",), "q_value": (),
-           "verdict_r": (), "verdict_rho": ("verdict",), "verdict": ("verdict_rho",)}
+           "q_r": (), "q_rho": (), "verdict_r": (), "verdict_rho": ("verdict",), "verdict": ("verdict_rho",)}
+Q_SOCIETES = 0.10  # « démontré » exige q < 0,10 (companies.Q_MAX)
+
+
+def _demontre(v) -> bool:
+    """Le verdict affirme-t-il un lien (« lien positif démontré », « lien démontré ») ?"""
+    t = v.strip().lower() if isinstance(v, str) else ""
+    return "démontré" in t and not t.startswith(("non", "pas"))
+
+
+def _guard_verdicts(out: dict, raw: dict) -> dict:
+    """Un « démontré » sans q < 0,10 (ancien format : verdict seul, sans q-valeur) n'est jamais transmis tel
+    quel : il redevient un verdict de repli tiré de l'IC du coefficient, qui ne dit pas « démontré »."""
+    for key, typ in (("verdict_r", "r"), ("verdict_rho", "rho"), ("verdict", "rho")):
+        v = out.get(key)
+        if not _demontre(v):
+            continue
+        q = _finite(_pick(raw, f"q_{typ}", "q_value"))
+        if isinstance(q, (int, float)) and not isinstance(q, bool) and q < Q_SOCIETES:
+            continue
+        manque = "q-valeur absente du module" if not isinstance(q, (int, float)) else f"q = {q:.2f} ≥ 0,10"
+        out[key] = _verdict_sans_test(out.get(f"{typ}_lo"), out.get(f"{typ}_hi"), 0.0, SYM[typ],
+                                      f"{manque} (« démontré » exige q < 0,10)")
+    return out
 
 
 def _companies_rows() -> tuple[list[dict], str | None]:
@@ -1153,7 +1176,8 @@ def _company_payload(d: dict) -> dict:
         "mines": mines,
         "faits": _faits(d),
         "investissements": [_shape(r, INV) for r in _rows(_pick(d, "investissements", "announcements"))],
-        "correlations": [_shape(r, CO_CORR_SOCIETE) for r in _rows(d.get("correlations"))],
+        "correlations": [_guard_verdicts(_shape(r, CO_CORR_SOCIETE), r)
+                         for r in _rows(d.get("correlations"))],
     }
 
 
@@ -1195,7 +1219,7 @@ def _companies_corr() -> tuple[list[dict], str | None, str, list[dict]]:
     if isinstance(res, dict) and isinstance(res.get("methode"), str) and res["methode"]:
         methode = res["methode"]
     raw = [r for r in _rows(res) if r.get("portee") in (None, "ensemble")]  # table globale seulement
-    rows = [_shape(r, CO_CORR) for r in raw]
+    rows = [_guard_verdicts(_shape(r, CO_CORR), r) for r in raw]
     return rows, None if rows else MSG_SOCIETES, methode, raw
 
 

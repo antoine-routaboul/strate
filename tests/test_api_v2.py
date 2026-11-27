@@ -758,6 +758,29 @@ def test_companies_correlations_contract_columns(client, monkeypatch):
         None, "non démontré (ρ)", "non démontré (ρ)", None)
 
 
+def test_companies_legacy_demontre_without_q_is_downgraded(client, monkeypatch):
+    """Ancien format : un « démontré » sans q-valeur (ou avec q ≥ 0,10) ne passe pas tel quel ; un
+    « démontré » avec q < 0,10 est transmis. Même garde pour la table globale, le résumé et la fiche."""
+    legacy = {**CORR[0], "verdict": "lien positif démontré (IC 90 % de ρ au-dessus de 0)", "rho_lo": -0.1,
+              "rho_hi": 0.3}
+    hors_ic = {**CORR[0], "x": "effectifs", "verdict_r": "lien positif démontré", "q_r": 0.3,
+               "verdict_rho": "lien positif démontré", "q_rho": 0.04}
+    fake(monkeypatch, "companies", correlations=lambda: {"rows": [legacy, hors_ic], "methode": "m"},
+         company=lambda i: {"profil": {"id": i}, "correlations": [{**legacy, "q_value": None}]})
+    a, b = client.get("/api/companies/correlations").json()["rows"]
+    assert a["q_value"] is None and not api._demontre(a["verdict_rho"]) and not api._demontre(a["verdict"])
+    assert a["verdict_rho"] == "non démontré : l'IC 90 % de ρ contient 0"
+    assert b["verdict_r"].startswith("non démontré : IC 90 % de r hors de 0") and "q = 0.30" in b["verdict_r"]
+    assert b["verdict_rho"] == "lien positif démontré"  # q_rho = 0,04 : le verdict du module tient
+    summ = client.get("/api/correlations/summary").json()["rows"]
+    soc = [r for r in summ if r["domaine"] == "sociétés"]
+    assert [api._demontre(r["verdict"]) for r in soc] == [False, False, False, True]
+    c = client.get("/api/company", params={"id": "bhp"}).json()["correlations"][0]
+    assert not api._demontre(c["verdict_rho"]) and "q-valeur absente" not in c["verdict_rho"]
+    assert c["verdict_rho"] == "non démontré : l'IC 90 % de ρ contient 0"
+    assert c["verdict_r"] is None
+
+
 def test_companies_correlations_empty(client, monkeypatch):
     fake(monkeypatch, "companies", correlations=lambda: [])
     d = client.get("/api/companies/correlations").json()
