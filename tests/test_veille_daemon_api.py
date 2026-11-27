@@ -803,6 +803,31 @@ def test_status_watch_does_not_replace_set_status_and_is_per_thread(db):
     con.close()
 
 
+# -- copie de la base (rapatrier la veille d'une machine du cloud) -----------------------------------------
+def test_backup_copies_a_consistent_database_while_open(db, tmp_path, monkeypatch, capsys):
+    con = store.init(db)
+    store.set_status(con, "collecte", True, "ok", fichiers=3)
+    con.commit()  # la base reste ouverte, comme pendant que le service tourne
+    dest = tmp_path / "rapatrie" / "veille.db"
+    r = store.backup(dest, db)
+    assert r["octets"] > 0 and not dest.with_name("veille.db.tmp").exists()
+    c2 = sqlite3.connect(dest)
+    assert c2.execute("SELECT message FROM pipeline_status WHERE stage='collecte'").fetchone() == ("ok",)
+    c2.close()
+    con.close()
+    with pytest.raises(ValueError):
+        store.backup(db, db)
+    with pytest.raises(FileNotFoundError):
+        store.backup(dest, tmp_path / "absente.db")
+    monkeypatch.setattr(store, "DB_PATH", db)
+    monkeypatch.setattr(sys, "argv", ["strate", "veille", "backup", "--to", str(tmp_path / "cli.db")])
+    cli.main()
+    assert "copiée depuis" in capsys.readouterr().out and (tmp_path / "cli.db").exists()
+    monkeypatch.setattr(sys, "argv", ["strate", "veille", "backup"])
+    with pytest.raises(SystemExit, match="--to"):
+        cli.main()
+
+
 @pytest.mark.skipif(not shutil.which("systemd-analyze") or not shutil.which("uv"),
                     reason="systemd-analyze absent (macOS) : vérifié sur la CI Linux")
 def test_systemd_unit_passes_systemd_analyze_verify(tmp_path, monkeypatch):
@@ -834,3 +859,17 @@ def test_user_env_restores_runtime_dir_outside_a_login_session(monkeypatch, tmp_
     assert daemon._user_env()["XDG_RUNTIME_DIR"] == str(tmp_path)
     monkeypatch.setenv("XDG_RUNTIME_DIR", "/deja/la")
     assert daemon._user_env()["XDG_RUNTIME_DIR"] == "/deja/la"
+
+
+def test_backup_path_with_hash_copies_the_right_file(tmp_path):
+    src = tmp_path / "q#dir" / "veille.db"
+    con = store.init(src)
+    store.set_status(con, "collecte", True, "vrai fichier")
+    con.commit()
+    con.close()
+    dest = tmp_path / "copie.db"
+    store.backup(dest, src)
+    c = sqlite3.connect(dest)
+    assert c.execute("SELECT message FROM pipeline_status").fetchone() == ("vrai fichier",)
+    c.close()
+    assert not (tmp_path / "q").exists()

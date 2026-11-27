@@ -235,3 +235,28 @@ def set_status(con: sqlite3.Connection, stage: str, ok: bool, message: str = "",
     seen = _written.get()
     if seen is not None:
         seen[stage] = row
+
+
+def backup(dest: Path, src: Path | None = None) -> dict:
+    """Copie cohérente de la base pendant que le service écrit (API de sauvegarde de SQLite, pas un cp :
+    une copie de fichier prise au milieu d'une transaction ou sans le journal WAL serait abîmée).
+
+    Sert à rapatrier sur le Mac la base d'une veille qui tourne sur une machine du cloud."""
+    src, dest = Path(src or DB_PATH), Path(dest)
+    if not src.exists():
+        raise FileNotFoundError(f"pas de base de veille à copier : {src}")
+    if dest.resolve() == src.resolve():
+        raise ValueError("la copie doit aller ailleurs que la base elle-même")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.unlink(missing_ok=True)
+    # as_uri encode # ? % et les espaces : un « # » dans le chemin couperait sinon l'URI (mauvais fichier)
+    s = sqlite3.connect(src.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
+    d = sqlite3.connect(tmp)
+    try:
+        s.backup(d)
+    finally:
+        d.close()
+        s.close()
+    tmp.replace(dest)  # la destination n'est jamais à moitié écrite
+    return {"source": str(src), "copie": str(dest), "octets": dest.stat().st_size}

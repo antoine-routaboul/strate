@@ -10,6 +10,7 @@
   uv run strate veille run     # veille en continu (toutes les 15 min) ; install/uninstall : service
                                # launchd (Mac) ou systemd (Linux)
   uv run strate veille status  # état de chaque étape et du service
+  uv run strate veille backup --to copie.db  # copie cohérente de la base, même service en marche
   uv run strate forecast backtest  # rétro-test walk-forward → data/forecast/backtest.json
   uv run strate forecast ledger    # prévisions datées ajoutées au registre (jamais réécrites)
   uv run strate companies refresh [--max-companies 50]  # faits SEC/Wikidata, borné, reprend ensuite
@@ -100,6 +101,8 @@ def serve(args) -> None:
 
 def veille_cmd(args) -> None:
     import json
+    import sqlite3
+    from pathlib import Path
 
     from strate.veille import daemon
 
@@ -134,6 +137,16 @@ def veille_cmd(args) -> None:
             if r["charge"] and r.get("message"):  # service lancé, mais avertissement (linger refusé…)
                 print(f"attention : {r['message']}")
             print(f"journal : {daemon.LOG_PATH}")
+    elif args.action == "backup":
+        from strate.veille import store
+
+        if not args.to:
+            raise SystemExit("backup : indiquer la copie avec --to (ex. --to /tmp/veille.db)")
+        try:
+            r = store.backup(Path(args.to))
+        except (OSError, ValueError, sqlite3.Error) as e:
+            raise SystemExit(f"copie impossible : {e}") from None
+        print(f"{r['copie']} ({r['octets']:,} octets) copiée depuis {r['source']}")
     elif args.action == "uninstall":
         try:
             r = daemon.uninstall()
@@ -319,7 +332,7 @@ def main() -> None:
     s.add_argument("--port", type=int, default=7779)
     s.set_defaults(fn=serve)
     v = sub.add_parser("veille", help="veille d'actualité minière en continu (GDELT, toutes langues)")
-    v.add_argument("action", choices=["once", "run", "status", "install", "uninstall"])
+    v.add_argument("action", choices=["once", "run", "status", "install", "uninstall", "backup"])
     v.add_argument("--stage", action="append", choices=["collecte", "normalisation", "correlation"],
                    help="once : seulement cette étape (répétable)")
     v.add_argument("--backfill-hours", type=int, help="once : historique GDELT rattrapé au 1er lancement")
@@ -328,6 +341,7 @@ def main() -> None:
                    help="run : secondes entre deux cycles (au moins 60)")
     v.add_argument("--dry-run", action="store_true",
                    help="install : affiche le plist (Mac) ou l'unité systemd (Linux) sans rien écrire")
+    v.add_argument("--to", help="backup : chemin de la copie de la base")
     v.set_defaults(fn=veille_cmd)
     f = sub.add_parser("forecast", help="prévisions de production auto-évaluées (rétro-test, registre)")
     f.add_argument("action", choices=["backtest", "ledger"],
