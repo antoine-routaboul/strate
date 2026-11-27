@@ -83,9 +83,9 @@ serveur ; NaN et infinis deviennent `null`.
 |---|---|
 | `GET /api/forecast/backtest` | `{"run_at", "periode":{"reglage":"≤2014","test":"2015–2021"}, "rows":[{model, horizon, n_mines, n_points, r, r_lo, r_hi, rho, rho_lo, rho_hi, r_niveau, r_niveau_lo, r_niveau_hi, rho_niveau, rho_niveau_lo, rho_niveau_hi, skill, skill_lo, skill_hi, facteur_median, bon_sens, couverture80, couverture90, note}], "retenu":{horizon: model}, "methode": str}` |
 | `GET /api/forecast/site?site=` | `{"site_id", "nom", "serie", "unite", "derniere_annee", "historique":[{year, value}], "prevision":[{year, horizon, mesure, model, value, lo80, hi80, lo90, hi90}], "qualite":Q, "qualite_par_horizon":[Q], "suivi_site":{model, horizon, n, facteur_median, portee:"mine"}, "backtest_run_at", "message"?}` ; null si pas de série |
-| `GET /api/companies?q=&pays=&limit=` | `{"total", "rows":[{id, nom, pays, tickers, cik, n_mines, capex_dernier, capex_annee, effectifs, effectifs_annee, ca_dernier, devise, investissements_12m}]}` |
+| `GET /api/companies?q=&pays=&limit=` | `{"total", "rows":[{id, nom, pays, tickers, cik, n_mines, capex_dernier, capex_annee, effectifs, effectifs_annee, ca_dernier, ca_annee, devise, devise_capex, devise_ca, investissements_12m}]}` |
 | `GET /api/company?id=` | `{"profil":{…}, "mines":[{site_id, nom, part}], "faits":[{indicateur, annee, valeur, unite, devise, source, formulaire}], "investissements":[{date, montant, devise, categorie, titre, url, site_id}], "correlations":[{x, y, decalage, n, r, r_lo, r_hi, rho, rho_lo, rho_hi, verdict_r, verdict_rho}]}` |
-| `GET /api/companies/correlations` | `{"rows":[{x, y, decalage, r, r_lo, r_hi, rho, rho_lo, rho_hi, n_societes, n_points, q_value, verdict_r, verdict_rho, verdict}], "methode"}` |
+| `GET /api/companies/correlations` | `{"rows":[{x, y, decalage, r, r_lo, r_hi, rho, rho_lo, rho_hi, n_societes, n_points, q_value, q_r, q_rho, verdict_r, verdict_rho, verdict}], "methode"}` |
 | `GET /api/correlations/summary` | `{"rows":[{domaine, x, y, coefficient, type, lo, hi, n, unite_n, n_bootstrap_unit, unite_bootstrap, verdict, source}], "domaines":[{domaine, n, message}]}` |
 
 Précisions :

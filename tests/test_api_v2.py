@@ -1232,3 +1232,10 @@ def test_r_verdict_never_validated_by_rho_q_value():
     assert "démontré" not in res["verdict_r"] or res["verdict_r"].startswith(("non", "pas"))
     ok = api._guard_verdicts(dict(out), {"q_r": 0.01, "q_value": 0.5})
     assert ok["verdict_r"] == "lien positif démontré"
+
+
+def test_companies_rows_keep_each_amount_currency(client, monkeypatch):
+    # CAPEX en USD et CA en AUD : chaque montant garde sa devise
+    fake(monkeypatch, "companies", table=lambda: TABLE.assign(devise_capex="USD", devise_ca="AUD"))
+    row = client.get("/api/companies").json()["rows"][0]
+    assert (row["devise_capex"], row["devise_ca"]) == ("USD", "AUD")

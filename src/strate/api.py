@@ -1032,7 +1032,8 @@ def forecast_site(site: str):
 CO_ROW = {"id": (), "nom": ("name",), "pays": ("country",), "tickers": (), "cik": (), "n_mines": (),
           "capex_dernier": ("capex",), "capex_annee": ("year",), "effectifs": ("employees",),
           "effectifs_annee": ("employees_year",), "ca_dernier": ("revenue",), "devise": ("currency",),
-          "investissements_12m": ()}
+          "investissements_12m": (), "devise_capex": (), "devise_ca": (), "ca_annee": ()}
+# devise_capex / devise_ca : chaque montant garde sa devise (CAPEX et CA peuvent venir de séries différentes)
 # verdict = verdict_rho (ancien format, calculé sur l'IC de ρ) ; verdict_r porte sur l'IC de r ; q_value :
 # Benjamini-Hochberg sur la famille de tests du même calcul. Unité du bootstrap : celle que le module déclare
 # (n_bootstrap_unit, unite_bootstrap : grappes de sociétés sans mine commune), sinon les grappes, sinon les
