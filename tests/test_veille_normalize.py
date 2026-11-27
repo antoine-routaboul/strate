@@ -859,6 +859,9 @@ def test_ambiguous_names_without_documented_record_stay_unattached():
     m, _ = N.match(_doc("Escondida mine strike", antofagasta), ix)
     assert [(x["site_id"], x["method"]) for x in m] == [("e1", "mot+priorité")]
     assert m[0]["strength"] < 0.5         # nom d'un seul mot : toujours sous le seuil sans lieu proche
+    from strate.veille.correlate import MIN_CONF
+    # même avec le classement le plus fort (× 1,0), rattaché mais jamais compté : limite écrite dans la doc
+    assert N.STRENGTH["mot+priorité"] * 1.0 < MIN_CONF <= N.STRENGTH["requête+nom"] * 0.7
     for title in ("Twin Peaks Mine strike", "Nowhere Ridge mine strike"):   # deux documentées / aucune
         m, st = N.match(_doc(title), ix)
         assert m == [] and st["ambigus"] == 1, title

@@ -76,7 +76,11 @@ chaîne : elle est notée et retentée au cycle suivant.
   qui publie sa production, à défaut la seule qui a une emprise mesurée (méthode `…+priorité`, force
   0,7 pour un nom de plusieurs mots, 0,4 pour un mot seul, donc sous le seuil 0,5 sans lieu proche).
   Choix de jugement : une fiche sans données est le plus souvent mineure ou un doublon (« Escondida » :
-  la mine de BHP est la seule de ses 4 homonymes à publier sa production). Deux fiches de même rang :
+  la mine de BHP est la seule de ses 4 homonymes à publier sa production). Limite assumée : « Escondida
+  mine strike » sans lieu à moins de 50 km (Antofagasta est à 150 km) est rattaché à la bonne fiche,
+  mais à 0,4 × 0,9 = 0,36, sous le seuil : il n'entre ni dans le suivi ni dans la corrélation, comme
+  tout mot seul sans lieu proche. Il compte par la requête de la mine (« requête+nom », 0,9) une fois
+  la mine suivie. Deux fiches de même rang :
   pas de rattachement. Sur le catalogue de novembre 2026, 551 des 1 887 clés à homonymes sont ainsi
   tranchées sans lieu. `hint_site` (requête par mine) : rattachement
   direct, confiance plus basse si le nom n'apparaît pas. Le nom est cherché parmi TOUS les noms de la

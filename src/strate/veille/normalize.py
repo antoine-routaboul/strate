@@ -68,7 +68,8 @@ STRENGTH = {
     "mot+lieu": 0.9, "mot+pays": 0.45, "mot": 0.4,      # nom d'un seul mot (plus risqué)
     "contredit": 0.45,                                   # nom présent mais l'article parle d'un autre pays
     "requête+nom": 0.9, "requête": 0.5,
-    # homonymes sans lieu ni pays qui tranche : la seule fiche documentée (emprise ou production)
+    # homonymes sans lieu ni pays qui tranche : la seule fiche documentée (emprise ou production). Un mot
+    # seul (« Escondida ») reste sous le seuil 0,5 comme « mot » et « mot+pays » : rattaché, pas compté.
     "nom+priorité": 0.7, "mot+priorité": 0.4,
 }
 ORG_FACTOR = 0.9         # nom trouvé seulement dans les organisations GDELT (extraites par machine)
