@@ -595,6 +595,8 @@ def test_extract_investment_multilingual(title, domain, montant, devise, cat):
         # offre retirée ou projet abandonné
         "BHP walks away from $49bn Anglo bid",
         "Glencore withdraws $5 billion takeover offer for Teck",
+        "Teck confirms withdrawal of $8 billion bid for Anglo assets",
+        "Rio Tinto withdrew $1bn expansion plan",
         "Company abandons $2 billion expansion plan",
         "Miner abandoned $2 billion expansion plan for new mine",  # « abandoned » + projet, mine plus loin
         "Barrick renonce à son projet d'investissement de 1 milliard de dollars",
@@ -613,6 +615,8 @@ def test_extract_investment_rejections(title):
         ("Company invests $200 million to rehabilitate abandoned mines", "USD"),  # pas un abandon d'offre
         ("US to invest $1 billion to clean up abandoned uranium mines", "USD"),
         ("Government commits $500 million for abandoned coal mines reclamation", "USD"),
+        ("Glencore invests $200m to reduce water withdrawal", "USD"),  # prélèvement d'eau
+        ("Miner to spend $300 million to cut groundwater withdrawals", "USD"),
         ("Recycler invests $150 million in scrap metal plant", "USD"),
         ("Lithium miner attracts investors 200 million dollars for expansion", "USD"),
         ("Amateur 5 million dollar expansion approved", "USD"),
