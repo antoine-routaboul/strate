@@ -93,6 +93,9 @@ uv run pytest -q                 # tests
 Pour les données SEC, définir un en-tête d'identification, que la SEC demande :
 `export STRATE_SEC_UA="Votre-organisation contact@exemple.com"` (sinon un en-tête générique est utilisé).
 
+Pour faire tourner la veille 24 h/24 sur une petite machine Linux dans le cloud (Azure, offre gratuite), voir
+[docs/deploiement-azure.md](docs/deploiement-azure.md).
+
 ## Architecture
 
 ```

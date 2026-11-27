@@ -16,7 +16,7 @@
                 └──────────── tracked (mines à approfondir : historique d'actualité) ◀─────────┘
 
    daemon.py enchaîne 1 → 2 → 3 toutes les 15 min (service launchd « com.strate.veille » sur le Mac,
-   systemd utilisateur « strate-veille » sur Linux).
+   systemd utilisateur « strate-veille » sur Linux, voir docs/deploiement-azure.md).
    Tout passe par une base SQLite unique : src/strate/veille/store.py → data/veille/veille.db.
 ```
 
