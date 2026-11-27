@@ -746,3 +746,22 @@ def test_region_only_names_are_not_query_names(monkeypatch):
     assert collect.mine_names("liste:x", "Nevada") == []
     assert collect.mine_names("liste:x", "Katanga Mine") == []
     assert collect.mine_names("liste:x", "Norilsk Nickel") == ["Norilsk Nickel"]
+
+
+def test_mine_names_keeps_country_word_name_of_major_mine(monkeypatch):
+    # « Cobre Panama » (substance + pays) : nom complet gardé et cité en premier ; « Chile Copper »,
+    # « Nevada Gold Mines » (tournures de titres) et les régions (« New Mexico », « Western Australia »)
+    # restent refusés
+    cat = pd.DataFrame([
+        {"id": "cp", "name": "Cobre Panama", "aliases": "Cerro Petaquilla;Molejon;Cobre mine",
+         "wikidata": None},
+        {"id": "ch", "name": "Chile Copper", "aliases": "Panama Copper", "wikidata": None},
+    ]).set_index("id", drop=False)
+    monkeypatch.setattr(collect.catalog, "load", lambda: cat)
+    assert collect.mine_names("cp", "Cobre Panama") == ["Cobre Panama", "Cerro Petaquilla", "Molejon"]
+    assert collect.mine_query(collect.mine_names("cp", None)).startswith('("Cobre Panama" OR ')
+    assert collect.mine_names("ch", "Chile Copper") == []
+    for bad in ("Nevada Gold Mines", "New Mexico", "Western Australia", "New South Wales", "South Africa",
+                "Papua New Guinea Gold", "San Salvador"):
+        assert collect.mine_names("liste:x", bad) == [], bad
+    assert collect.mine_names("liste:x", "New Denmark Colliery") == ["New Denmark Colliery"]

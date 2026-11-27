@@ -735,17 +735,32 @@ mount mt mont monte montana cerro sierra mountain mountains hill hills ridge pea
 lakes gulch canyon spring springs bay island field fields flat flats point rock rocks well wells dam north
 south east west northern southern eastern western central norte sur este oeste upper lower new old big
 little great grand deep nueva nuevo novo nova black white red blue green""".split())
+_PAYS = "zzpays"   # marque d'un nom de pays dans `_place_name_key`
+# avec un pays ou une région, ces mots forment un autre nom de région, pas une mine (« New Mexico »,
+# « Western Australia », « New South Wales », « San Salvador »)
+_REGION_MAKERS = frozenset("""
+north south east west northern southern eastern western central upper lower new old great little big
+norte sur este oeste nueva nuevo novo nova san santa santo sao saint st""".split())
 
 
 def _place_name_key(name: str) -> frozenset[str] | None:
-    """Clé d'un nom COMPLET fait seulement de mots génériques dont au moins un mot de lieu (« Red Lake »,
-    « Copper Mountain ») : utilisable en phrase exacte (très précise pour GDELT), seulement pour le nom
-    du catalogue ou de la liste suivie, jamais pour un alias (« Southern Mine », « Copper Mountain » en
-    alias d'une autre mine). Pas un pays (« South Africa »), au moins deux mots hors numéros."""
-    toks = catalog._tokens(_COUNTRY_RE.sub(" ", entities.fold(name)))
+    """Clé d'un nom COMPLET fait seulement de mots génériques, de lieu ou de pays (« Red Lake », « Copper
+    Mountain », « Cobre Panama ») : utilisable en phrase exacte (très précise pour GDELT), seulement pour
+    le nom du catalogue ou de la liste suivie, jamais pour un alias (« Southern Mine », « Copper Mountain »
+    en alias d'une autre mine). Il faut au moins deux mots hors numéros et un mot de lieu, de pays ou de
+    région ; jamais un pays ou une région (« South Africa », « New Mexico »). Sans mot de lieu, le pays
+    ou la région ne doit pas ouvrir le nom : « Chile Copper », « Nevada Gold » sont des tournures
+    courantes des titres, pas des noms ; « Cobre Panama » en est un."""
+    f = _COUNTRY_RE.sub(lambda m: " " + _PAYS + m.group(0).replace(" ", "") + " ", entities.fold(name))
+    toks = catalog._tokens(f)
     words = {t for t in toks if not t.isdigit() and t not in _DEMONYMS and len(t) > 1}
-    if len(words) < 2 or not words & _PLACE_WORDS:
+    geo = {t for t in words if t.startswith(_PAYS) or t in _REGIONS}
+    if len(words) < 2 or not (words & _PLACE_WORDS or geo) or (geo and words - geo <= _REGION_MAKERS):
         return None
+    if not words & _PLACE_WORDS:
+        first = next((t for t in re.findall(r"[a-z0-9]+", f) if t in toks), None)
+        if first in geo:
+            return None
     return frozenset({"=" + " ".join(sorted(words))})
 
 
@@ -755,7 +770,8 @@ def mine_names(site_id: str, site_name: str | None) -> list[str]:
     (jamais « Peru », « Gold », « Southern Mine », « Mine 33 ») ; une variante de même cœur distinctif,
     qui n'ajoute que « mine », une substance ou un mot générique (« Grasberg mine » après « Grasberg »,
     « Inden coal Mine » après « Inden »), ne prend pas une des MAX_NAMES places. Exception : le nom du
-    catalogue ou de la liste suivie fait de mots de lieu (« Red Lake ») reste cherché en phrase entière."""
+    catalogue ou de la liste suivie fait de mots de lieu ou de pays (« Red Lake », « Cobre Panama ») reste
+    cherché en phrase entière."""
     cands: list[tuple[str, bool]] = []          # (nom, nom principal : catalogue ou liste suivie)
     cat = catalog.load()
     if len(cat) and site_id in cat.index:
