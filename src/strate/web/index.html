@@ -1014,7 +1014,7 @@ const fx2=v=>{ const a=Math.abs(v); return a>0&&a<0.01?a.toLocaleString('fr-FR',
 const sg2=v=>{ const r=Math.abs(v)<0.0005?0:v; return (r>0?'+':r<0?'−':'')+fx2(r); };
 // Badge de corrélation, unique composant pour toute relation affichée : coefficient, IC 90 %, n, verdict et bande
 // de l'intervalle (r, ρ et φ sur [−1, 1], nul à 0 ; lift sur une échelle log ÷8…×8, nul à 1).
-// o = {type:'r'|'rho'|'phi'|'lift', v, lo, hi, n, nUnit, verdict, state:'demo'|'pos'|'nul'|'few'|'na', ciNote}.
+// o = {type:'r'|'rho'|'phi'|'lift', v, lo, hi, n, nUnit, verdict, state:'demo'|'pos'|'nul'|'few'|'na', ciNote, sym}.
 // Tout est échappé. Règle : le badge n'améliore jamais un verdict du serveur. Un verdict reçu est affiché tel quel,
 // avec le style qu'il implique (au mieux neutre si l'intervalle affiché contient la valeur nulle). Sans verdict reçu,
 // le badge en calcule un d'après l'IC seul et le dit : il ignore les règles du module (q-valeur, n minimal).
@@ -1024,7 +1024,7 @@ const CB_NUL=/non d[ée]montr|inclu|contient|aucun lien|pas de lien/i;
 const CB_DEMO=/d[ée]montr/i, CB_POS=/lien (positif|négatif|inverse)|risque (accru|réduit)|exclut/i;
 function corrBadge(o){
   o=o&&typeof o==='object'?o:{};
-  const t=['lift','r','phi'].includes(o.type)?o.type:'rho', sym={lift:'lift ×',r:'r',phi:'φ',rho:'ρ'}[t];
+  const t=['lift','r','phi'].includes(o.type)?o.type:'rho', sym=o.sym?String(o.sym):{lift:'lift ×',r:'r',phi:'φ',rho:'ρ'}[t];
   const v=num(o.v), lo=num(o.lo), hi=num(o.hi), n=num(o.n), nul=t==='lift'?1:0, hasCI=lo!=null&&hi!=null;
   const ex=hasCI&&(lo>nul||hi<nul);
   const sv=o.verdict!=null&&String(o.verdict).trim()?String(o.verdict):null;
@@ -1753,22 +1753,59 @@ function fcChart(cv,d){
   return ch;
 }
 const FC_LEGEND='<div class="lgd"><span><i style="border-color:var(--text)"></i>réel</span><span><i class="dash" style="border-color:var(--accent)"></i>prévision</span><span><i class="box" style="background:var(--accent);opacity:.35"></i>intervalle 80 %</span><span><i class="box" style="background:var(--accent);opacity:.16"></i>intervalle 90 %</span></div>';
-// qualité passée : la mine (r, ρ sans IC dans la réponse) puis le modèle retenu sur toutes les mines (IC du rétro-test)
-function fcQuality(q,btp,h){
-  q=q&&typeof q==='object'?q:null;
-  const rows=arr(btp?.rows).map(obj), ret=obj(btp?.retenu), model=ret[String(h)];
-  const g=rows.find(bt2=>String(bt2.horizon)===String(h)&&bt2.model===model);
-  const loc=q?`<div class="cbrow stack"><div class="rel"><b>Prévision ↔ réel, qualité publiée avec cette prévision</b><small>rétro-test${num(q.skill)!=null?` · skill ${sg2(q.skill)}`:''}${num(q.facteur_median)!=null?` · erreur médiane × ${f2(q.facteur_median)}`:''}${num(q.couverture90)!=null?` · couverture 90 % : ${pct(q.couverture90)}`:''}</small></div>
-    <div class="cblist">${corrBadge({type:'r',v:q.r,n:q.n,nUnit:'points'})}${num(q.rho)!=null?corrBadge({type:'rho',v:q.rho,n:q.n,nUnit:'points'}):''}</div></div>`:'';
-  const glob=g?`<div class="cbrow stack"><div class="rel"><b>Prévision ↔ réel, modèle « ${esc(model)} » à ${esc(h)} an${h>1?'s':''}, toutes mines</b><small>période de test jamais vue · ${fmt(num(g.n_mines),0)} mines${num(g.skill)!=null?` · skill ${sg2(g.skill)}`:''}</small></div>
-    <div class="cblist">${corrBadge({type:'r',v:g.r,lo:g.r_lo,hi:g.r_hi,n:g.n_points,nUnit:'points'})}${corrBadge({type:'rho',v:g.rho,lo:g.rho_lo,hi:g.rho_hi,n:g.n_points,nUnit:'points'})}</div></div>`:'';
-  return loc||glob?`<div class="panel" style="padding:4px 20px">${loc}${glob}</div>`:box('Qualité passée non publiée pour cette mine.');
+// badges r et ρ d'une ligne de rétro-test (ou de la qualité publiée) ; le naïf ne prévoit aucune variation : sa
+// corrélation des variations n'existe pas, on montre alors celle des niveaux (log), dite comme telle
+function fcBadges(x,n,why){
+  const nt=typeof x.note==='string'&&x.note?x.note:'le naïf ne prévoit aucune variation : corrélation des variations non définie';
+  const one=t=>corrBadge({type:t,v:x[t],lo:x[t+'_lo'],hi:x[t+'_hi'],n,nUnit:'points',ciNote:why});
+  if(num(x.r)==null&&num(x.rho)==null&&(num(x.r_niveau)!=null||num(x.rho_niveau)!=null))
+    return `${corrBadge({type:'r',v:null,n,nUnit:'points',ciNote:nt})}${['r','rho'].map(t=>num(x[t+'_niveau'])==null?''
+      :corrBadge({type:t,sym:(t==='r'?'r':'ρ')+' niveau',v:x[t+'_niveau'],lo:x[t+'_niveau_lo'],hi:x[t+'_niveau_hi'],n,nUnit:'points',ciNote:why})).join('')}`;
+  return one('r')+(num(x.rho)!=null||num(x.rho_lo)!=null?one('rho'):'');
 }
-function fcTable(d){
-  const P=arr(d.prevision).map(obj).filter(r=>num(r.year)!=null).sort((a,b)=>a.year-b.year);
-  if(!P.length) return '';
-  return `<div class="tablebox"><table><thead><tr><th>Année</th><th>Modèle</th><th class="n">Prévision</th><th class="n">Intervalle 80 %</th><th class="n">Intervalle 90 %</th></tr></thead><tbody>${
-    P.map(fp=>`<tr><td>${esc(fp.year)}</td><td class="meta">${esc(fp.model||'—')}</td><td class="n">${tonnes(num(fp.value))}</td><td class="n meta">${tonnes(num(fp.lo80))} – ${tonnes(num(fp.hi80))}</td><td class="n meta">${tonnes(num(fp.lo90))} – ${tonnes(num(fp.hi90))}</td></tr>`).join('')}</tbody></table></div>`;
+const ciTxt=(v,lo,hi)=>num(v)==null?'':`${sg2(v)}${num(lo)!=null&&num(hi)!=null?` (IC 90 % ${sg2(lo)} à ${sg2(hi)})`:''}`;
+// qualité : score GLOBAL du rétro-test (toutes mines, période de test jamais vue) du modèle retenu à l'horizon de la
+// qualité publiée (h = 1 en général), jamais un score propre à cette mine. Un serveur plus ancien n'envoie ni IC ni
+// portée : la ligne du rétro-test de même modèle et même horizon les fournit. site = suivi de la mine seule.
+function fcQuality(q,btp,site){
+  q=obj(q); const rows=arr(btp?.rows).map(obj), ret=obj(btp?.retenu);
+  const h=num(q.horizon)??1, model=typeof q.model==='string'&&q.model?q.model:ret[String(h)];
+  const g=rows.find(bt2=>String(bt2.horizon)===String(h)&&bt2.model===model);
+  const qCI=[q.r_lo,q.rho_lo,q.r_niveau_lo,q.rho_niveau_lo].some(v=>num(v)!=null);
+  const x=qCI||!g?q:g;  // jamais un coefficient de l'un avec l'intervalle de l'autre
+  const n=num(x.n)??num(x.n_points), nm=num(x.n_mines);
+  if(num(x.r)==null&&num(x.rho)==null&&num(x.r_niveau)==null&&num(x.rho_niveau)==null&&n==null)
+    return box('Qualité passée non publiée : rétro-test absent ou sans ligne pour ce modèle.');
+  const why=qCI||g?'':'le serveur ne publie pas d’intervalle pour ce score';
+  const portee=q.portee==='global'||x===g?'score global du rétro-test':'score publié avec la prévision (portée non précisée)';
+  const sk=ciTxt(x.skill,x.skill_lo,x.skill_hi), so=obj(site);
+  const info=[`toutes mines${nm!=null?` (${fmt(nm,0)} mines)`:''}, période de test jamais vue : pas un score propre à cette mine`,
+    sk?`skill ${sk}`:'',num(x.facteur_median)!=null?`erreur médiane × ${f2(x.facteur_median)}`:'',
+    num(x.couverture80)!=null?`couverture 80 % : ${pct(x.couverture80)}`:'',num(x.couverture90)!=null?`couverture 90 % : ${pct(x.couverture90)}`:''].filter(Boolean).join(' · ');
+  const own=num(so.n)>0&&num(so.facteur_median)!=null?`<p class="meta" style="margin:0 0 10px">Sur cette mine seule (rétro-test rejoué, ${fmt(so.n,0)} ${plur(so.n,'prévision')} à 1 an) : erreur médiane × ${f2(so.facteur_median)}. Trop peu de points pour une corrélation propre à la mine.</p>`:'';
+  return `<div class="panel" style="padding:4px 20px"><div class="cbrow stack"><div class="rel"><b>Prévision ↔ réel, modèle « ${esc(model||'—')} » à ${esc(h)} an${h>1?'s':''} : ${portee}</b><small>${info}</small></div>
+    <div class="cblist">${fcBadges(x,n,why)}</div></div></div>${own}`;
+}
+// horizon d'une ligne prévue et s'il a été mesuré hors échantillon : champs du serveur, sinon déduits (année − dernière
+// année connue ; mesuré si le rétro-test a une ligne à cet horizon). null = inconnu.
+function fcRows(d,btp){
+  const lastH=num(arr(d.historique).map(obj).filter(r=>num(r.year)!=null).sort((a,b)=>a.year-b.year).at(-1)?.year);
+  const hs=new Set(arr(btp?.rows).map(obj).map(bt2=>num(bt2.horizon)).filter(v=>v!=null));
+  return arr(d.prevision).map(obj).filter(r=>num(r.year)!=null).sort((a,b)=>a.year-b.year).map(fp=>{
+    const h=num(fp.horizon)??(lastH!=null?fp.year-lastH:null);
+    const m=typeof fp.mesure==='boolean'?fp.mesure:h!=null&&hs.size?hs.has(h):null;
+    return {fp,h,m}; });
+}
+function fcUnmeasured(d,btp){
+  const u=fcRows(d,btp).filter(x=>x.m===false); if(!u.length) return '';
+  const hs=[...new Set(arr(btp?.rows).map(obj).map(bt2=>num(bt2.horizon)).filter(v=>v!=null))], mx=hs.length?Math.max(...hs):null;
+  return `<p class="meta" style="margin:6px 0 0"><span class="pill p-warn">non mesuré</span> ${u.map(x=>esc(x.fp.year)).join(', ')} : horizon au-delà de ce que le rétro-test a évalué${mx!=null?` (h ≤ ${esc(mx)} an${mx>1?'s':''})`:''} ; intervalles extrapolés, couverture inconnue.</p>`;
+}
+function fcTable(d,btp){
+  const R=fcRows(d,btp);
+  if(!R.length) return '';
+  return `<div class="tablebox"><table><thead><tr><th>Année</th><th>Horizon</th><th>Modèle</th><th class="n">Prévision</th><th class="n">Intervalle 80 %</th><th class="n">Intervalle 90 %</th></tr></thead><tbody>${
+    R.map(({fp,h,m})=>`<tr><td>${esc(fp.year)}</td><td>${h==null?'—':`${esc(h)} an${h>1?'s':''}`}${m===false?' <span class="pill p-warn" title="horizon non évalué par le rétro-test : couverture des intervalles inconnue">non mesuré</span>':''}</td><td class="meta">${esc(fp.model||'—')}</td><td class="n">${tonnes(num(fp.value))}</td><td class="n meta">${tonnes(num(fp.lo80))} – ${tonnes(num(fp.hi80))}</td><td class="n meta">${tonnes(num(fp.lo90))} – ${tonnes(num(fp.hi90))}</td></tr>`).join('')}</tbody></table></div>`;
 }
 async function fcData(id){
   const [f,b]=await Promise.allSettled([api('/api/forecast/site?site='+enc(id)),PG.bt??api('/api/forecast/backtest')]);
@@ -1784,9 +1821,10 @@ async function fcSiteAfter(id,live){
   let r; try{ r=await fcData(id); }catch(e){ const b=$('#fc_site'); if(live()&&b?.isConnected) b.innerHTML=`<p class="meta">Prévision indisponible : ${esc(errTxt(e))}</p>`; return; }
   const b=$('#fc_site'); if(!live()||!b?.isConnected) return;
   const d=r.d&&typeof r.d==='object'?r.d:null;
-  if(!d||!arr(d.prevision).length){ b.innerHTML=box(esc(fcMsg(d))); return; }
-  const P=arr(d.prevision).map(obj), h=Math.max(1,(num(P.at(-1)?.year)??0)-(num(arr(d.historique).at(-1)?.year)??0));
-  b.innerHTML=`<div class="card">${FC_LEGEND}<canvas id="fc_site_c" height="150"></canvas></div><div style="margin-top:12px">${fcQuality(d.qualite,r.bt,Math.min(h,3))}</div>
+  if(!d||!arr(d.historique).length&&!arr(d.prevision).length){ b.innerHTML=box(esc(fcMsg(d))); return; }
+  const P=arr(d.prevision);
+  b.innerHTML=`<div class="card">${FC_LEGEND}<canvas id="fc_site_c" height="150"></canvas>${fcUnmeasured(d,r.bt)}</div>
+    <div style="margin-top:12px">${P.length?fcQuality(d.qualite,r.bt,d.suivi_site):box(esc(fcMsg(d)))}</div>
     <p style="margin-top:8px"><a href="#/previsions/mine/${esc(enc(id))}">Détail de la prévision</a></p>`;
   const c=fcChart($('#fc_site_c'),d); if(c) charts.push(c);
 }
@@ -1824,10 +1862,10 @@ async function fcPage(id){
   setHead('previsions',head(`Prévision — ${nom}`,`<a href="#/site/${esc(enc(id))}">Fiche de la mine</a>${d?.serie?` · série : ${esc(d.serie)}`:''}`));
   document.title=`Prévision ${nom} — Strate`;
   if(!d||(!arr(d.historique).length&&!arr(d.prevision).length)){ out.innerHTML=box(esc(fcMsg(d))); return; }
-  const P=arr(d.prevision).map(obj), lastH=num(arr(d.historique).map(obj).at(-1)?.year), h=lastH!=null&&P.length?Math.min(3,Math.max(1,(num(P[0].year)??lastH+1)-lastH)):1;
-  out.innerHTML=`<div class="grid-7-5"><div><h2 style="margin-top:0">Historique et prévision</h2><div class="card">${FC_LEGEND}<canvas id="fc_c" height="230"></canvas><p class="meta" id="fc_unit" style="margin:6px 0 0"></p></div></div>
-    <div><h2 style="margin-top:0">Qualité mesurée</h2>${fcQuality(d.qualite,r.bt,h)}<p class="note" style="margin-top:10px">Intervalles = quantiles empiriques des erreurs du rétro-test à cet horizon : leur couverture réelle est mesurée (<a href="#/previsions/retro-test">rétro-test</a>).</p></div></div>
-    <h2>Valeurs prévues</h2>${fcTable(d)||box(esc(fcMsg(d)))}`;
+  const P=arr(d.prevision);
+  out.innerHTML=`<div class="grid-7-5"><div><h2 style="margin-top:0">Historique et prévision</h2><div class="card">${FC_LEGEND}<canvas id="fc_c" height="230"></canvas><p class="meta" id="fc_unit" style="margin:6px 0 0"></p>${fcUnmeasured(d,r.bt)}</div></div>
+    <div><h2 style="margin-top:0">Qualité mesurée</h2>${P.length?fcQuality(d.qualite,r.bt,d.suivi_site):box(esc(fcMsg(d)))}<p class="note" style="margin-top:10px">Intervalles = quantiles empiriques des erreurs du rétro-test à cet horizon : leur couverture réelle est mesurée (<a href="#/previsions/retro-test">rétro-test</a>).</p></div></div>
+    <h2>Valeurs prévues</h2>${fcTable(d,r.bt)||box(esc(fcMsg(d)))}`;
   const c=fcChart($('#fc_c'),d); if(c){ PG.charts.push(c); $('#fc_unit').textContent=c.$unit||''; }
 }
 
@@ -1845,8 +1883,8 @@ async function btPage(){
   const kp=hs.map(h=>`<div><span>Horizon ${esc(h)} an${h>1?'s':''} : modèle retenu</span><b>${esc(ret[String(h)]||'—')}</b></div>`).join('');
   const tbl=h=>`<h2>Horizon ${esc(h)} an${h>1?'s':''}</h2><div class="tablebox"><table><thead><tr><th>Modèle</th><th>Prévision ↔ réel (variations log)</th><th class="n">Skill</th><th class="n">Erreur médiane</th><th class="n">Bon sens</th><th class="n">Couverture 80 %</th><th class="n">Couverture 90 %</th></tr></thead><tbody>${
     rows.filter(bt=>bt.horizon===h).map(bt=>`<tr><td><span class="nm">${esc(bt.model)}</span>${ret[String(h)]===bt.model?' <span class="pill p-acc">retenu</span>':''}<div class="meta" style="font-size:12px">${fmt(num(bt.n_mines),0)} mines · ${fmt(num(bt.n_points),0)} points</div></td>
-      <td><div class="cblist">${corrBadge({type:'r',v:bt.r,lo:bt.r_lo,hi:bt.r_hi,n:bt.n_points,nUnit:'points'})}${corrBadge({type:'rho',v:bt.rho,lo:bt.rho_lo,hi:bt.rho_hi,n:bt.n_points,nUnit:'points'})}</div></td>
-      <td class="n">${num(bt.skill)==null?'—':sg2(bt.skill)}<div class="meta" style="font-size:12px">${num(bt.skill)==null?'':bt.skill>0?'bat le naïf':'ne bat pas le naïf'}</div></td>
+      <td><div class="cblist">${fcBadges(bt,num(bt.n_points),'')}</div></td>
+      <td class="n">${num(bt.skill)==null?'—':sg2(bt.skill)}<div class="meta" style="font-size:12px">${num(bt.skill_lo)!=null&&num(bt.skill_hi)!=null?`IC 90 % ${sg2(bt.skill_lo)} à ${sg2(bt.skill_hi)}<br>`:''}${num(bt.skill)==null?'':num(bt.skill_lo)!=null?(bt.skill_lo>0?'bat le naïf (IC &gt; 0)':'ne bat pas le naïf de façon sûre'):bt.skill>0?'bat le naïf':'ne bat pas le naïf'}</div></td>
       <td class="n">${num(bt.facteur_median)==null?'—':'× '+f2(bt.facteur_median)}</td><td class="n">${pct(num(bt.bon_sens))}</td>
       <td class="n">${pct(num(bt.couverture80))}<div class="meta" style="font-size:12px">cible 80 %</div></td><td class="n">${pct(num(bt.couverture90))}<div class="meta" style="font-size:12px">cible 90 %</div></td></tr>`).join('')}</tbody></table></div>`;
   out.innerHTML=`<div class="kpis" style="--k:${Math.min(4,hs.length)}">${kp}</div>${hs.map(tbl).join('')}

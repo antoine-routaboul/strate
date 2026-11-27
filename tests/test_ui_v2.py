@@ -206,6 +206,8 @@ def test_pages_read_only_contract_fields():
     # contrat partagé de cette révision (producteurs : companies, forecast, api), lu défensivement par la page
     corr |= {"verdict_r", "verdict_rho", "q_value", "lag", "rho_lo", "rho_hi"}
     summary |= {"unite_n", "n_bootstrap_unit"}
+    backtest |= {"skill_lo", "skill_hi", "note", "r_niveau", "rho_niveau"}
+    prev |= {"horizon", "mesure"}
     for var, allowed in (("co", companies), ("bt", backtest), ("bt2", backtest), ("cc", corr), ("fp", prev),
                          ("mi", mines), ("iv", inv), ("sr", summary)):
         got = _used(var, js)
@@ -222,11 +224,12 @@ def test_server_strings_never_interpolated_raw():
 
 def test_every_relationship_carries_the_badge():
     js = script()
-    for fn in ("function ccRow", "function fcQuality", "async function btPage", "const calRow",
-               "function srRow", "const vBadge"):
+    for fn in ("function ccRow", "function fcBadges", "const calRow", "function srRow", "const vBadge"):
         body = js[js.index(fn):js.index(fn) + 2500]
         assert "corrBadge(" in body, fn
     assert "shown.map(srRow)" in js  # page « toutes les corrélations »
+    for fn in ("function fcQuality", "async function btPage"):  # qualité des prévisions : badges de fcBadges
+        assert "fcBadges(" in js[js.index(fn):js.index(fn) + 2500], fn
     badge = js[js.index("function corrBadge"):js.index("// couleurs des types")]
     for part in ("IC 90 %", "n = ", "verdict", "aria-label"):
         assert part in badge, part
@@ -430,6 +433,39 @@ const done=()=>fetches.forEach(f=>f.done=true);
       &&c.cfg.data.datasets.some(d=>d.borderDash)&&$el('#fc_h1').textContent.includes('Mine <1>')
       &&clean(h))||h;
   });
+  await check('forecast_contract_quality_and_horizons',async()=>{
+    done(); P.show('previsions','mine','m2');
+    const q={model:'tendance',horizon:1,r:0.2,r_lo:0.1,r_hi:0.3,rho:0.15,rho_lo:0.05,rho_hi:0.25,skill:0.04,
+      skill_lo:0.01,skill_hi:0.07,couverture80:0.79,couverture90:0.9,facteur_median:1.2,n:2676,
+      n_mines:610,portee:'global'};
+    const row=(y,h,m)=>({year:y,horizon:h,mesure:m,model:'tendance',value:2e6,lo80:1.8e6,hi80:2.2e6,
+      lo90:1.7e6,hi90:2.4e6});
+    take('/api/forecast/site?site=m2').ok({serie:'minerai',
+      historique:[{year:2020,value:2e6},{year:2021,value:2e6}],
+      prevision:[row(2022,1,true),row(2025,4,false)],qualite:q,suivi_site:{n:6,facteur_median:1.3}});
+    await flush(); take('/api/site?site=m2').ok({nom:'Mine 2'}); await flush();
+    const h=$el('#fc_out').innerHTML;
+    const ok=h.includes('IC 90 % +0,10 à +0,30')&&h.includes('IC 90 % +0,05 à +0,25')
+      &&h.includes('n = '+(2676).toLocaleString('fr-FR')+' points')
+      &&h.includes('score global du rétro-test')&&h.includes('pas un score propre à cette mine')
+      &&h.includes('610 mines')&&h.includes('skill +0,04 (IC 90 % +0,01 à +0,07)')&&h.includes('4 ans')
+      &&(h.match(/non mesuré/g)||[]).length>=2&&h.includes('2025 : horizon au-delà')
+      &&h.includes('Sur cette mine seule')
+      &&!h.includes('IC 90 % indisponible')&&clean(h);
+    return ok||h;
+  });
+  await check('forecast_naive_quality_in_levels',async()=>{
+    done(); P.show('previsions','mine','m3');
+    const q={model:'naif',horizon:1,r:null,rho:null,r_niveau:0.95,r_niveau_lo:0.93,r_niveau_hi:0.97,
+      rho_niveau:0.94,rho_niveau_lo:0.9,rho_niveau_hi:0.96,n:2676,n_mines:610,portee:'global',
+      note:'le naïf recopie la dernière valeur : aucune variation prévue'};
+    take('/api/forecast/site?site=m3').ok({historique:[{year:2021,value:1e6}],
+      prevision:[{year:2022,horizon:1,mesure:true,model:'naif',value:1e6}],qualite:q});
+    await flush(); take('/api/site?site=m3').ok({nom:'Mine 3'}); await flush();
+    const h=$el('#fc_out').innerHTML;
+    return (h.includes('r niveau')&&h.includes('ρ niveau')&&h.includes('IC 90 % +0,93 à +0,97')
+      &&h.includes('aucune variation prévue')&&h.includes('non calculable')&&clean(h))||h;
+  });
   await check('all_correlations_fallback',async()=>{
     done(); P.setCAL(CAL); P.show('methode','correlations');
     take('/api/correlations/summary').status(404); await flush();
@@ -481,8 +517,9 @@ BOOT_SITE = r"""
 CHECKS = ["badge", "badge_never_upgrades_server_verdict", "routes", "one_view_at_a_time",
           "directory_empty_message", "directory_escapes_names", "company_sheet_with_badges",
           "company_corr_verdicts_per_coefficient", "capex_page_empty", "backtest_page", "backtest_empty",
-          "forecast_without_series", "forecast_with_series", "all_correlations_fallback",
-          "calibration_page"]
+          "forecast_without_series", "forecast_with_series",
+          "forecast_contract_quality_and_horizons", "forecast_naive_quality_in_levels",
+          "all_correlations_fallback", "calibration_page"]
 
 
 def _run(tmp_path_factory, body: str, hash_: str = "") -> dict:
