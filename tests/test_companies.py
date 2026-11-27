@@ -1236,3 +1236,30 @@ def test_missing_ticker_table_keeps_name_matched_cik_and_facts(tmp_path, panne):
     assert "EQX" in co2.at[cid, "tickers"]
     assert st["faits_purges"] == 0 and int((C.load("facts")["company_id"] == cid).sum()) == n
     assert any(e.startswith("SEC company_tickers") and "repris" in e for e in st["erreurs"])
+
+
+@pytest.mark.parametrize("title", [
+    "Teck abandoned Frontier mine project after investing $1.13 billion",
+    "Anglo American abandoned its Pebble mine after spending $541 million",
+    "Vale postpones $1bn expansion", "Barrick defers $2bn Lumwana expansion",
+    "Codelco delays $1bn investment plan", "Glencore lowers capex guidance by $500m to $5bn",
+    "BHP pulls out of $5bn expansion", "Eramet gèle son investissement de 1 milliard d'euros",
+    "Codelco recorta inversión en 1.000 millones de dólares", "Vale corta investimento de US$ 1 bilhão",
+])
+def test_stopped_postponed_or_abandoned_project_is_not_an_investment(title):
+    # un projet nommé abandonné, reporté ou réduit : pas un investissement
+    assert C.extract_investment(title) is None, title
+
+
+@pytest.mark.parametrize("title", [
+    "BHP to reduce emissions with $4bn investment", "Fortescue slashes emissions with $6.2bn investment",
+    "Rio Tinto to invest $1bn to cut 1 million tonnes of carbon emissions",
+    "Vale invests $500m to cut 2m tonnes of CO2",
+    "Glencore invests $300m to cut costs and boost investment returns",
+    "Rio Tinto approves $2bn expansion after strike halted output",
+    "Barrick invests $1bn to restart mine stopped in 2020",
+    "Company invests $50m to rehabilitate abandoned uranium mines",
+])
+def test_cutting_emissions_or_a_past_halt_keeps_the_investment(title):
+    # réduire des émissions ou des coûts, ou un arrêt passé, ne retire pas l'investissement annoncé
+    assert C.extract_investment(title), title

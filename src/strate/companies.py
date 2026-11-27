@@ -1030,25 +1030,41 @@ NOT_INVEST = re.compile(
     r"impairment\w*|write ?downs?|write ?offs?|writedowns?|depreciation\w*|deterioro|baixa contabil|"
     r"wertminderung\w*|abschreibung\w*|"
     r"reject\w*|rebuff\w*|spurn\w*|rejett\w*|rejete\w*|rechaz\w*|rejeit\w*|abgelehnt|lehnt)\b")
-# offre ou projet retiré, abandonné, annulé, arrêté, suspendu ou réduit : cherché dans tout le titre (« BHP
-# walks away from $49bn Anglo bid »), le mot pouvant être loin du montant ; un titre qui annonce aussi un
-# autre investissement est perdu, choix assumé : un faux montant d'abandon pèse plus qu'un investissement
-# manqué (en, fr, es, pt, de). « cut », « slash », « reduce », « slow » ne comptent que suivis d'un montant
-# ou d'un mot de dépense : « invests $500m to cut emissions » reste un investissement. « abandoned » suivi
-# d'une mine, d'un puits ou d'un site (jusqu'à deux mots entre : « abandoned uranium mines ») décrit un
-# passif minier à réhabiliter, pas une offre retirée ; « water withdrawal » est un prélèvement d'eau.
+# Offre ou projet retiré, abandonné ou annulé : cherché dans tout le titre (« BHP walks away from $49bn
+# Anglo bid »), le mot pouvant être loin du montant ; un titre qui annonce aussi un autre investissement
+# est perdu, choix assumé : un faux montant d'abandon pèse plus qu'un investissement manqué.
+# Projet arrêté, suspendu, reporté ou réduit (halt, suspend, postpone, delay, cut, lower, arrête, gèle,
+# recorta, corta…) : seulement si un montant ou un mot de dépense suit à 30 caractères au plus, sans
+# virgule entre les deux (« Anglo cuts 500 jobs, invests $2bn » reste un investissement)
+# (« Vale postpones $1bn expansion »), pour garder « approves $2bn expansion after strike halted output »
+# et « invests $1bn to restart mine stopped in 2020 ». Un montant suivi d'une unité physique (« cut 2m
+# tonnes of CO2 ») n'en est pas un, et réduire des émissions, des coûts ou l'eau (« reduce emissions with
+# $4bn investment ») n'est pas réduire un investissement. « abandoned » suivi d'une mine décrite par des
+# mots génériques (« abandoned uranium mines », « abandoned coal mine sites ») est un passif à
+# réhabiliter ; suivi d'un nom propre (« abandoned Frontier mine project ») c'est un projet abandonné.
+# « water withdrawal » est un prélèvement d'eau (en, fr, es, pt, de).
 _SPEND = (r"(?:capex|spending|investments?|budgets?|capital (?:spending|expenditures?|budgets?)|guidance|"
-          r"outlays?)")
-_CUT = (r"(?:cut(?:s|ting)?|slash(?:es|ed|ing)?|trim(?:s|med|ming)?|reduc(?:e|es|ed|ing)|scal(?:e|es|ed|ing) "
-        r"back)(?= (?:\S*\$|\d[\d.,]*\s?(?:bn|billions?|millions?|mn|mln|m|b)\b)|.{0,25}\b" + _SPEND + r"\b)|"
-        r"slow(?:s|ed|ing)?(?: down)?(?=.{0,25}\b(?:" + _SPEND + r"|development|construction|works?)\b)")
+          r"outlays?|expansion|projects?|plans?|investissements?|inversion(?:es)?|investimentos?|"
+          r"investition\w*|depenses?|gastos?)")
+_MONEY = (r"(?:\$|\b(?:us|c|a)\$|\b\d[\d.,]*\s?(?:bn|billions?|millions?|mn|mln|m|b|milliards?|millones|"
+          r"mil millones|bilh\w*|milh\w*|mrd|milliarden?)\b(?!\s*(?:metric )?(?:tonnes?|tons?|t|oz|ounces|"
+          r"barrels|lbs?|pounds|jobs|workers|people|of (?:co2|carbon))\b))")
+_GREEN = (r"(?! (?:its |their |carbon |co2 |ghg |greenhouse gas )?(?:emissions|carbon|co2|costs?|water|"
+          r"energy|waste|diesel|footprint|ghg|greenhouse))")
+_STOP = (r"(?:halt(?:s|ed|ing)?|suspen\w*|paus(?:e|es|ed|ing)|terminat(?:e|es|ed|ing|ion)|freez(?:e|es|ing)|"
+         r"froze|mothball\w*|interromp\w*|paralis\w*|paraliz\w*|stopp\w*|postpon\w*|defer(?:s|red|ring)?|"
+         r"delay(?:s|ed|ing)?|lower(?:s|ed|ing)?|cut(?:s|ting)?|slash(?:es|ed|ing)?|trim(?:s|med|ming)?|"
+         r"reduc(?:e|es|ed|ing)|scal(?:e|es|ed|ing) back|slow(?:s|ed|ing)?(?: down)?|arret\w*|gel(?:e|ent)|"
+         r"suspend\w*|recort\w*|cort(?:a|an|o|ou)|reduz\w*|reduc\w*|kurz\w*|stopp\w*)"
+         + _GREEN + r"(?=[^,;:]{0,30}?(?:" + _MONEY + r"|\b" + _SPEND + r"\b))")
+_GENERIC_MINE = (r"(?:(?:old|legacy|historic|historical|former|disused|derelict|orphaned|uranium|coal|gold|"
+                 r"copper|asbestos|lead|zinc|mercury|tin|silver|iron|open|underground|toxic|"
+                 r"contaminated) ){0,2}(?:mines?|pits?|sites?|wells?|lands?|shafts?|workings)\b")
 WITHDRAWN = re.compile(
     r"\b(walk(?:s|ed|ing)? away|withdr(?:aw|aws|awn|awing|ew)|(?<!water )withdrawals?|abandon(?:s|ing)?|"
-    r"abandoned(?! (?:[a-z]+ ){0,2}(?:mines?|pits?|sites?|wells?|lands?|shafts?|workings)\b)|"
+    r"abandoned(?! " + _GENERIC_MINE + r")|pull(?:s|ed|ing)? out|"
     r"scrapp(?:ed|ing)|(?:scraps|drop(?:s|ped)?)(?=.{0,30}\b(?:bid|offer|takeover|deal|plan|project)s?\b)|"
-    r"call(?:s|ed)? off|cancel\w*|shelv\w*|"
-    r"halt(?:s|ed|ing)?|suspen\w*|paus(?:e|es|ed|ing)|terminat(?:e|es|ed|ing|ion)|freez(?:e|es|ing)|froze|"
-    r"mothball\w*|interromp\w*|paralis\w*|paraliz\w*|stopp\w*|" + _CUT + r"|"
+    r"call(?:s|ed)? off|cancel\w*|shelv\w*|" + _STOP + r"|"
     r"renonc\w*|retire (?:son|sa|leur) \w*|abandonn\w* (?:son|sa|ses|le|la|les|leur) \w*|annul\w*|"
     r"desist\w*|abandona\w* (?:su|sua|el|la|o|a|los|las) \w*|retira\w* (?:su |sua |a |o )?\w*|cancela\w*|"
     r"zuruckgezogen|zieht\w* (?:sich )?\w* ?zuruck|verzicht\w*|abgesagt)\b")
