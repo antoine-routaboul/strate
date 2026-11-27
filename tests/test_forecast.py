@@ -110,11 +110,35 @@ def test_metrics_perfect_and_naive():
 
 
 def test_choose_requires_ci_above_zero():
-    rows = [{"model": "naif", "horizon": 1, "skill": 0.0, "skill_lo": 0.0},
-            {"model": "tendance", "horizon": 1, "skill": 0.10, "skill_lo": -0.01},
-            {"model": "tendance+taille", "horizon": 1, "skill": 0.05, "skill_lo": 0.01},
-            {"model": "tendance", "horizon": 2, "skill": 0.10, "skill_lo": None}]
-    assert fc.choose(rows, horizons=(1, 2)) == {"1": "tendance+taille", "2": "naif"}
+    path = {"naif": {"skill_moyen": 0.0, "skill_moyen_lo": 0.0},
+            "tendance": {"skill_moyen": 0.10, "skill_moyen_lo": -0.01},
+            "tendance+taille": {"skill_moyen": 0.05, "skill_moyen_lo": 0.01}}
+    assert fc.choose(path) == "tendance+taille"
+    assert fc.choose(path | {"tendance+taille": {"skill_moyen": 0.05, "skill_moyen_lo": None}}) == "naif"
+
+
+def test_path_skill_is_mean_of_horizon_skills():
+    rng = np.random.default_rng(0)
+    c = pd.DataFrame({"site_id": np.repeat([f"s{i}" for i in range(20)], 2), "h": np.tile([1, 2], 20)})
+    c["y"] = rng.normal(0, 1, len(c))
+    y = c["y"].to_numpy()
+    preds = {"naif": np.zeros(len(c)), "tendance": y * 0.5, "tendance+taille": y}
+    ps = fc.path_skill(c, preds, (1, 2), n_boot=200)
+    assert ps["tendance+taille"]["skill_moyen"] == pytest.approx(1.0)
+    assert ps["tendance"]["skill_moyen"] == pytest.approx(0.75)  # 1 − 0,25 à chaque horizon
+    assert ps["naif"]["skill_moyen"] == 0 and ps["tendance"]["n_mines"] == 20
+    assert ps["tendance"]["skill_moyen_lo"] <= 0.75 <= ps["tendance"]["skill_moyen_hi"]
+
+
+def test_single_model_for_whole_path(tmp_path):
+    """Un seul modèle sur tout le chemin : pas de saut de la valeur prévue d'un horizon à l'autre."""
+    p = _panel("revert", n=80, seed=2, y1=2019)
+    bt = fc.backtest(out=tmp_path, n_boot=50, panel=p, today=TODAY)
+    assert len(set(bt["retenu"].values())) == 1 and bt["retenu_modele"] in fc.MODELS
+    ch = bt["skill_chemin"][bt["retenu_modele"]]
+    assert ch["skill_moyen_lo"] > 0 and ch["horizons"] == bt["horizons_mesures"]
+    r = fc.forecast_site("m005", out=tmp_path, panel=p, today=TODAY)
+    assert {x["model"] for x in r["prevision"]} == {bt["retenu_modele"]}
 
 
 def test_error_quantiles_extrapolate_with_sqrt():
@@ -180,7 +204,7 @@ def test_size_model_wins_when_mines_revert_to_footprint():
     assert bt["reglages"]["rappel_par_horizon"]["2"] > bt["reglages"]["rappel_par_horizon"]["1"]
     s = _row(bt, "tendance+taille", 1)
     assert s["skill_lo"] > 0 and s["r_lo"] > 0 and s["rho"] > 0
-    assert bt["retenu"]["1"] == "tendance+taille"
+    assert bt["retenu"]["1"] == bt["retenu_modele"] == "tendance+taille"
 
 
 def test_tuning_never_sees_test_period():

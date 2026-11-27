@@ -12,9 +12,10 @@ Modèles, du plus simple au plus riche (tout en log de la production) :
                    log10 t = a + b·log10 km², par type « minerai » / « charbon ») : part du chemin
                    parcourue λ_h = 1 − (1 − κ)^h, un seul κ (rappel par an) réglé.
 
-Un modèle n'est « retenu » à un horizon que s'il bat le naïf hors échantillon : skill > 0 ET borne basse
-de son IC 90 % (bootstrap sur les mines) > 0. Sinon le naïf reste retenu. Aucune IA : règles et moindres
-carrés, entièrement reproductibles.
+Un seul modèle est « retenu » pour tout le chemin de prévision (pas de saut d'un modèle à l'autre entre
+deux horizons) : celui dont le skill moyen sur les horizons mesurés est le meilleur hors échantillon, à
+condition que la borne basse de son IC 90 % (bootstrap sur les mines) soit > 0. Sinon le naïf reste
+retenu. Aucune IA : règles et moindres carrés, entièrement reproductibles.
 """
 
 from __future__ import annotations
@@ -76,8 +77,9 @@ METHODE = (
     "« mesuré » s'il a au moins 8 cas de test pour chaque modèle et des quantiles d'erreur ≤ 2014 non "
     "extrapolés (au moins 30 erreurs) ; les prévisions d'avenir s'arrêtent au plus long horizon mesuré "
     "sans trou depuis h = 1, et leurs intervalles sont ceux dont la couverture 2015–2021 est publiée "
-    "(quantiles des erreurs ≤ 2014). Un modèle n'est retenu que si "
-    "la borne basse de l'IC 90 % de son skill est > 0 ; sinon le naïf reste retenu. Le modèle d'emprise "
+    "(quantiles des erreurs ≤ 2014). Un seul modèle retenu pour tout le chemin (aucun saut entre "
+    "horizons) : le meilleur skill moyen sur les horizons mesurés (moyenne des skills par horizon, IC 90 % "
+    "par bootstrap sur les mines), s'il a une borne basse > 0 ; sinon le naïf. Le modèle d'emprise "
     "est ré-estimé à chaque origine sur la coupe des productions de l'année d'origine (≤ t − h) ; les "
     "prévisions d'avenir utilisent ce même ajustement, à l'année de la dernière valeur connue de la mine.")
 
@@ -398,14 +400,51 @@ def metrics(d: pd.DataFrame, n_boot: int = N_BOOT, seed: int = 0) -> dict:
     return out
 
 
-def choose(rows: list[dict], horizons=HORIZONS) -> dict[str, str]:
-    """Modèle retenu par horizon : meilleur skill parmi ceux dont l'IC 90 % du skill exclut 0, sinon naïf."""
-    out = {}
-    for h in horizons:
-        ok = [r for r in rows if r["horizon"] == h and r["model"] != "naif"
-              and _finite(r.get("skill_lo")) and r["skill_lo"] > 0]
-        out[str(h)] = max(ok, key=lambda r: r["skill"])["model"] if ok else "naif"
+def path_skill(cases: pd.DataFrame, preds: dict[str, np.ndarray], horizons, n_boot: int = N_BOOT,
+               seed: int = 0) -> dict[str, dict]:
+    """Skill moyen sur un chemin d'horizons : moyenne, horizon par horizon, de 1 − MSE(modèle) / MSE(naïf).
+
+    IC 90 % percentile en rééchantillonnant les MINES (mêmes tirages pour tous les modèles). Retourne
+    {modèle : {skill_moyen, skill_moyen_lo, skill_moyen_hi, n_mines, n_points, horizons}}."""
+    hs = [h for h in horizons if (cases["h"] == h).any()]
+    c = cases.reset_index(drop=True)
+    keep = c["h"].isin(hs).to_numpy()
+    out = {m: {"skill_moyen": math.nan, "skill_moyen_lo": math.nan, "skill_moyen_hi": math.nan,
+               "n_mines": 0, "n_points": 0, "horizons": hs} for m in MODELS}
+    if not hs:
+        return out
+    codes, uniq = pd.factorize(c.loc[keep, "site_id"], sort=True)
+    hi = np.searchsorted(hs, c.loc[keep, "h"].to_numpy(int))
+    y = c.loc[keep, "y"].to_numpy(float)
+    sq = {m: np.zeros((len(uniq), len(hs))) for m in MODELS}  # erreurs² sommées par (mine, horizon)
+    for m in MODELS:
+        np.add.at(sq[m], (codes, hi), (y - preds[m][keep]) ** 2)
+
+    def avg(w: np.ndarray) -> dict[str, float]:
+        base = w @ sq["naif"]
+        ok = base > 0
+        return {m: float(np.mean(1 - (w @ sq[m])[ok] / base[ok])) if ok.any() else math.nan for m in MODELS}
+
+    pt = avg(np.ones(len(uniq)))
+    rng = np.random.default_rng(seed)
+    draws = [avg(np.bincount(rng.integers(0, len(uniq), len(uniq)), minlength=len(uniq)).astype(float))
+             for _ in range(n_boot if len(uniq) >= 2 else 0)]
+    for m in MODELS:
+        v = np.asarray([d[m] for d in draws], float)
+        v = v[np.isfinite(v)]
+        ok = len(v) >= max(20, n_boot // 5) and np.isfinite(pt[m])
+        out[m] |= {"skill_moyen": pt[m], "n_mines": int(len(uniq)), "n_points": int(keep.sum()),
+                   "skill_moyen_lo": float(np.percentile(v, 5)) if ok else math.nan,
+                   "skill_moyen_hi": float(np.percentile(v, 95)) if ok else math.nan}
     return out
+
+
+def choose(path: dict[str, dict]) -> str:
+    """Modèle retenu pour tout le chemin : meilleur skill moyen parmi ceux dont l'IC 90 % exclut 0, sinon
+    le naïf."""
+    ok = [(v["skill_moyen"], m) for m, v in path.items() if m != "naif" and _finite(v.get("skill_moyen_lo"))
+          and v["skill_moyen_lo"] > 0]
+    return max(ok)[1] if ok else "naif"
 
 
 def _measured(rows: list[dict], q_tune: dict) -> list[int]:
@@ -519,15 +558,18 @@ def run_backtest(panel: pd.DataFrame, n_boot: int = N_BOOT, today: date | None =
                 diag.append({"model": "tendance (φ = 1)", "horizon": h, **{k: mt[k] for k in DIAG_KEYS}})
     mesures = _measured(rows, q_tune)
     h_pub = next((h - 1 for h in range(1, H_MAX + 2) if h not in mesures), H_MAX)  # sans trou depuis h = 1
-    retenu = choose(rows, mesures)
-    petit = [r for r in rows if retenu.get(str(r["horizon"])) == r["model"] != "naif" and r["skill"] < 0.05]
+    chemin = path_skill(test_c, preds_test, [h for h in mesures if h <= h_pub], n_boot, seed=0)
+    modele = choose(chemin)
+    retenu = {str(h): modele for h in mesures if h <= h_pub}
+    petit = modele != "naif" and chemin[modele]["skill_moyen"] < 0.05
     all_c = pd.concat([tune_c, test_c])  # diagnostic : quantiles bâtis sur toutes les erreurs ≤ 2021
     q_all = error_quantiles(_errors(all_c, predict(all_c, phi, kappa)))
     largeur = {m: {h: _width(q_all, m, h) / _width(q_tune, m, h) for h in mesures
                    if _width(q_tune, m, h) > 0} for m in MODELS}
     years = panel["year"].astype(int)
     res = base | {
-        "statut": "ok", "rows": rows, "retenu": retenu, "rows_reglage": rows_reglage,
+        "statut": "ok", "rows": rows, "retenu": retenu, "retenu_modele": modele, "skill_chemin": chemin,
+        "rows_reglage": rows_reglage,
         "reglages": {"phi": phi, "kappa": kappa,
                      "rappel_par_horizon": {h: float(pull(kappa, h)) for h in range(1, H_MAX + 1)}},
         "horizons_mesures": mesures, "horizon_max_publie": h_pub,
@@ -550,9 +592,8 @@ def run_backtest(panel: pd.DataFrame, n_boot: int = N_BOOT, today: date | None =
             "Signaux satellite et actualité non utilisés : trop récents (2016+) pour un rétro-test "
             "2005–2021.",
             *([] if not petit else [
-                "Gain du modèle retenu sur le naïf inférieur à 5 % de MSE (horizons "
-                + ", ".join(str(r["horizon"]) for r in petit) + ") : la prévision reste proche de "
-                "« l'an dernier »."])],
+                "Gain moyen du modèle retenu sur le naïf inférieur à 5 % de MSE : la prévision reste "
+                "proche de « la dernière valeur connue »."])],
         "diagnostic_tendance_brute": diag,
         "today": today.isoformat()}
     return _clean(res)
@@ -637,6 +678,8 @@ def site_forecast_frame(g: pd.DataFrame, bt: dict, today: date | None = None) ->
 
 
 def _retenu(bt: dict, h: int) -> str:
+    if isinstance(bt.get("retenu_modele"), str):  # un seul modèle pour tout le chemin
+        return bt["retenu_modele"]
     r = bt.get("retenu") or {}
     keys = sorted(int(k) for k in r) or [1]
     return r.get(str(min(h, keys[-1])), "naif")
@@ -807,7 +850,9 @@ def _print_rows(res: dict) -> None:
               f"{f(r['rho_hi'])}]  skill={f(r['skill'], True)} [{f(r['skill_lo'], True)};"
               f"{f(r['skill_hi'], True)}]  ×{r['facteur_median']}  sens={r['bon_sens']}  "
               f"couv80={r['couverture80']} couv90={r['couverture90']}")
-    print("retenu :", res.get("retenu"), "| réglages :", res.get("reglages"))
+    ch = (res.get("skill_chemin") or {}).get(res.get("retenu_modele")) or {}
+    print("retenu :", res.get("retenu_modele"), "skill moyen", ch.get("skill_moyen"),
+          f"[{ch.get('skill_moyen_lo')} ; {ch.get('skill_moyen_hi')}]", "| réglages :", res.get("reglages"))
 
 
 def main(argv: list[str] | None = None) -> int:
