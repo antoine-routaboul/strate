@@ -217,6 +217,14 @@ def test_forecast_site(tmp_path):
     assert fc.forecast_site("J001", out=tmp_path, panel=p, today=TODAY)["site_id"] == "m001"
 
 
+def test_forecast_site_is_read_only(tmp_path):
+    p = _panel("trend", n=12, y1=2019)
+    r = fc.forecast_site("m001", out=tmp_path, panel=p, today=TODAY)
+    assert not (tmp_path / "backtest.json").exists() and list(tmp_path.iterdir()) == []
+    assert r["prevision"] == [] and r["message"] and len(r["historique"]) == 20
+    assert r["serie"] == "minerai extrait" and r["qualite"] == {"n": 0}
+
+
 def test_stale_series_gets_no_forecast(tmp_path):
     p = _panel("trend", n=20, y1=2019)
     old = _panel("trend", n=1, y0=2000, y1=2008).assign(site_id="vieux", jasansky="JV")

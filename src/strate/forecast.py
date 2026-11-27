@@ -40,6 +40,7 @@ log = logging.getLogger(__name__)
 
 OUT = DATA_DIR / "forecast"
 LEDGER_NAME, BACKTEST_NAME = "ledger.parquet", "backtest.json"
+MSG_BACKTEST = "Rétro-test pas encore lancé : uv run strate forecast backtest"
 LEDGER_COLS = ["made_at", "site_id", "serie", "target_year", "model", "value", "lo80", "hi80", "lo90",
                "hi90"]
 
@@ -637,13 +638,23 @@ def _site_track(g: pd.DataFrame, bt: dict, model: str) -> dict:
 def forecast_site(site_id: str, out: Path | None = None, panel: pd.DataFrame | None = None,
                   today: date | None = None) -> dict | None:
     """Historique, prévision (modèle retenu par horizon, intervalles 80/90 %) et qualité mesurée d'une mine.
-    None si la mine n'a pas de série de production."""
+    None si la mine n'a pas de série de production.
+
+    Lecture seule : lit backtest.json sans jamais lancer ni écrire le rétro-test. S'il manque, la réponse
+    garde l'historique, une prévision vide et un champ « message »."""
     panel = _panel() if panel is None else panel
     g = _resolve(site_id, panel)
     if g.empty:
         return None
-    bt = _bt_or_run(out)
     g = g.sort_values("year")
+    histo = [{"year": int(y), "value": float(v)} for y, v in zip(g["year"], g["value"], strict=True)]
+    ident = {"site_id": str(g["site_id"].iat[0]), "nom": g["nom"].iat[0], "serie": g["serie"].iat[0],
+             "unite": "t", "historique": histo, "derniere_annee": int(g["year"].max())}
+    bt = load_backtest(out)  # lecture seule : jamais de rétro-test lancé ni écrit ici
+    if bt is None:
+        return _clean(ident | {"prevision": [], "qualite": {"n": 0}, "qualite_par_horizon": [],
+                               "suivi_site": {"n": 0}, "message": MSG_BACKTEST,
+                               "note": MSG_BACKTEST, "backtest_run_at": None})
     fc = site_forecast_frame(g, bt, today)
     prev = []
     env = np.zeros(4)  # écarts log (lo90, lo80, hi80, hi90) : enveloppe qui ne rétrécit pas au changement
@@ -672,16 +683,11 @@ def forecast_site(site_id: str, out: Path | None = None, panel: pd.DataFrame | N
         return {"model": m, "horizon": h, **{k: r.get(k) for k in keys}, "n": r.get("n_points")}
 
     q1 = qual(1)
-    return _clean({
-        "site_id": str(g["site_id"].iat[0]), "nom": g["nom"].iat[0], "serie": g["serie"].iat[0],
-        "unite": "t",
-        "historique": [{"year": int(y), "value": float(v)}
-                       for y, v in zip(g["year"], g["value"], strict=True)],
+    return _clean(ident | {
         "prevision": prev,
         "qualite": q1 if q1 is not None else {"n": 0},
         "qualite_par_horizon": [q for h in HORIZONS if (q := qual(h)) is not None],
         "suivi_site": _site_track(g, bt, _retenu(bt, 1)),
-        "derniere_annee": int(g["year"].max()),
         "note": None if prev else "série insuffisante ou trop ancienne pour une prévision",
         "backtest_run_at": bt.get("run_at")})
 
