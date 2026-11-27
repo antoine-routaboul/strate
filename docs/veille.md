@@ -121,7 +121,12 @@ chaîne : elle est notée et retentée au cycle suivant.
   **Famille principale = décalage 0 seulement** (type × signal, plus le volume d'actualité) : q-valeurs
   de Benjamini-Hochberg sur cette famille ; verdict `lien démontré` si q < 0,10 et IC hors de 1.
   Décalages −3 … +3 : calculés et stockés avec leur propre correction, verdict `exploratoire` (on ne
-  déclare rien sur eux). `trop peu de données` si moins de 5 mines ou 10 mois-événements.
+  déclare rien sur eux). **Mines informatives** : seules celles qui ont au moins un mois d'événement
+  et au moins une anomalie (aucun des deux tous les mois) entrent dans le test, le lift, le phi et le
+  bootstrap ; `n_mines` les compte, `n_events` compte leurs mois-événements (`details` garde
+  `mines_avec_evenements` et `mois_evenements_total`). `trop peu de données` si moins de 5 mines
+  informatives ou 10 mois-événements de ces mines : une seule mine informative parmi cinq mines à
+  événements ne peut plus produire un verdict sur un IC réduit à un point.
   **Coefficient de chaque type** (colonnes `rho`, `rho_lo`, `rho_hi`) : phi intra-mine entre mois
   d'événement (0/1) et mois d'anomalie (0/1), sommes centrées dans chaque mine, IC 90 % par les mêmes
   tirages de mines que le lift ; son numérateur est la statistique du test CMH (même p, même q).

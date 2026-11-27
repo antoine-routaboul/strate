@@ -14,7 +14,7 @@ Trois tâches, chacune bornée pour qu'un cycle de 15 min rende toujours la main
    mines, q-valeurs de Benjamini-Hochberg. Seul le décalage 0 peut conclure ; les décalages ±1 à ±3 mois
    sont exploratoires. Aucune IA : que des comptages et des rangs (texte complet : `METHODE`).
 
-Rien n'est affirmé sans données suffisantes (5 mines, 10 mois-événements) ni sans correction des
+Rien n'est affirmé sans données suffisantes (5 mines informatives, 10 mois-événements) ni sans correction des
 comparaisons multiples, et seuls comptent les mois où l'actualité était réellement collectée.
 """
 
@@ -82,7 +82,10 @@ METHODE = (
     "Benjamini-Hochberg sur cette famille ; lien démontré si q < 0,10 et IC hors de la valeur nulle "
     "(1 pour le lift, 0 pour la corrélation). Décalages −3 à +3 mois (satellite après l'événement si "
     "positif) : exploratoires, avec leur propre correction de Benjamini-Hochberg, jamais déclarés "
-    "démontrés. Trop peu de données sous 5 mines ou 10 mois-événements : ni q-valeur ni verdict."
+    "démontrés. Seules comptent les mines informatives (au moins un mois d'événement et au moins une "
+    "anomalie, aucun des deux tous les mois) : elles seules entrent dans le test, le lift, le phi et le "
+    "bootstrap, et n_mines les compte. Trop peu de données sous 5 mines informatives ou 10 "
+    "mois-événements de ces mines : ni q-valeur ni verdict."
 )
 
 Runner = Callable[[str], None]
@@ -489,8 +492,9 @@ def _phi_parts(counts: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Sommes centrées de chaque mine pour le phi intra-mine (mois d'événement 0/1 × mois d'anomalie 0/1).
 
     Dans une mine : Sxy = a − n_e·K/T (anomalies sur un mois d'événement moins leur nombre attendu, le
-    terme même du test CMH), Sxx = n_e·(T − n_e)/T, Syy = K·(T − K)/T. Une mine sans événement, sans
-    mois sans événement ou sans anomalie apporte 0 aux trois sommes, comme au test.
+    terme même du test CMH), Sxx = n_e·(T − n_e)/T, Syy = K·(T − K)/T. Les mines non informatives
+    (sans événement, sans anomalie, ou l'un des deux tous les mois) sont écartées en amont
+    (`_informative`), comme pour le test.
     """
     t, k, ne, a = (counts[:, i].astype(float) for i in range(4))
     tt = np.where(t > 0, t, 1.0)
@@ -501,6 +505,18 @@ def _phi_ratio(sxy, sxx, syy):
     with np.errstate(divide="ignore", invalid="ignore"):
         den = np.sqrt(np.asarray(sxx, dtype=float) * np.asarray(syy, dtype=float))
         return np.where(den > 0, np.asarray(sxy, dtype=float) / np.where(den > 0, den, 1.0), np.nan)
+
+
+def _informative(counts: np.ndarray) -> np.ndarray:
+    """Mines qui apportent quelque chose au test : 0 < n_e < T et 0 < K < T.
+
+    Une mine sans mois d'événement, sans mois sans événement, sans anomalie ou en anomalie tous les mois
+    a un compte imposé par ses marges : elle n'entre ni dans la statistique CMH, ni dans le lift, ni dans
+    le phi. La compter parmi les « mines » du seuil MIN_MINES ou du bootstrap laisserait une seule mine
+    informative produire un verdict (avec un IC réduit à un point).
+    """
+    t, k, ne = counts[:, 0], counts[:, 1], counts[:, 2]
+    return (ne > 0) & (ne < t) & (k > 0) & (k < t)
 
 
 def _lift_test(counts: np.ndarray, rng: np.random.Generator, n_boot: int) -> dict:
@@ -605,14 +621,22 @@ def study(con: sqlite3.Connection, dossier_fn: DossierFn | None = None, candidat
                     e = np.isin(ms[keep], list(p["ev"].get(etype, ())))
                     counts.append([keep.sum(), hit.sum(), e.sum(), (hit & e).sum()])
                 c = np.array(counts, dtype=float).reshape(-1, 4)
-                n_mines, n_events = int((c[:, 2] > 0).sum()), int(c[:, 2].sum())
-                if not n_events:
+                if not c[:, 2].sum():
                     continue  # type jamais vu sur ces mines : une ligne vide n'apprendrait rien
+                # seules les mines informatives (mois d'événement ET anomalies, chacun avec son contraire)
+                # entrent dans le test, le lift, le phi et le bootstrap : n_mines les compte, elles seules
+                inf = _informative(c)
+                ci = c[inf]
+                n_mines, n_events = int(inf.sum()), int(ci[:, 2].sum())
                 row = dict(event_type=etype, signal=sig, lag_months=lag, n_mines=n_mines, n_events=n_events,
                            lift=None, lift_lo=None, lift_hi=None, rho=None, rho_lo=None, rho_hi=None,
                            p_value=None)
-                r = _lift_test(c, rng, n_boot)
-                det = dict(mines_panel=len(c), mois_apparies=int(c[:, 0].sum()), anomalies=int(c[:, 1].sum()),
+                r = _lift_test(ci, rng, n_boot) if n_mines else dict(
+                    p_event=None, p_no_event=None, expected=None, chi2=None, corrected=False)
+                det = dict(mines_panel=len(c), mines_avec_evenements=int((c[:, 2] > 0).sum()),
+                           mois_evenements_total=int(c[:, 2].sum()), mines_informatives=n_mines,
+                           mois_apparies=int(c[:, 0].sum()), mois_apparies_informatifs=int(ci[:, 0].sum()),
+                           anomalies=int(c[:, 1].sum()),
                            test="Cochran–Mantel–Haenszel exact", n_boot=n_boot,
                            p_anomalie_evenement=r.pop("p_event"),
                            p_anomalie_sans_evenement=r.pop("p_no_event"),
@@ -621,7 +645,8 @@ def study(con: sqlite3.Connection, dossier_fn: DossierFn | None = None, candidat
                 row.update(r)
                 row["_tested"] = n_mines >= MIN_MINES and n_events >= MIN_EVENT_MONTHS
                 det.update(coefficient_rho="phi intra-mine (mois d'événement × mois d'anomalie)",
-                           unite_n="mois-événements", unite_bootstrap="mines", n_unites_bootstrap=len(c))
+                           unite_n="mois-événements des mines informatives", unite_bootstrap="mines",
+                           n_unites_bootstrap=n_mines)
                 row["details"] = det
                 rows.append(row)
     for sig in signals:

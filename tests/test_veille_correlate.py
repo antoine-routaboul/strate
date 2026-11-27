@@ -581,3 +581,28 @@ def test_continuity_wording_matches_docs():
     phrase = "quand aucune anomalie ne tombe hors des mois d'événement"
     assert phrase in correlate.METHODE and phrase in doc
     assert "quand une case est vide" not in doc
+
+
+def test_single_informative_mine_cannot_conclude(con):
+    """5 mines à événements, une seule avec des anomalies : une mine informative, pas un verdict."""
+    ev = {f"m{i}": [5 + i, 20 + i] for i in range(5)}
+    ev["m0"] = [5, 15, 25, 35, 45, 55]
+    seed_events(con, ev)
+    dos = {}
+    for sid, ems in ev.items():
+        a = np.zeros(N_MONTHS)
+        if sid == "m0":
+            a[ems] = 2.5  # la seule mine en anomalie, exactement aux mois d'événement
+        dos[sid] = pd.DataFrame({"date": pd.date_range("2020-01-01", periods=N_MONTHS, freq="MS"),
+                                 "a_bare_km2": a, "z_bare_km2": a})
+    rows = correlate.study(con, dos.__getitem__, now=NOW, n_boot=200, signals=["bare_km2"])
+    r = next(r for r in rows if (r["event_type"], r["lag_months"]) == ("accident", 0))
+    assert r["details"]["mines_avec_evenements"] == 5 and r["details"]["mois_evenements_total"] == 14
+    assert r["n_mines"] == 1 and r["n_events"] == 6 and r["details"]["n_unites_bootstrap"] == 1
+    assert r["q_value"] is None
+    assert r["verdict"] == r["verdict_rho"] == "trop peu de données"
+
+
+def test_informative_mines_mask():
+    c = np.array([[48, 6, 4, 4], [48, 0, 2, 0], [48, 3, 0, 0], [48, 48, 2, 2], [48, 3, 48, 3]], float)
+    assert correlate._informative(c).tolist() == [True, False, False, False, False]
