@@ -95,6 +95,11 @@ chaîne : elle est notée et retentée au cycle suivant.
   TERROR, KIDNAP, ARMEDCONFLICT → securite) **et** mots-clés multilingues dans le titre (rachat,
   acquisition, adquisición, aquisição, Übernahme, поглощение, 收购 ; production, output, expansion,
   shutdown, suspend… ; tailings, relaves, rejeitos…). Un type par événement (le plus fort).
+  Les verbes « mourir » qui meurent aussi au figuré (die, dies, meurt, muere, murió, morre, stirbt,
+  muore…) ne comptent qu'avec une personne ou un nombre à deux mots au plus (« Two workers die »,
+  « 3 die ») : « strike dies down », « deal dies », « Muere el acuerdo minero » ne sont pas des
+  accidents. Arabe « توفي » en mot entier (pas « توفير », fournir). Choix : un titre sans sujet
+  humain (« Muere en la mina ») est perdu, comme « öldü » turc ou « mati » indonésien.
 - `confidence` = force du rattachement × force du classement (0–1), détail dans `evidence` (JSON).
 
 ### 3. `strate.veille.correlate`

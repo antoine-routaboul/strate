@@ -285,6 +285,31 @@ def test_dying_keywords_avoid_false_senses():
     assert N.classify("Maden şirketi halka açık oldu", [], "tr")[0] != "accident"   # « oldu » : devenu
 
 
+@pytest.mark.parametrize("title,lang,expected", [
+    ("توفير فرص عمل في منجم الذهب", "ar", "autre"),          # « توفير » : fournir, pas « توفي »
+    ("وزارة تعمل على توفير المياه للمنجم", "ar", "autre"),
+    ("Mine strike dies down after deal", "en", "social"),    # « dies down » : s'apaise
+    ("Protests at Kibali mine die down", "en", "social"),
+    ("Gold rally dies", "en", "autre"),
+    ("Kibali deal dies", "en", "finance"),
+    ("Muere el acuerdo minero", "es", "autre"),              # « minero » adjectif, trop loin du verbe
+    ("Decedute le proteste", "it", "social"),
+    ("Projekt stirbt", "de", "autre"),
+    ("Le projet minier meurt", "fr", "autre"),
+])
+def test_figurative_dying_is_not_an_accident(title, lang, expected):
+    assert N.classify(title, [], lang)[0] == expected, title
+
+
+@pytest.mark.parametrize("title,lang", [
+    ("3 die in Kibali collapse", "en"), ("Mine worker, 45, dies", "en"), ("وتوفي عامل", "ar"),
+    ("توفيت عاملة في المنجم", "ar"), ("Muere un trabajador en la mina", "es"),
+    ("Grubenarbeiter stirbt", "de"),
+])
+def test_dying_with_a_person_is_still_an_accident(title, lang):
+    assert N.classify(title, [], lang)[0] == "accident", title
+
+
 def test_classify_themes_and_false_friends():
     assert N.classify("Mine news", ["STRIKE", "PROTEST"], "en")[0] == "social"
     typ, s, _ = N.classify("Mine news", ["LEGISLATION"], "en")

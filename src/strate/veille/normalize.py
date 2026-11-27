@@ -867,6 +867,9 @@ _ENV_DIRTY = ("POLLUT", "TOXIC", "SPILL", "CONTAMIN", "WASTE")   # ENV_* de poll
 # « mourir » (die, dies, died, meurt, muere, morre, stirbt, muore, zmarł, умер…) doivent être dans le titre.
 # Exclus à dessein : turc « öldü » (replié « oldu », aussi « il est devenu »), « meurtre » (« meurt= »
 # exact), indonésien « mati » (aussi « en panne, à l'arrêt ») ; « tewas » et « meninggal » suffisent.
+# Arabe « توفي= » en mot entier : en radical, il prenait « توفير » (fournir) et « توفيق » (un prénom).
+# Les verbes qui meurent aussi au figuré (« strike dies down », « deal dies », « muere el acuerdo »)
+# ne comptent qu'avec une personne dans le titre : voir _NEEDS_PERSON.
 # Mots de 3 lettres ou moins : mot exact. Allemand/néerlandais : aussi au milieu d'un composé.
 KEYWORDS: dict[str, dict[str, str]] = {
     "accident": {
@@ -892,8 +895,8 @@ KEYWORDS: dict[str, dict[str, str]] = {
               "grizu",
         "id": "kecelakaan longsor ambruk runtuh ledakan kebakaran tewas meninggal korban terjebak "
               "tertimbun evakuasi banjir tragedi",
-        "ar": "حادث انهيار انفجار حريق مقتل قتلى وفاة مصرع مات يموت توفي حتفه جرحى إصابة محاصرين إنقاذ "
-              "فيضان",
+        "ar": "حادث انهيار انفجار حريق مقتل قتلى وفاة مصرع مات يموت توفي= توفيت= حتفه جرحى "
+              "إصابة محاصرين إنقاذ فيضان",
         "zh": "事故 坍塌 塌方 冒顶 爆炸 火灾 起火 死亡 遇难 身亡 罹难 丧生 致死 殉职 受伤 被困 救援 透水 "
               "瓦斯 矿难 失踪",
         "ja": "事故 崩落 落盤 爆発 火災 死亡 死者 死去 亡くな 犠牲 負傷 閉じ込め 救助 浸水 遭難 行方不明",
@@ -1103,7 +1106,7 @@ def _compile_keywords() -> dict[str, list[tuple[str, str, str]]]:
                 if not f:
                     continue
                 if _ARABIC.search(f):
-                    mode = "ar"
+                    mode = "ar_mot" if exact else "ar"
                 elif " " in f:
                     mode = "phrase"
                 elif exact or len(f) <= 4:
@@ -1123,6 +1126,55 @@ _FALSE_SENSE = {"strike": {"earthquake", "quake", "lightning", "drone", "missile
                            "military", "tornado", "storm", "hurricane", "typhoon"}}
 
 
+# Verbes « mourir » qui meurent aussi au figuré : « Mine strike dies down », « Gold rally dies »,
+# « Muere el acuerdo », « Projekt stirbt ». Ils ne comptent que si le titre nomme une personne (mineur,
+# ouvrier, homme…) ou un nombre (« 3 die »). Repli : « muoiono », « murieron », « умер » restent libres,
+# leur sujet est presque toujours humain.
+_PERSON: dict[str, frozenset[str]] = {lang: frozenset(txt.split()) for lang, txt in {
+    "en": "worker workers miner miners man men woman women people person persons employee employees "
+          "contractor contractors boy boys girl girls child children teen teenager driver operator "
+          "operators digger diggers labourer labourers laborer laborers artisanal one two three four five "
+          "six seven eight nine ten dozen dozens several",
+    "fr": "mineur mineurs ouvrier ouvriers travailleur travailleurs homme hommes femme femmes personne "
+          "personnes employe employes salarie salaries enfant enfants jeune jeunes orpailleur orpailleurs "
+          "sous-traitant deux trois quatre cinq six sept huit neuf dix plusieurs",
+    "es": "minero mineros trabajador trabajadores obrero obreros operario operarios persona personas "
+          "hombre hombres mujer mujeres joven jovenes nino nina empleado empleados dos tres cuatro cinco "
+          "seis siete ocho nueve diez varios",
+    "pt": "mineiro mineiros trabalhador trabalhadores operario operarios pessoa pessoas homem homens "
+          "mulher jovem crianca funcionario funcionarios garimpeiro garimpeiros dois duas tres quatro "
+          "cinco seis sete oito nove dez",
+    "de": "bergmann bergleute kumpel arbeiter mann frau menschen person personen mitarbeiter kind "
+          "jugendlicher zwei drei vier funf sechs sieben acht neun zehn",
+    "it": "minatore minatori operaio operai lavoratore lavoratori uomo donna persona persone giovane "
+          "dipendente dipendenti due tre quattro cinque sei sette otto nove dieci",
+}.items()}
+_NEEDS_PERSON: dict[str, frozenset[str]] = {
+    "en": frozenset({"die", "dies", "dying"}), "fr": frozenset({"meurt", "meurent"}),
+    "es": frozenset({"muere", "murio"}), "pt": frozenset({"morre"}),
+    "de": frozenset({"stirbt", "sterben"}), "it": frozenset({"muore", "decedut"}),
+}
+
+
+_PERSON_WINDOW = 2  # « Muere el acuerdo minero » : « minero » y est un adjectif, trois mots plus loin
+
+
+def _is_person(lang: str, t: str) -> bool:
+    # composés allemands : « Bergarbeiter », « Grubenmann »
+    return t.isdigit() or t in _PERSON.get(lang, frozenset()) or (
+        lang == "de" and t.endswith(("arbeiter", "leute", "mann")))
+
+
+def _verb_with_person(lang: str, mode: str, kw: str, toks: list[str]) -> bool:
+    """Le verbe figure-t-il à deux mots au plus d'une personne ou d'un nombre ?"""
+    for i, t in enumerate(toks):
+        hit = t == kw if mode == "exact" else t.startswith(kw) if mode == "prefix" else kw in t
+        near = range(max(0, i - _PERSON_WINDOW), min(len(toks), i + _PERSON_WINDOW + 1))
+        if hit and any(_is_person(lang, toks[j]) for j in near if j != i):
+            return True
+    return False
+
+
 def _kw_hit(mode: str, kw: str, toks: list[str], tokset: set[str], joined: str, cjk_text: str) -> bool:
     if mode == "cjk":
         return kw in cjk_text
@@ -1132,8 +1184,9 @@ def _kw_hit(mode: str, kw: str, toks: list[str], tokset: set[str], joined: str, 
         return any(t.startswith(kw) for t in toks)
     if mode == "phrase":
         return f" {kw} " in f" {joined} "
-    if mode == "ar":
-        short = len(kw) <= 3   # « بيع » est aussi dans « الطبيعي » : mot entier pour les mots courts
+    if mode in ("ar", "ar_mot"):
+        # « بيع » est aussi dans « الطبيعي » : mot entier pour les mots courts et les mots marqués « = »
+        short = mode == "ar_mot" or len(kw) <= 3
         return any(t == kw or (t[0] in "وبلفك" and t[1:] == kw)
                    or (not short and (t.startswith(kw) or (t[0] in "وبلفك" and t[1:].startswith(kw))))
                    for t in toks)
@@ -1155,8 +1208,11 @@ def classify(title: str, themes: list[str], lang: str | None) -> tuple[str, floa
     joined = " ".join(toks)
     cjk_text = _cjk_fold(title)
     hits: dict[str, set[str]] = {}
+    needs = _NEEDS_PERSON.get(lang or "", frozenset())
     for typ, mode, kw in _KW.get(lang or "", ()):
         if kw in _FALSE_SENSE and tokset & _FALSE_SENSE[kw]:
+            continue
+        if kw in needs and not _verb_with_person(lang or "", mode, kw, toks):
             continue
         if _kw_hit(mode, kw, toks, tokset, joined, cjk_text):
             hits.setdefault(typ, set()).add(kw)
