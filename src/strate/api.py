@@ -1099,6 +1099,16 @@ def _site_names(ids: list[str]) -> dict[str, str]:
     return out
 
 
+# annonce d'une société : l'ancien dossier ne donnait que le type d'événement de la veille → categorie
+INV = {"date": (), "montant": ("amount",), "devise": ("currency",), "categorie": ("category", "event_type"),
+       "titre": ("title",), "url": ("source_url",), "site_id": ()}
+# corrélations propres à une société (bootstrap sur ses années) ; verdict = verdict de ρ (ancien format)
+CO_CORR_SOCIETE = {"x": (), "y": (), "decalage": ("lag",), "n": ("n_points",), "r": ("pearson_r",),
+                   "r_lo": ("pearson_lo",), "r_hi": ("pearson_hi",), "rho": ("spearman_rho", "spearman"),
+                   "rho_lo": ("spearman_lo",), "rho_hi": ("spearman_hi",), "verdict_r": (),
+                   "verdict_rho": ("verdict",)}
+
+
 def _company_payload(d: dict) -> dict:
     prof = _pick(d, "profil", "company")
     mines = [_shape(r, {"site_id": ("id", "site"), "nom": ("name", "site_name"), "part": ("share",)})
@@ -1111,13 +1121,8 @@ def _company_payload(d: dict) -> dict:
         "profil": _finite(prof) if isinstance(prof, dict) else {},
         "mines": mines,
         "faits": _faits(d),
-        "investissements": [_shape(r, {"date": (), "montant": ("amount",), "devise": ("currency",),
-                                       "categorie": ("category",), "titre": ("title",),
-                                       "url": ("source_url",), "site_id": ()})
-                            for r in _rows(_pick(d, "investissements", "announcements"))],
-        "correlations": [_shape(r, {k: CO_CORR[k] for k in ("x", "y", "decalage", "r", "r_lo", "r_hi", "rho")}
-                                | {"n": ("n_points",)})
-                         for r in _rows(d.get("correlations"))],
+        "investissements": [_shape(r, INV) for r in _rows(_pick(d, "investissements", "announcements"))],
+        "correlations": [_shape(r, CO_CORR_SOCIETE) for r in _rows(d.get("correlations"))],
     }
 
 

@@ -504,9 +504,43 @@ def test_company_ok(client, monkeypatch):
         "r_lo": -0.1,
         "r_hi": 0.6,
         "rho": 0.25,
+        "rho_lo": None,
+        "rho_hi": None,
         "n": 12,
+        "verdict_r": None,
+        "verdict_rho": None,
     }
     assert client.get("/api/company", params={"id": "inconnue"}).status_code == 404
+
+
+def test_company_contract_correlations_and_announcements(client, monkeypatch):
+    """Format du contrat : lignes par société (lag, n, IC de r et de ρ, un verdict par coefficient) et
+    annonces avec categorie / montant / devise ; l'ancien event_type sert de catégorie."""
+    dossier = {
+        "profil": {"id": "bhp"},
+        "mines": [],
+        "correlations": [
+            {"x": "CAPEX", "y": "production", "lag": 0, "n": 9, "r": 0.4, "r_lo": 0.1, "r_hi": 0.7,
+             "rho": 0.3, "rho_lo": -0.2, "rho_hi": 0.6, "verdict_r": "non démontré : q ≥ 0,10",
+             "verdict_rho": "non démontré : l'IC 90 % de ρ contient 0"},
+            {"x": "CAPEX", "y": "emprise", "decalage": 1, "n_points": 6, "rho": 0.1, "verdict": "trop peu"},
+        ],
+        "announcements": [
+            {"date": "2026-03-01", "title": "BHP lance l'extension", "event_type": "operations",
+             "source_url": "u"},
+            {"date": "2026-04-01", "titre": "t", "categorie": "exploration", "montant": 2e8, "devise": "AUD"},
+        ],
+    }
+    fake(monkeypatch, "companies", company=lambda i: dossier)
+    d = client.get("/api/company", params={"id": "bhp"}).json()
+    a, b = d["correlations"]
+    assert (a["decalage"], a["n"], a["rho_lo"], a["rho_hi"]) == (0, 9, -0.2, 0.6)
+    assert a["verdict_r"].startswith("non démontré") and "ρ" in a["verdict_rho"]
+    assert (b["decalage"], b["n"], b["verdict_rho"], b["verdict_r"]) == (1, 6, "trop peu", None)
+    i0, i1 = d["investissements"]
+    assert (i0["categorie"], i0["montant"], i0["devise"], i0["titre"]) == ("operations", None, None,
+                                                                          "BHP lance l'extension")
+    assert (i1["categorie"], i1["montant"], i1["devise"]) == ("exploration", 2e8, "AUD")
 
 
 def test_company_without_data_or_module(client, monkeypatch):
