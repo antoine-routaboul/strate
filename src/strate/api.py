@@ -740,7 +740,7 @@ def _details(v) -> dict | None:
         d = json.loads(v) if isinstance(v, str) and v else None
     except ValueError:
         return None
-    return d if isinstance(d, dict) else None
+    return _finite(d) if isinstance(d, dict) else None   # json.loads accepte NaN : JSON strict en sortie
 
 
 @app.get("/api/veille/site")
@@ -1073,7 +1073,8 @@ def _guard_verdicts(out: dict, raw: dict) -> dict:
         v = out.get(key)
         if not _demontre(v):
             continue
-        q = _finite(_pick(raw, f"q_{typ}", "q_value"))
+        # q_value est la q de ρ (contrat sociétés) : un verdict de r n'est jamais validé par elle
+        q = _finite(raw.get("q_r")) if typ == "r" else _finite(_pick(raw, "q_rho", "q_value"))
         if isinstance(q, (int, float)) and not isinstance(q, bool) and q < Q_SOCIETES:
             continue
         manque = "q-valeur absente du module" if not isinstance(q, (int, float)) else f"q = {q:.2f} ≥ 0,10"

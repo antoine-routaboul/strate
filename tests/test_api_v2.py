@@ -745,7 +745,7 @@ def test_companies_correlations(client, monkeypatch):
 def test_companies_correlations_contract_columns(client, monkeypatch):
     """Un verdict par coefficient, la q-valeur BH et n sociétés ; lignes par société exclues de la table."""
     rows = [
-        {**CORR[0], "portee": "ensemble", "q_value": 0.04, "verdict_r": "lien positif démontré",
+        {**CORR[0], "portee": "ensemble", "q_value": 0.04, "q_r": 0.03, "verdict_r": "lien positif démontré",
          "verdict_rho": "non démontré : q ≥ 0,10", "verdict": "non démontré : q ≥ 0,10"},
         {**CORR[0], "portee": "societe", "company_id": "bhp", "verdict": "x"},
         {**CORR[1], "verdict": "non démontré (ρ)"},  # ancien format : verdict = verdict de ρ
@@ -1216,3 +1216,19 @@ def test_smoke_real_modules():
     assert all(isinstance(p["horizon"], int) and isinstance(p["mesure"], bool) for p in d["prevision"])
     co = c.get("/api/companies", params={"limit": 3}).json()
     assert co["total"] >= len(co["rows"]) and all(set(r) == set(api.CO_ROW) for r in co["rows"])
+
+
+def test_details_json_with_nan_becomes_strict_json():
+    # json.dumps côté veille écrit NaN ; l'API doit rendre null
+    from strate import api
+    assert api._details('{"coefficient_rho": NaN, "n": 3}') == {"coefficient_rho": None, "n": 3}
+
+
+def test_r_verdict_never_validated_by_rho_q_value():
+    # q_value est la q de ρ : un « démontré » de r sans q_r propre redevient un verdict de repli
+    from strate import api
+    out = {"verdict_r": "lien positif démontré", "r_lo": 0.1, "r_hi": 0.5}
+    res = api._guard_verdicts(dict(out), {"q_value": 0.01})
+    assert "démontré" not in res["verdict_r"] or res["verdict_r"].startswith(("non", "pas"))
+    ok = api._guard_verdicts(dict(out), {"q_r": 0.01, "q_value": 0.5})
+    assert ok["verdict_r"] == "lien positif démontré"
