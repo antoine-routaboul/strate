@@ -973,6 +973,15 @@ def test_summary_forecast_naive_rows_are_levels(client, env):
     assert all("taille des mines" in r["source"] for r in pr)
 
 
+def test_summary_forecast_identical_models_share_rows(client, env):
+    """Deux modèles aux prévisions identiques (même r, ρ, IC, n) : une paire de lignes, pas un doublon."""
+    t = BT["rows"][1]
+    write_bt(env, {**BT, "rows": [t, {**t, "modele": "tendance+taille"}, {**t, "r": 0.41}]})
+    pr = [r for r in client.get("/api/correlations/summary").json()["rows"] if r["domaine"] == "prévisions"]
+    assert len(pr) == 4 and "« tendance » = « tendance+taille »" in pr[0]["x"]
+    assert pr[2]["coefficient"] == 0.41 and "=" not in pr[2]["x"]
+
+
 # -- CLI ----------------------------------------------------------------------------------------------
 def run_cli(monkeypatch, *argv):
     monkeypatch.setattr(sys, "argv", ["strate", *argv])

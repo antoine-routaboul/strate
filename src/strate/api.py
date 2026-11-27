@@ -1344,8 +1344,8 @@ NOTE_NIVEAUX = " ; niveaux : dominés par la taille des mines, pas une mesure de
 def _forecast_summary_rows() -> list[dict]:
     """r et ρ du rétro-test : variation prévue ↔ variation réelle du log de la production (période de test).
     Pour un modèle qui ne prévoit aucune variation (naïf, ou tendance réglée sur φ = 0), r et ρ n'existent
-    pas : une seule paire de lignes par horizon porte alors sur les niveaux (log), dominés par les écarts de
-    taille entre mines ; les modèles aux prévisions identiques y sont nommés ensemble."""
+    pas : leurs lignes portent alors sur les niveaux (log), dominés par les écarts de taille entre mines.
+    Des modèles aux mesures identiques (mêmes prévisions) partagent une paire de lignes, nommés ensemble."""
     d = _backtest_payload()
     src = "data/forecast/backtest.json" + (f" ({d['run_at']})" if d.get("run_at") else "")
     test = (d.get("periode") or {}).get("test") or PERIODE["test"]
@@ -1354,14 +1354,16 @@ def _forecast_summary_rows() -> list[dict]:
         noms = " = ".join(f"« {m} »" for m in models)
         return f"{noms} à {h} an{'s' if isinstance(h, int) and h > 1 else ''}"
 
-    out, niveaux = [], {}
-    for r in d["rows"]:
-        if r.get("r") is None and r.get("rho") is None:  # même prévision → mêmes mesures : regroupées
-            key = (r.get("horizon"), r.get("r_niveau"), r.get("rho_niveau"), r.get("n_points"))
-            niveaux.setdefault(key, (r, []))[1].append(r.get("model"))
-            continue
+    out, variations, niveaux = [], {}, {}
+    for r in d["rows"]:  # mêmes prévisions → mêmes mesures : une seule paire de lignes, modèles regroupés
+        niveau = r.get("r") is None and r.get("rho") is None
+        k = "_niveau" if niveau else ""
+        key = (r.get("horizon"), r.get("n_points"), *(r.get(f"{c}{k}{b}") for c in ("r", "rho")
+                                                      for b in ("", "_lo", "_hi")))
+        (niveaux if niveau else variations).setdefault(key, (r, []))[1].append(r.get("model"))
+    for r, models in variations.values():
         for typ in ("r", "rho"):
-            out.append(_sum_row("prévisions", f"variation prévue par {a([r.get('model')], r.get('horizon'))}",
+            out.append(_sum_row("prévisions", f"variation prévue par {a(models, r.get('horizon'))}",
                                 f"variation réelle du log de la production, {test}", r.get(typ), typ,
                                 r.get(f"{typ}_lo"), r.get(f"{typ}_hi"), r.get("n_points"),
                                 "points mine-année", r.get("n_mines"), "mines", src))

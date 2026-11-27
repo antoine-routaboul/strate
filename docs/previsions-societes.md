@@ -121,7 +121,8 @@ Précisions :
   de la même mesure. Quand le module n'a pas fourni ce verdict et que sa règle exige plus que l'IC
   (q-valeur, nombre d'unités), l'API en tire un de l'IC de la ligne qui ne dit jamais « démontré ».
   Prévisions : `x` = variation prévue, `y` = variation réelle du log de la production ; pour les modèles
-  sans variation prévue, une seule paire de lignes par horizon porte sur les niveaux (log), les modèles
-  aux prévisions identiques y sont nommés ensemble.
+  sans variation prévue, les lignes portent sur les niveaux (log). Des modèles aux mesures identiques
+  (mêmes prévisions, par exemple `tendance` et `tendance+taille` quand le rappel vers l'emprise est nul)
+  partagent une paire de lignes et y sont nommés ensemble.
 
 L'interface lit uniquement ces champs (plus les routes existantes).
