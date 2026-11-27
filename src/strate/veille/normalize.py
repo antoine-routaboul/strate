@@ -1152,8 +1152,10 @@ _PERSON: dict[str, frozenset[str]] = {lang: frozenset(txt.split()) for lang, txt
     "it": "minatore minatori operaio operai lavoratore lavoratori uomo donna persona persone giovane "
           "dipendente dipendenti guardia abitante abitanti",
 }.items()}
-# Effectifs : comptent comme une personne (« 3 die », « Muoiono due operai »), sauf une année
-# (« in 2024 ») ou une durée, une quantité (« after 3 years », « tras tres años », « 2 km »).
+# Effectifs : un nombre ne compte comme une personne que juste devant le verbe (« 3 die », « Two die ») ;
+# ailleurs c'est un prix, un pourcentage, une durée ou un autre objet (« $10,000 rally dies »,
+# « 30% rally dies », « Three projects die », « after 3 years ») ; « Muoiono due operai » compte par
+# « operai ». Une année (« in 2024 ») ne compte jamais.
 _COUNT: dict[str, frozenset[str]] = {lang: frozenset(txt.split()) for lang, txt in {
     "en": "one two three four five six seven eight nine ten dozen dozens several",
     "fr": "deux trois quatre cinq six sept huit neuf dix plusieurs",
@@ -1162,21 +1164,18 @@ _COUNT: dict[str, frozenset[str]] = {lang: frozenset(txt.split()) for lang, txt 
     "de": "zwei drei vier funf sechs sieben acht neun zehn",
     "it": "due tre quattro cinque sei sette otto nove dieci",
 }.items()}
-_UNIT = frozenset("""
-year years month months week weeks day days hour hours decade decades percent pct cent km mile miles
-tonne tonnes ton tons oz moz mt koz ans an mois semaine semaines jour jours heure heures pour
-ano anos mes meses semana semanas dia dias hora horas por ciento jahr jahre jahren monat monate
-woche wochen tag tage tagen stunde stunden prozent anno anni mese mesi settimana settimane giorno
-giorni ora ore
-""".split())
 _NEEDS_PERSON: dict[str, frozenset[str]] = {
     "en": frozenset({"die", "dies", "dying"}), "fr": frozenset({"meurt", "meurent"}),
     "es": frozenset({"muere", "murio"}), "pt": frozenset({"morre"}),
     "de": frozenset({"stirbt", "sterben"}), "it": frozenset({"muore", "decedut"}),
 }
-# Anglais : « dies down », « die out », « dies off », « die-hard » (replié « die hard ») sont toujours
-# figurés, même avec une personne à côté (« Workers' strike dies down », « Gold miners die-hard rally »).
-_EN_FIGURATIVE_NEXT = frozenset({"down", "out", "off", "away", "back", "hard"})
+# Anglais : « die-hard » (replié « die hard ») est toujours figuré. « dies down / out / off / away /
+# back » ne l'est qu'en fin de titre ou devant une conjonction (« Strike dies down after talks ») ;
+# devant un autre mot la particule est une préposition et la mort est réelle (« Man dies down mine
+# shaft », « Worker dies off Ghana coast », « Two workers die back at Kibali »).
+_EN_FIGURATIVE_NEXT = frozenset({"down", "out", "off", "away", "back"})
+_EN_FIGURATIVE_AFTER = frozenset({"as", "after", "amid", "following", "but", "while", "once", "and",
+                                  "despite"})
 # Possessif anglais (« miners' », « miner's ») : la personne qualifie le sujet, elle ne l'est pas
 # (« Miners' hopes die as talks fail »). Repéré sur le titre brut, le repli retire les apostrophes.
 _EN_POSSESSIVE = re.compile(r"[^\W_]+['’ʼ]s?(?![^\W_])")
@@ -1185,7 +1184,7 @@ _EN_POSSESSIVE = re.compile(r"[^\W_]+['’ʼ]s?(?![^\W_])")
 _PERSON_WINDOW = 2  # « Muere el acuerdo minero » : « minero » y est un adjectif, trois mots plus loin
 
 
-def _is_person(lang: str, toks: list[str], j: int) -> bool:
+def _is_person(lang: str, toks: list[str], j: int, verb: int) -> bool:
     t = toks[j]
     # composés allemands : « Bergarbeiter », « Grubenmann »
     if t in _PERSON.get(lang, frozenset()) or (lang == "de" and t.endswith(("arbeiter", "leute", "mann"))):
@@ -1194,7 +1193,7 @@ def _is_person(lang: str, toks: list[str], j: int) -> bool:
         return False
     if t.isdigit() and len(t) == 4 and t[:2] in ("19", "20"):
         return False                                   # une année : « Mining stocks die in 2024 »
-    return j + 1 >= len(toks) or toks[j + 1] not in _UNIT
+    return j + 1 == verb
 
 
 def _verb_with_person(lang: str, mode: str, kw: str, toks: list[str], possessive: frozenset[str]) -> bool:
@@ -1208,11 +1207,14 @@ def _verb_with_person(lang: str, mode: str, kw: str, toks: list[str], possessive
         hit = t == kw if mode == "exact" else t.startswith(kw) if mode == "prefix" else kw in t
         if not hit:
             continue
-        if lang == "en" and i + 1 < len(toks) and toks[i + 1] in _EN_FIGURATIVE_NEXT:
-            continue
+        if lang == "en" and i + 1 < len(toks):
+            nxt = toks[i + 1]
+            if nxt == "hard" or (nxt in _EN_FIGURATIVE_NEXT
+                                 and (i + 2 >= len(toks) or toks[i + 2] in _EN_FIGURATIVE_AFTER)):
+                continue
         after = _PERSON_WINDOW if lang != "en" or t == "dying" else 0
         near = range(max(0, i - _PERSON_WINDOW), min(len(toks), i + after + 1))
-        if any(j != i and toks[j] not in possessive and _is_person(lang, toks, j) for j in near):
+        if any(j != i and toks[j] not in possessive and _is_person(lang, toks, j, i) for j in near):
             return True
     return False
 

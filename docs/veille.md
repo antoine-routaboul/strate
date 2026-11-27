@@ -107,10 +107,13 @@ chaîne : elle est notée et retentée au cycle suivant.
   Les verbes « mourir » qui meurent aussi au figuré (die, dies, meurt, muere, murió, morre, stirbt,
   muore…) ne comptent qu'avec une personne ou un effectif à deux mots au plus (« Two workers die »,
   « 3 die », « Security guard dies ») : « strike dies down », « deal dies », « Muere el acuerdo
-  minero » ne sont pas des accidents. Une année ou une durée n'est pas un effectif (« Mining stocks
-  die in 2024 », « Deal dies after 3 years »). En anglais, la personne doit précéder le verbe et ne
-  pas être au possessif (« Miners' hopes die »), et « dies down / out / off », « die-hard » restent
-  figurés même avec une personne à côté (« Workers' strike dies down »). Arabe « توفي » en mot entier (pas « توفير », fournir). Choix : un titre sans sujet
+  minero » ne sont pas des accidents. Un nombre ne compte que juste devant le verbe (« 3 die ») :
+  un prix, un pourcentage, une durée ou une année n'est pas un effectif (« $10,000 rally dies »,
+  « Deal dies after 3 years », « Mining stocks die in 2024 »). En anglais, la personne doit précéder
+  le verbe et ne pas être au possessif (« Miners' hopes die ») ; « die-hard » est toujours figuré,
+  « dies down / out / off / away / back » seulement en fin de titre ou devant une conjonction
+  (« Strike dies down after talks ») : devant un autre mot c'est une préposition (« Man dies down
+  mine shaft »). Arabe « توفي » en mot entier (pas « توفير », fournir). Choix : un titre sans sujet
   humain (« Muere en la mina ») est perdu, comme « öldü » turc ou « mati » indonésien.
 - `confidence` = force du rattachement × force du classement (0–1), détail dans `evidence` (JSON).
 

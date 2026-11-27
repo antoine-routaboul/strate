@@ -334,6 +334,27 @@ def test_dying_with_other_people_is_an_accident(title, lang):
     assert N.classify(title, [], lang)[0] == "accident", title
 
 
+@pytest.mark.parametrize("title", [
+    "Man dies down mine shaft", "Boy dies down disused mine shaft", "Worker dies off Ghana coast",
+    "Two workers die back at Kibali", "Miner dies out of hospital", "3 die in Kibali mine collapse",
+])
+def test_particle_used_as_preposition_keeps_a_real_death(title):
+    # « down / off / back / out » suivis d'un autre mot : préposition, la mort est réelle
+    assert N.classify(title, [], "en")[0] == "accident", title
+
+
+@pytest.mark.parametrize("title,lang", [
+    ("Copper's $10,000 rally dies", "en"), ("Silver's 30% rally dies", "en"),
+    ("Three projects die as funding dries up", "en"), ("5 deals die in Q3", "en"),
+    ("Strike by 300 workers dies down", "en"), ("Strike dies down after talks", "en"),
+    ("Le rallye meurt à 2 000 dollars", "fr"), ("El rally muere en 2.000 dólares", "es"),
+    ("Rally stirbt bei 2.000 Dollar", "de"), ("Il rally muore a 2.000 dollari", "it"),
+])
+def test_price_percent_or_object_count_is_not_a_victim(title, lang):
+    # un nombre ne compte comme effectif que juste devant le verbe
+    assert N.classify(title, [], lang)[0] != "accident", title
+
+
 def test_classify_themes_and_false_friends():
     assert N.classify("Mine news", ["STRIKE", "PROTEST"], "en")[0] == "social"
     typ, s, _ = N.classify("Mine news", ["LEGISLATION"], "en")
