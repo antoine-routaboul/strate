@@ -4,6 +4,7 @@ Aucun accès réseau : les analyses satellite et les dossiers Mine sont injecté
 """
 
 import json
+import math
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
@@ -435,22 +436,43 @@ def test_volume_rank_correlation(con):
     assert abs(vol[2]["rho"]) < 0.3 and vol[2]["verdict"] == "exploratoire"
 
 
-def test_rho_normal_p_matches_permutation():
-    """Moyenne et variance de la permutation intra-mine : la p-valeur normale suit la permutation."""
+def test_rho_normal_p_matches_rotation():
+    """Moyenne et variance de la rotation intra-mine : la p-valeur normale suit les rotations tirées."""
     rng = np.random.default_rng(3)
     pairs = []
     for _ in range(6):
         v = rng.poisson(5, 30).astype(float)
         pairs.append((v, v * 0.06 + rng.normal(0, 1, 30)))
     r = correlate._rho_test(pairs, rng, 100)
-    obs, perm = 0.0, np.zeros(4000)
+    obs, null = 0.0, np.zeros(4000)
     for v, s in pairs:
         cv, cs = correlate._ranks(v), correlate._ranks(s)
         obs += cv @ cs
-        perm += rng.permuted(np.tile(cv, (4000, 1)), axis=1) @ cs
-    p_perm = (np.abs(perm) >= abs(obs)).mean()
+        rots = np.array([np.roll(cv, k) @ cs for k in range(30)])
+        null += rots[rng.integers(0, 30, 4000)]
+    p_rot = (np.abs(null) >= abs(obs)).mean()
     assert 0.001 < r["p_value"] < 0.5
-    assert r["p_value"] == pytest.approx(p_perm, abs=0.02)
+    assert r["p_value"] == pytest.approx(p_rot, abs=0.03)
+
+
+def _ar1(t: int, phi: float, rng: np.random.Generator) -> np.ndarray:
+    x = np.zeros(t)
+    x[0] = rng.normal() / math.sqrt(1 - phi * phi)
+    for i in range(1, t):
+        x[i] = phi * x[i - 1] + rng.normal()
+    return x
+
+
+def test_rho_p_holds_level_when_series_are_autocorrelated():
+    """Volume et |z| autocorrélés mais indépendants : le mélange des mois rejette trop, pas la rotation."""
+    rng = np.random.default_rng(6)
+    rot = perm = 0
+    for _ in range(400):
+        pairs = [(np.exp(_ar1(48, 0.8, rng)), np.abs(_ar1(48, 0.8, rng))) for _ in range(8)]
+        r = correlate._rho_test(pairs, rng, 10)
+        rot += r["p_value"] < 0.10
+        perm += r["p_permutation"] < 0.10
+    assert rot / 400 <= 0.14 and perm / 400 >= 0.18
 
 
 # -- cycle complet ----------------------------------------------------------------------------------

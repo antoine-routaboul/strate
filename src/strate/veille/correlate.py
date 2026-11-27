@@ -89,8 +89,9 @@ METHODE = (
     "Σ K(T−K)/T)), IC 90 % par les mêmes tirages de mines ; son numérateur est la statistique du test, "
     "d'où la même p-valeur. Il a son propre verdict (IC hors de 0), jamais recopié de celui du lift. "
     "Volume d'actualité ↔ écart du signal (|z|) : corrélation de rang centrée dans chaque mine, p-valeur "
-    "par loi normale de même moyenne et même variance que la permutation des mois dans chaque mine, même "
-    "bootstrap. Famille principale = décalage 0 (types × signaux, plus le volume) : q-valeurs de "
+    "par loi normale de même moyenne et même variance que la rotation circulaire de la frise du volume "
+    "dans chaque mine (pas le mélange des mois, pour la même raison), même bootstrap. "
+    "Famille principale = décalage 0 (types × signaux, plus le volume) : q-valeurs de "
     "Benjamini-Hochberg sur cette famille ; lien démontré si q < 0,10 et IC hors de la valeur nulle "
     "(1 pour le lift, 0 pour la corrélation). Décalages −3 à +3 mois (satellite après l'événement si "
     "positif) : exploratoires, avec leur propre correction de Benjamini-Hochberg, jamais déclarés "
@@ -607,17 +608,23 @@ def _rho_test(pairs: list[tuple[np.ndarray, np.ndarray]], rng: np.random.Generat
     """Corrélation de rang intra-mine : rangs centrés dans chaque mine, puis corrélation commune.
 
     Centrer par mine retire l'effet « grande mine = beaucoup d'articles et grand écart » : on ne mesure
-    que les co-variations dans le temps, mine par mine. Sous l'hypothèse nulle (mois d'actualité mélangés
-    dans chaque mine), Σ x·y a pour moyenne 0 et pour variance Σ Σx²·Σy² / (n − 1) : la p-valeur vient de
-    la loi normale de ces deux moments, sans plancher de tirages.
+    que les co-variations dans le temps, mine par mine. Le volume d'actualité et l'écart |z| sont
+    autocorrélés : mélanger les mois sous-estimerait la variance de Σ x·y. Sous l'hypothèse nulle, on fait
+    tourner la frise du volume dans chaque mine (T rotations également probables, autocorrélation
+    conservée) : Σ x·y a pour moyenne 0 (rangs centrés) et pour variance la somme des variances de
+    rotation de chaque mine ; la p-valeur vient de la loi normale de ces deux moments, sans plancher de
+    tirages. `var_permutation` (mois mélangés, Σ Σx²·Σy² / (n − 1)) est rendue pour comparaison.
     """
-    sxy, sxx, syy, var = [], [], [], 0.0
+    sxy, sxx, syy, var, var_perm = [], [], [], 0.0, 0.0
     for v, s in pairs:
         cv, cs = _ranks(v), _ranks(s)
         sxy.append(float(cv @ cs))
         sxx.append(float(cv @ cv))
         syy.append(float(cs @ cs))
-        var += sxx[-1] * syy[-1] / (len(cv) - 1)
+        t = len(cv)
+        rot = cv[(np.arange(t)[:, None] + np.arange(t)[None, :]) % t] @ cs  # Σ x(t+k)·y(t), k = 0…T−1
+        var += float(np.mean(rot ** 2) - np.mean(rot) ** 2)
+        var_perm += sxx[-1] * syy[-1] / (t - 1)
     sxy, sxx, syy = np.array(sxy), np.array(sxx), np.array(syy)
     rho = float(sxy.sum() / np.sqrt(sxx.sum() * syy.sum()))
     m = len(pairs)
@@ -627,7 +634,9 @@ def _rho_test(pairs: list[tuple[np.ndarray, np.ndarray]], rng: np.random.Generat
     lo, hi = _ci(rb)
     zstat = float(sxy.sum() / math.sqrt(var)) if var > 0 else 0.0
     p = math.erfc(abs(zstat) / math.sqrt(2))
-    return dict(rho=rho, rho_lo=lo, rho_hi=hi, p_value=min(1.0, max(p, np.finfo(float).tiny)))
+    zp = float(sxy.sum() / math.sqrt(var_perm)) if var_perm > 0 else 0.0
+    return dict(rho=rho, rho_lo=lo, rho_hi=hi, p_value=min(1.0, max(p, np.finfo(float).tiny)),
+                p_permutation=min(1.0, max(math.erfc(abs(zp) / math.sqrt(2)), np.finfo(float).tiny)))
 
 
 def study(con: sqlite3.Connection, dossier_fn: DossierFn | None = None, candidates: set[str] | None = None,
@@ -729,11 +738,14 @@ def study(con: sqlite3.Connection, dossier_fn: DossierFn | None = None, candidat
                 n_months += int((v > 0).sum())
             if not pairs:
                 continue
+            rt = _rho_test(pairs, rng, n_boot)
+            p_perm = rt.pop("p_permutation")
             row = dict(event_type="volume", signal=sig, lag_months=lag, n_mines=len(pairs), n_events=n_months,
-                       lift=None, lift_lo=None, lift_hi=None, **_rho_test(pairs, rng, n_boot))
+                       lift=None, lift_lo=None, lift_hi=None, **rt)
             row["_tested"] = len(pairs) >= MIN_MINES and n_months >= MIN_EVENT_MONTHS
             row["details"] = dict(mois_apparies=int(sum(len(v) for v, _ in pairs)), mesure="|z| du signal",
-                                  test="rang intra-mine, loi normale de la permutation", n_boot=n_boot,
+                                  test="rang intra-mine, loi normale de la rotation", n_boot=n_boot,
+                                  p_permutation_mois_independants=p_perm,
                                   coefficient_rho="rho de Spearman intra-mine (volume × |z|)",
                                   unite_n="mois avec articles", unite_bootstrap="mines",
                                   n_unites_bootstrap=len(pairs))

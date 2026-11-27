@@ -140,8 +140,11 @@ chaîne : elle est notée et retentée au cycle suivant.
   tirages de mines que le lift ; son numérateur est la statistique du test (même p, même q).
   `verdict_rho` : même règle appliquée à l'IC du phi (hors de 0), jamais recopiée du verdict du lift.
   Ces taux valent pour le lift comme pour le phi (même p).
-  Volume d'actualité (`news_volume`) ↔ signal : corrélation de rang intra-mine, mêmes règles
-  (`verdict_rho` = `verdict`). `details` dit le coefficient (`coefficient_rho`), ce que compte `n_events`
+  Volume d'actualité (`news_volume`) ↔ signal : corrélation de rang intra-mine, p-valeur par loi
+  normale de la rotation de la frise du volume dans chaque mine (le mélange des mois donnait 19 à 25 %
+  de p < 0,10 sous H0 avec des frises AR(1) de coefficient 0,7 à 0,8 ; la rotation 9 à 11 % ; la p du
+  mélange reste dans `details.p_permutation_mois_independants`), mêmes règles (`verdict_rho` =
+  `verdict`). `details` dit le coefficient (`coefficient_rho`), ce que compte `n_events`
   (`unite_n`) et l'unité du bootstrap (`unite_bootstrap` = mines, `n_unites_bootstrap`).
   Écrit `correlations` (scope `global`). Le texte de méthode affiché vient de `correlate.METHODE`.
 
