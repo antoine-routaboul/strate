@@ -108,8 +108,10 @@ SEED: list[dict] = [
 
 # -- noms de sociétés -----------------------------------------------------------------------------------
 # Retirés EN FIN de nom : « Newmont Mining Corporation » et « Newmont » donnent la même clé. Les formes
-# juridiques partent toujours (sauf le premier mot) ; les mots de remplissage seulement s'il reste un mot
-# distinctif (« New Gold » ne devient pas « new », ni « Mineral Resources » « mineral »).
+# juridiques partent toujours (sauf le premier mot) ; UN SEUL mot de remplissage part ensuite, et seulement
+# s'il reste un mot distinctif (ni pays, ni mot courant, ni terme géographique) : « New Gold » ne devient pas
+# « new », « China Coal Energy » ne devient pas « china », « Mitsubishi Coal Mining » reste
+# « mitsubishi coal » (distinct de « Mitsubishi Corporation »).
 _LEGAL = {
     "inc", "incorporated", "ltd", "limited", "corp", "corporation", "co", "company", "plc", "sa", "sab", "cv",
     "de", "ag", "nv", "bv", "llc", "lp", "pty", "pt", "tbk", "gmbh", "spa", "sarl", "sas", "ab", "asa", "oy",
@@ -127,24 +129,42 @@ def _split_words(s: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", s)
 
 
-def norm_key(name) -> str | None:
-    """Clé de dédoublonnage d'un nom de société (formes juridiques et remplissage final retirés)."""
+_COUNTRY_WORDS: set[str] = set()
+
+
+def _country_words() -> set[str]:
+    """Mots des noms de pays connus (« korea », « japan », « china »…) : jamais distinctifs seuls."""
+    if not _COUNTRY_WORDS:
+        names = [*entities.COUNTRY_ALIASES, *map(entities.fold, entities.COUNTRY_ALIASES.values())]
+        _COUNTRY_WORDS.update(w for n in names for w in re.findall(r"[a-z0-9]+", n))
+    return _COUNTRY_WORDS
+
+
+def _distinctive(t: str) -> bool:
     from strate import catalog
 
+    return (len(t) >= 3 and not t.isdigit() and t not in _LEGAL | _FILLER and t not in _COMMON
+            and t not in catalog._GENERIC and t not in _country_words())
+
+
+def key_parts(name) -> tuple[str | None, str]:
+    """(clé de dédoublonnage, mot de remplissage retiré ou « »)."""
     if not isinstance(name, str) or _QID.fullmatch(name):
-        return None
+        return None, ""
     w = _split_words(name)
     if w and w[0] == "the":
         w = w[1:]
-    while len(w) > 1:
-        if w[-1] in _LEGAL:
-            w = w[:-1]
-        elif w[-1] in _FILLER and any(t not in catalog._GENERIC and t not in _LEGAL | _FILLER and len(t) >= 3
-                                      for t in w[:-1]):
-            w = w[:-1]
-        else:
-            break
-    return " ".join(w) or None
+    while len(w) > 1 and w[-1] in _LEGAL:
+        w = w[:-1]
+    filler = ""
+    if len(w) > 1 and w[-1] in _FILLER and any(_distinctive(t) for t in w[:-1]):
+        filler, w = w[-1], w[:-1]
+    return " ".join(w) or None, filler
+
+
+def norm_key(name) -> str | None:
+    """Clé de dédoublonnage d'un nom de société (formes juridiques et un remplissage final retirés)."""
+    return key_parts(name)[0]
 
 
 def slug(s: str) -> str:
@@ -205,6 +225,8 @@ def build_entities(cat: pd.DataFrame | None = None, graph=None, twins: dict[str,
     canon = {c: w for w, c in twins.items()}  # ligne du catalogue → mine de la liste suivie
     comp: dict[str, dict] = {}
     by_key: dict[str, str] = {}
+    by_strict: dict[str, str] = {}
+    fillers: dict[str, set[str]] = {}  # société → mots de remplissage retirés de ses noms (« » : nom nu)
     by_qid: dict[str, str] = {}
     taken: set[str] = set()
     links: dict[tuple[str, str], dict] = {}
@@ -215,14 +237,26 @@ def build_entities(cat: pd.DataFrame | None = None, graph=None, twins: dict[str,
                                          qid=None, pays=None, sources=set(), suivie=False) | kw)
 
     def register(cid: str, name: str) -> None:
-        k = norm_key(name)
-        if k and k not in by_key:
-            by_key[k] = cid
+        k, f = key_parts(name)
+        sk = strict_key(name)
+        if sk:
+            by_strict.setdefault(sk, cid)
+        if k and by_key.setdefault(k, cid) == cid:
+            fillers.setdefault(cid, set()).add(f)
         comp[cid]["alias"].add(name)
 
     def find(name: str) -> str | None:
-        k = norm_key(name)
-        return by_key.get(k) if k else None
+        """Même nom strict, sinon même clé si les remplissages sont compatibles : « Equinox Resources »
+        ne rejoint pas « Equinox Gold » (deux sociétés), « Newmont Mining » rejoint « Newmont »."""
+        sk = strict_key(name)
+        if sk in by_strict:
+            return by_strict[sk]
+        k, f = key_parts(name)
+        cid = by_key.get(k) if k else None
+        if cid is None:
+            return None
+        fs = fillers.get(cid, set())
+        return cid if f == "" or f in fs or fs <= {""} else None
 
     def link(cid: str, site: str, role: str, part: float | None, source: str) -> None:
         site_name = None

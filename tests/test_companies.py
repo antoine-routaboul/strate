@@ -127,6 +127,29 @@ def test_norm_key_merges_legal_forms_and_keeps_distinctive_words():
     ) or "Newmont Mining Corporation" in C.name_variants("Newmont Mining Corporation")
 
 
+def test_norm_key_never_reduces_to_a_country_or_common_word():
+    assert C.norm_key("China Coal Energy") == "china coal energy"
+    assert C.norm_key("China Resources") == "china resources"
+    assert C.norm_key("Korea Coal Corporation") == "korea coal"
+    assert C.norm_key("Japan Gold") == "japan gold" and C.norm_key("Japan Energy") == "japan energy"
+    assert C.norm_key("Mitsubishi Coal Mining") == "mitsubishi coal" != C.norm_key("Mitsubishi Corporation")
+    assert C.norm_key("Royal Gold Inc") == "royal gold"
+
+
+def test_build_entities_does_not_merge_distinct_companies():
+    """Les cinq fusions erronées trouvées sur le vrai catalogue."""
+    names = ["Equinox Resources", "China Coal Energy", "China Resources", "Korea Coal Corporation",
+             "Korea Resources Corporation", "Mitsubishi Coal Mining", "Mitsubishi Corporation", "Japan Gold",
+             "Japan Energy"]
+    cat = pd.DataFrame([dict(id=f"m{i}", name=f"Mine {i}", owner=n, operator=None, jasansky=None,
+                             commodities="coal") for i, n in enumerate(names)]).set_index("id", drop=False)
+    co, lk = C.build_entities(cat, entities.load(), twins={})
+    owner = dict(zip(lk["site_id"], lk["company_id"], strict=True))
+    assert len({owner[f"m{i}"] for i in range(len(names))}) == len(names)  # neuf sociétés distinctes
+    assert owner["m0"] != "equinox"  # Mata Da Corda (Equinox Resources) n'est pas à Equinox Gold
+    assert set(lk.loc[lk["company_id"] == "equinox", "site_id"]) == {"greenstone"}
+
+
 def test_build_entities_dedupes_links_and_shares():
     graph = entities.load()
     co, lk = C.build_entities(fake_catalog(), graph, twins={"boddington": "icmm1"})
