@@ -943,6 +943,53 @@ def test_summary_all_sources(client, env, monkeypatch):
     assert t2["unite_bootstrap"] == "mines"
 
 
+def test_veille_details_and_verdict_rho(client, env):
+    """Schéma récent : /api/veille/correlations rend verdict_rho et details (objet) ; le résumé en tire le
+    type (φ pour un type d'événement, ρ pour le volume), le verdict de ce coefficient, ce que compte n et
+    les unités du bootstrap (mines informatives)."""
+    p = env / "veille" / "veille.db"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(p)
+    con.execute(
+        "CREATE TABLE correlations (run_at TEXT, scope TEXT, event_type TEXT, signal TEXT, "
+        "lag_months INTEGER, n_mines INTEGER, n_events INTEGER, lift REAL, lift_lo REAL, lift_hi REAL, "
+        "rho REAL, rho_lo REAL, rho_hi REAL, p_value REAL, q_value REAL, verdict TEXT, details TEXT, "
+        "verdict_rho TEXT)"
+    )
+    ev = {"coefficient_rho": "phi intra-mine (mois d'événement × mois d'anomalie)",
+          "unite_n": "mois-événements des mines informatives", "unite_bootstrap": "mines",
+          "n_unites_bootstrap": 9, "famille": "principale"}
+    vol = {"coefficient_rho": "rho de Spearman intra-mine (volume × |z|)", "unite_n": "mois avec articles",
+           "unite_bootstrap": "mines", "n_unites_bootstrap": 15}
+    run = "2026-11-01T00:00:00Z"
+    con.executemany("INSERT INTO correlations VALUES (" + ",".join("?" * 18) + ")", [
+        (run, "global", "greve", "bare_km2", 0, 9, 30, 2.1, 1.3, 3.4, 0.2, 0.05, 0.3, 0.01, 0.05,
+         "lien démontré", json.dumps(ev), "lien démontré"),
+        (run, "global", "volume", "activity_db", 0, 15, 300, None, None, None, 0.12, -0.01, 0.25, 0.2, 0.4,
+         "non démontré", json.dumps(vol), "non démontré"),
+        (run, "global", "accident", "bare_km2", 0, 6, 12, 1.5, 0.8, 2.0, 0.1, -0.1, 0.2, 0.5, 0.6,
+         "non démontré", "{illisible", None),
+    ])
+    con.commit()
+    con.close()
+    rows = client.get("/api/veille/correlations").json()["rows"]
+    g = next(r for r in rows if r["event_type"] == "greve")
+    assert g["details"] == ev and g["verdict_rho"] == "lien démontré"
+    assert next(r for r in rows if r["event_type"] == "accident")["details"] is None
+    ve = [r for r in client.get("/api/correlations/summary").json()["rows"] if r["domaine"] == "veille"]
+    phi = next(r for r in ve if r["type"] == "phi" and "greve" in r["x"])
+    assert (phi["coefficient"], phi["lo"], phi["hi"], phi["n"], phi["verdict"]) == (
+        0.2, 0.05, 0.3, 30, "lien démontré")
+    assert (phi["unite_n"], phi["n_bootstrap_unit"], phi["unite_bootstrap"]) == (
+        "mois-événements des mines informatives", 9, "mines")
+    rho = next(r for r in ve if r["x"] == "volume d'actualité")
+    assert (rho["type"], rho["unite_n"], rho["n_bootstrap_unit"], rho["verdict"]) == (
+        "rho", "mois avec articles", 15, "non démontré")
+    acc = [r for r in ve if "accident" in r["x"]]
+    assert [r["type"] for r in acc] == ["lift", "phi"] and acc[1]["unite_n"] == "mois-événements"
+    assert not api._demontre(acc[1]["verdict"])  # sans verdict_rho : repli prudent
+
+
 def test_summary_companies_label(client, monkeypatch):
     row = {**CORR[0], "label": "Croissance du CAPEX ↔ croissance de la production (année suivante)"}
     fake(monkeypatch, "companies", correlations=lambda: [row])

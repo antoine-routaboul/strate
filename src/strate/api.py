@@ -716,16 +716,31 @@ def veille_correlations(scope: str = "global"):
     """Dernier calcul des liens événements ↔ signaux satellite (risque relatif MH, rho, IC 90 %, p, q,
     verdict, famille principale/exploratoire). La méthode exacte vient de correlate.METHODE."""
     run_at = _v1("SELECT max(run_at) FROM correlations WHERE scope = ?", [scope], default=None)
-    # verdict_rho (verdict de φ / ρ sur son propre IC) : colonne d'un schéma récent, sinon null
-    has_vr = any(c.get("name") == "verdict_rho" for c in _vq("PRAGMA table_info(correlations)"))
+    # verdict_rho (verdict de φ / ρ sur son propre IC) et details (JSON : nature du coefficient rho, ce que
+    # compte n, unités du bootstrap) : colonnes d'un schéma récent, sinon null
+    cols = {c.get("name") for c in _vq("PRAGMA table_info(correlations)")}
+    opt = ", ".join(f"{c if c in cols else 'NULL'} AS {c}" for c in ("verdict_rho", "details"))
     # famille principale = décalage 0 (seule à pouvoir conclure « lien démontré »), puis l'exploratoire
     rows = [] if run_at is None else _vq(
         "SELECT event_type, signal, lag_months, n_mines, n_events, lift, lift_lo, lift_hi, rho, rho_lo, "
-        f"rho_hi, p_value, q_value, verdict, {'verdict_rho' if has_vr else 'NULL'} AS verdict_rho, "
+        f"rho_hi, p_value, q_value, verdict, {opt}, "
         "CASE WHEN lag_months = 0 THEN 'principale' ELSE 'exploratoire' END AS famille "
         "FROM correlations WHERE scope = ? AND run_at = ? "
         "ORDER BY lag_months <> 0, q_value IS NULL, q_value, event_type, signal, lag_months", [scope, run_at])
+    for r in rows:
+        r["details"] = _details(r.get("details"))
     return {"run_at": run_at, "methode": _methode(), "rows": rows}
+
+
+def _details(v) -> dict | None:
+    """Colonne details (texte JSON) → objet ; null si absente ou illisible."""
+    if isinstance(v, dict):
+        return v
+    try:
+        d = json.loads(v) if isinstance(v, str) and v else None
+    except ValueError:
+        return None
+    return d if isinstance(d, dict) else None
 
 
 @app.get("/api/veille/site")
@@ -1347,8 +1362,9 @@ def _calibration_summary() -> list[dict]:
 
 def _veille_summary_rows() -> list[dict]:
     """Lignes lift (verdict du module : q < 0,10, décalage 0, IC hors de 1) et φ / ρ (verdict_rho du
-    module, sinon repli prudent) ; n = mois-événements (mois avec actualité pour le volume), bootstrap sur
-    les mines."""
+    module, sinon repli prudent). Type du coefficient rho, ce que compte n et unités du bootstrap : ceux
+    que le module déclare dans details (coefficient_rho, unite_n, unite_bootstrap, n_unites_bootstrap),
+    sinon φ pour un type d'événement, ρ pour le volume, mois-événements (mois avec actualité) et mines."""
     d = veille_correlations("global")
     src = f"veille (calcul du {d['run_at']})" if d.get("run_at") else "veille"
     out = []
@@ -1357,13 +1373,19 @@ def _veille_summary_rows() -> list[dict]:
         y = f"{r.get('signal')} (décalage {lag:+d} mois)" if lag else str(r.get("signal"))
         et = r.get("event_type")
         volume = et == "volume"
+        det = r.get("details") if isinstance(r.get("details"), dict) else {}
         x = "volume d'actualité" if volume else f"événement « {et} »"
-        unite = "mois avec actualité" if volume else "mois-événements"
+        unite = det.get("unite_n") or ("mois avec actualité" if volume else "mois-événements")
+        n_boot = _pick(det, "n_unites_bootstrap", "mines_informatives")
+        n_boot = n_boot if isinstance(n_boot, int) and not isinstance(n_boot, bool) else r.get("n_mines")
+        u_boot = det.get("unite_bootstrap") or "mines"
         out.append(_sum_row("veille", x, y, r.get("lift"), "lift", r.get("lift_lo"), r.get("lift_hi"),
-                            r.get("n_events"), unite, r.get("n_mines"), "mines", src,
+                            r.get("n_events"), unite, n_boot, u_boot, src,
                             r.get("verdict") or _verdict_sans_test(r.get("lift_lo"), r.get("lift_hi"), 1.0,
                                                                    "lift", "verdict du module absent")))
-        typ = "rho" if volume else "phi"
+        nature = str(det.get("coefficient_rho") or "").strip().lower()
+        typ = "phi" if nature.startswith(("phi", "φ")) else "rho" if nature.startswith(("rho", "ρ")) \
+            else "rho" if volume else "phi"
         vr = r.get("verdict_rho")
         if not vr and volume:  # ligne de volume : le verdict du module porte sur ρ, seul coefficient
             vr = r.get("verdict")
@@ -1371,7 +1393,7 @@ def _veille_summary_rows() -> list[dict]:
             vr = "exploratoire" if lag else "trop peu de données" if r.get("q_value") is None \
                 else _verdict_sans_test(r.get("rho_lo"), r.get("rho_hi"), 0.0, SYM[typ], "sans test propre")
         out.append(_sum_row("veille", x, y, r.get("rho"), typ, r.get("rho_lo"), r.get("rho_hi"),
-                            r.get("n_events"), unite, r.get("n_mines"), "mines", src, vr))
+                            r.get("n_events"), unite, n_boot, u_boot, src, vr))
     return out
 
 
