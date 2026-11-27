@@ -1594,11 +1594,16 @@ function ccVerdict(cc,t){
   return t==='rho'||/trop peu/i.test(g)?g||null:null;
 }
 // relation société : deux badges (r et ρ) ; n = points (sociétés × exercices, ou exercices sur une fiche),
-// IC par bootstrap sur les sociétés quand le serveur dit combien ; q = Benjamini-Hochberg de la famille calculée
+// IC par bootstrap sur les sociétés quand le serveur dit combien ; q = Benjamini-Hochberg de la famille calculée,
+// une par coefficient (q_r, q_rho) : chaque verdict se lit avec la sienne. q_value est celle de ρ (le serveur la
+// recopie de q_rho ; un serveur plus ancien n'en calcule pas d'autre) : jamais affichée sans le dire.
+const qTxt=q=>q<0.001?'&lt; 0,001':fmt(q,3);
 function ccRow(cc,unit='points'){
-  const n=num(cc.n_points)??num(cc.n), ns=num(cc.n_societes), q=num(cc.q_value), lag=cc.decalage??cc.lag;
+  const n=num(cc.n_points)??num(cc.n), ns=num(cc.n_societes), lag=cc.decalage??cc.lag;
+  const qr=num(cc.q_r), qp=num(cc.q_rho)??num(cc.q_value);
+  const qs=[qr!=null?`r ${qTxt(qr)}`:'',qp!=null&&num(cc.rho)!=null?`ρ ${qTxt(qp)}`:''].filter(Boolean).join(', ');
   const info=[esc(lagY(lag).replace(/^ · /,''))||'même exercice',ns!=null?`IC rééchantillonné sur ${fmt(ns,0)} ${plur(ns,'société')}`:'',
-    q!=null?`q (Benjamini-Hochberg) ${q<0.001?'&lt; 0,001':fmt(q,3)}`:''].filter(Boolean).join(' · ');
+    qs?`q (Benjamini-Hochberg) : ${qs}`:''].filter(Boolean).join(' · ');
   const b=t=>corrBadge({type:t,v:cc[t],lo:cc[t+'_lo'],hi:cc[t+'_hi'],n,nUnit:unit,verdict:ccVerdict(cc,t)});
   return `<div class="cbrow"><div class="rel"><b>${esc(varL(cc.x))} ↔ ${esc(varL(cc.y))}</b><small>${info}</small></div>
     <div class="cblist">${b('r')}${num(cc.rho)!=null?b('rho'):''}</div></div>`;

@@ -204,7 +204,7 @@ def test_pages_read_only_contract_fields():
     inv = _doc_fields(r"`GET /api/company\?", "investissements")
     summary = {"domaine", "x", "y", "coefficient", "type", "lo", "hi", "n", "verdict", "source"}
     # contrat partagé de cette révision (producteurs : companies, forecast, api), lu défensivement par la page
-    corr |= {"verdict_r", "verdict_rho", "q_value", "lag", "rho_lo", "rho_hi"}
+    corr |= {"verdict_r", "verdict_rho", "q_value", "q_r", "q_rho", "lag", "rho_lo", "rho_hi"}
     summary |= {"unite_n", "n_bootstrap_unit"}
     backtest |= {"skill_lo", "skill_hi", "note", "r_niveau", "rho_niveau"}
     prev |= {"horizon", "mesure"}
@@ -417,19 +417,24 @@ const done=()=>fetches.forEach(f=>f.done=true);
       {...base,decalage:0,n_societes:4,q_value:0.04,verdict:'non démontré : l’IC 90 % de ρ contient 0',
         verdict_r:'trop peu de données (n = 30, sociétés = 4)',verdict_rho:'non démontré (q ≥ 0,10)'},
       {...base,decalage:1,n_societes:2,verdict:'trop peu de données (n = 30, sociétés = 2)'},
-      {...base,decalage:2,n_societes:40,verdict:'lien positif démontré (IC 90 % de ρ au-dessus de 0)'}]});
+      {...base,decalage:2,n_societes:40,verdict:'lien positif démontré (IC 90 % de ρ au-dessus de 0)'},
+      // q propre à chaque coefficient : q_value (= q_rho) ne doit jamais passer pour la q de r
+      {...base,decalage:3,n_societes:40,q_r:0.3,q_rho:0.04,q_value:0.04,
+        verdict_r:'non démontré (q = 0.30 ≥ 0.10)',verdict_rho:'lien positif démontré'}]});
     take('/api/companies?limit=5000').ok({total:0,rows:[]});
     await flush(); const h=$el('#co_capex').innerHTML;
     const rows=h.split('class="cbrow"').slice(1);
     const pills=r=>[...r.matchAll(/class="pill ([\w-]+)">([^<]*)</g)].map(m=>[m[1],m[2]]);
-    const [a,b,c]=rows.map(pills);
+    const [a,b,c,d]=rows.map(pills);
     // ligne 1 : chaque coefficient porte son propre verdict ; ligne 2 (serveur ancien) : « trop peu »
     // vaut pour r ; ligne 3 : le verdict de ρ n'est jamais recopié sur r (verdict calculé, dit comme tel)
-    const ok=rows.length===3&&a[0][1].startsWith('trop peu')&&a[0][0]==='p-warn'
+    const ok=rows.length===4&&a[0][1].startsWith('trop peu')&&a[0][0]==='p-warn'
       &&a[1][1]==='non démontré (q ≥ 0,10)'&&a[1][0]==='p-neu'
       &&b[0][1].startsWith('trop peu')&&b[1][1].startsWith('trop peu')
       &&c[0][1].includes('calculé')&&c[0][0]==='p-pos'&&c[1][0]==='p-acc'
-      &&rows[0].includes('q (Benjamini-Hochberg) 0,04')&&rows[0].includes('rééchantillonné sur 4 sociétés')
+      &&rows[0].includes('q (Benjamini-Hochberg) : ρ 0,04')&&!rows[0].includes('q (Benjamini-Hochberg) : r')
+      &&rows[0].includes('rééchantillonné sur 4 sociétés')
+      &&rows[3].includes('q (Benjamini-Hochberg) : r 0,3, ρ 0,04')&&d[0][1].startsWith('non démontré')
       &&clean(h);
     return ok||JSON.stringify([a,b,c]);
   });
