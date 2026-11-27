@@ -558,10 +558,37 @@ def test_extract_investment_multilingual(title, domain, montant, devise, cat):
         "Company plans 2025 expansion investment",  # une année n'est pas un montant
         "Miner to invest $50,000 in community garden",  # sous le seuil
         "",
+        # préfixes de devise collés à un mot (« yea-rs », « inv-estors », « amat-eur »)
+        "Barrick approves 5 years 2.5 billion investment",
+        # indemnisation, rachat d'actions, dépréciation, offre rejetée
+        "Vale approves $1.4 billion settlement for Mariana dam victims",
+        "BHP board approves $10bn share buyback",
+        "Glencore commits $1bn to share buyback",
+        "Newmont develops plan after $5 billion impairment",
+        "Anglo American rejects BHP's $39 billion bid",
+        "Vale aprova acordo de reparação de R$ 170 bilhões",
+        "Barrick annonce une dépréciation de 1 milliard de dollars",
+        "Codelco rechaza oferta de US$ 2.000 millones",
+        "Rio Tinto investiert trotz Abschreibung von 1 Milliarde Euro",
     ],
 )
 def test_extract_investment_rejections(title):
     assert C.extract_investment(title) is None
+
+
+@pytest.mark.parametrize(
+    "title,devise",
+    [
+        ("Over the next five years 2 billion dollars will be invested in the mine", "USD"),
+        ("Lithium miner attracts investors 200 million dollars for expansion", "USD"),
+        ("Amateur 5 million dollar expansion approved", "USD"),
+        ("Hindalco to invest Rs 2,000 crore in smelter", "INR"),
+        ("Glencore invests EUR 300 million in recycling plant", "EUR"),
+    ],
+)
+def test_extract_investment_currency_prefix_needs_word_boundary(title, devise):
+    got = C.extract_investment(title)
+    assert got is not None and got["devise"] == devise
 
 
 def test_parse_number_locales():

@@ -892,8 +892,8 @@ _MULT_RE = (r"mil\s+millones|thousand|millions?|millones|mill[oó]n|milh[oõ]es|
             r"bn|mn|md|m|b|k")
 _PRE = "|".join(f"(?:{p})" for p, _ in _PREFIX_CUR)
 _SUF = "|".join(f"(?:{p})" for p, _ in _SUFFIX_CUR)
-_AMOUNT = re.compile(
-    rf"(?P<pre>{_PRE})\s?(?P<n1>{_NUM})[\s-]?(?P<m1>{_MULT_RE})?(?![a-z])"
+_AMOUNT = re.compile(  # préfixe jamais collé à une lettre : « years 2 billion » n'est pas « Rs 2 billion »
+    rf"(?<![^\W\d_])(?P<pre>{_PRE})\s?(?P<n1>{_NUM})[\s-]?(?P<m1>{_MULT_RE})?(?![a-z])"
     rf"|(?P<n2>{_NUM})[\s-]?(?P<m2>{_MULT_RE})\.?\s?(?:(?:de|d'|of)\s?)?(?P<suf>{_SUF})(?![a-z])"
     rf"|(?P<n3>{_NUM})\s?(?P<m3>{_MULT_RE})?\s?(?P<sym>€|£|\$)", re.I)
 _PER_UNIT = re.compile(r"^\s*(?:/|per\b|a share|an? (?:ounce|tonne|ton|pound)|par\b|por\b|la (?:once|tonne)|"
@@ -908,13 +908,20 @@ INVEST_VERB = re.compile(
     r"agrandi\w*|invers\w*|inviert\w*|invertir\w*|destinar\w*|destinara\w*|adquier\w*|adquisici\w*|compra\w*|"
     r"constru\w*|ampli\w*|aporta\w*|adquir\w*|aquisic\w*|fusao|investier\w*|investition\w*|ubernimm\w*|"
     r"ubernahme\w*|kauf\w*|baut|ausbau\w*)\b")
-# chiffres de résultat, de dette ou de sanction près du montant : ce n'est pas un investissement
+# chiffres de résultat, de dette, de sanction, d'indemnisation, de rachat d'actions, de dépréciation ou
+# d'offre rejetée près du montant : ce n'est pas un investissement (en, fr, es, pt, de)
 NOT_INVEST = re.compile(
     r"\b(revenues?|sales|profits?|earnings|net income|loss(?:es)?|ebitda|dividends?|fined?|fines|penalt\w*|"
     r"lawsuits?|sues?|damages|market (?:cap\w*|value)|valued|worth|debt|bonds?|loans?|royalt\w*|tax(?:es)?|"
     r"wages?|salar\w*|benefices?|chiffre d'affaires|pertes?|amendes?|dette|ganancias?|utilidad\w*|ingresos|"
     r"perdidas?|multas?|deuda|lucros?|receitas?|prejuizos?|dividas?|gewinn\w*|umsatz\w*|verlust\w*|strafe\w*|"
-    r"schulden)\b")
+    r"schulden|"
+    r"settle\w*|compensation|reparation\w*|indemni\w*|transaction penale|acuerdo reparatorio|"
+    r"acordo de repara\w*|entschadigung\w*|"
+    r"buy ?backs?|share repurchase\w*|repurchas\w*|rachats? d'actions|recompra\w*|aktienruckkauf\w*|"
+    r"impairment\w*|write ?downs?|write ?offs?|writedowns?|depreciation\w*|deterioro|baixa contabil|"
+    r"wertminderung\w*|abschreibung\w*|"
+    r"reject\w*|rebuff\w*|spurn\w*|rejett\w*|rejete\w*|rechaz\w*|rejeit\w*|abgelehnt|lehnt)\b")
 # catégories, par ordre de priorité (la première qui correspond l'emporte)
 CATEGORIES: list[tuple[str, re.Pattern]] = [
     ("rachat/fusion", re.compile(
