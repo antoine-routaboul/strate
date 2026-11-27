@@ -1040,7 +1040,8 @@ const sg2=v=>{ const r=Math.abs(v)<0.0005?0:v; return (r>0?'+':r<0?'−':'')+fx2
 // de l'intervalle (r, ρ et φ sur [−1, 1], nul à 0 ; lift sur une échelle log ÷8…×8, nul à 1).
 // o = {type:'r'|'rho'|'phi'|'lift', v, lo, hi, n, nUnit, verdict, state:'demo'|'pos'|'nul'|'few'|'na', ciNote, sym}.
 // Tout est échappé. Règle : le badge n'améliore jamais un verdict du serveur. Un verdict reçu est affiché tel quel,
-// avec le style qu'il implique (au mieux neutre si l'intervalle affiché contient la valeur nulle). Sans verdict reçu,
+// avec le style qu'il implique (au mieux neutre si l'intervalle affiché contient la valeur nulle, jamais l'accent
+// sans intervalle affiché qui exclut cette valeur). Sans verdict reçu,
 // le badge en calcule un d'après l'IC seul et le dit : il ignore les règles du module (q-valeur, n minimal).
 // ciNote : pourquoi l'intervalle manque, en note discrète, plutôt qu'un chiffre nu.
 const CB_FEW=/trop peu|exploratoire|indisponible|incalculable|non calculable|indicatif/i;
@@ -1056,8 +1057,10 @@ function corrBadge(o){
   const auto=v==null?'non calculable':!hasCI?'IC 90 % indisponible'
     :!ex?`non démontré (IC 90 % inclut ${nul})`:`${dir} (calculé d’après l’IC 90 % seul)`;
   const verdict=sv??auto;
-  // style impliqué par le verdict affiché ; « demo » (accent) seulement pour un verdict « démontré » cohérent avec l'IC
-  const kind=s=>CB_FEW.test(s)?'few':CB_NUL.test(s)?'nul':hasCI&&!ex?'nul':CB_DEMO.test(s)?'demo':CB_POS.test(s)?'pos':'nul';
+  // style impliqué par le verdict affiché ; « demo » (accent) seulement pour un verdict « démontré » dont l'IC affiché
+  // exclut la valeur nulle : sans IC (« IC 90 % — »), rien ne montre la démonstration, le style reste « pos »
+  const kind=s=>CB_FEW.test(s)?'few':CB_NUL.test(s)?'nul':hasCI&&!ex?'nul':CB_DEMO.test(s)?(ex?'demo':'pos')
+    :CB_POS.test(s)?'pos':'nul';
   let state=sv?kind(sv):v==null?'na':!hasCI?'na':ex?'pos':'nul';
   // un état imposé par l'appelant peut abaisser le style, jamais le relever au-delà de ce que dit le verdict
   const RANK={na:0,few:0,nul:0,pos:1,demo:2};

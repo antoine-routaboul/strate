@@ -310,7 +310,11 @@ const done=()=>fetches.forEach(f=>f.done=true);
       // verdict « démontré » mais IC affiché contenant 0 : texte gardé, style neutre (jamais l'accent)
       [{type:'rho',v:0.1,lo:-0.1,hi:0.3,n:60,verdict:D},'p-neu'],
       // l'appelant impose « demo » sur un verdict non démontré : refusé
-      [{type:'lift',v:2,lo:1.2,hi:3,n:40,verdict:'non démontré',state:'demo'},'p-neu']];
+      [{type:'lift',v:2,lo:1.2,hi:3,n:40,verdict:'non démontré',state:'demo'},'p-neu'],
+      // verdict « démontré » sans IC envoyé (« IC 90 % — ») : texte gardé, jamais l'accent, même imposé
+      [{type:'rho',v:0.7,n:60,verdict:'démontré'},'p-pos'],
+      [{type:'lift',v:2,n:40,verdict:'★ lien démontré',state:'demo'},'p-pos'],
+      [{type:'rho',v:0.7,lo:0.2,n:60,verdict:D},'p-pos']];
     const bad=cases.filter(([o,cls])=>{ const h=P.corrBadge(o);
       return !h.includes('>'+o.verdict.replace(/&/g,'&amp;')+'<')||!h.includes(cls)||h.includes('p-acc')
         ||/risque accru|lien positif \(/.test(h.replace(o.verdict,'')); });
