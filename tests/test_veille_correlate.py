@@ -549,7 +549,8 @@ def test_twin_ids_are_tracked_and_analysed_once(con):
 def test_methode_describes_the_computation():
     m = correlate.METHODE
     for part in ("Cochran–Mantel–Haenszel", "Mantel–Haenszel", "0,5", "bootstrap", "décalage 0",
-                 "exploratoires", "GKG", "article le plus ancien", "q < 0,10", "5 mines", "10 mois"):
+                 "exploratoires", "GKG", "article le plus ancien", "q < 0,10", "5 mines", "10 mois",
+                 "rotation circulaire", "pas indépendants"):
         assert part in m
     assert "permutation (mois d'événement mélangés" not in m  # l'ancien test n'existe plus
 
@@ -606,3 +607,46 @@ def test_single_informative_mine_cannot_conclude(con):
 def test_informative_mines_mask():
     c = np.array([[48, 6, 4, 4], [48, 0, 2, 0], [48, 3, 0, 0], [48, 48, 2, 2], [48, 3, 48, 3]], float)
     assert correlate._informative(c).tolist() == [True, False, False, False, False]
+
+
+def _markov(t: int, p_on: float, stay: float, rng: np.random.Generator) -> np.ndarray:
+    """Frise 0/1 persistante : proportion stationnaire p_on, probabilité de rester à 1 égale à stay."""
+    x = np.zeros(t, bool)
+    x[0] = rng.random() < p_on
+    up = p_on * (1 - stay) / (1 - p_on)
+    for i in range(1, t):
+        x[i] = rng.random() < (stay if x[i - 1] else up)
+    return x
+
+
+def test_rotation_p_is_exact_enumeration_of_shifts():
+    rng = np.random.default_rng(4)
+    vecs = [(rng.random(12) < 0.3, rng.random(12) < 0.25) for _ in range(2)]
+    vecs[0][1][[2, 3]] = True
+    vecs[0][0][[2, 3]] = True
+    obs = sum(int((h & e).sum()) for h, e in vecs)
+    (h0, e0), (h1, e1) = vecs
+    tot = np.array([int((h0 & np.roll(e0, s0)).sum() + (h1 & np.roll(e1, s1)).sum())
+                    for s0 in range(12) for s1 in range(12)])
+    mean = tot.mean()
+    p = (np.abs(tot - mean) >= abs(obs - mean) - 1e-9).mean()
+    assert correlate._rotation_p(vecs) == pytest.approx(p)
+    assert correlate._rotation_p([(np.ones(12, bool), vecs[0][1])]) is None  # aucune variation
+
+
+def test_rotation_p_holds_level_when_months_are_persistent():
+    """Frises persistantes indépendantes : le CMH exact (mois mélangés) rejette trop, pas la rotation."""
+    rng = np.random.default_rng(8)
+    rot = cmh = n = 0
+    for _ in range(300):
+        vecs = [(_markov(48, 0.15, 0.8, rng), _markov(48, 0.15, 0.7, rng)) for _ in range(8)]
+        c = np.array([[48, h.sum(), e.sum(), (h & e).sum()] for h, e in vecs], float)
+        ok = correlate._informative(c)
+        if ok.sum() < correlate.MIN_MINES:
+            continue
+        r = correlate._lift_test(c[ok], rng, 50, [v for v, k in zip(vecs, ok, strict=True) if k])
+        n += 1
+        rot += r["p_value"] < 0.10
+        cmh += r["p_cmh"] < 0.10
+    assert n > 200
+    assert rot / n <= 0.13 and cmh / n >= 0.18

@@ -9,10 +9,12 @@ Trois tâches, chacune bornée pour qu'un cycle de 15 min rende toujours la main
    (optique, attention, radar), comme le bouton « Analyser » de l'interface. Une mine analysée apparaît
    d'elle-même dans le radar et le screener.
 3. **Étude d'événements** — au plus toutes les `recompute_hours` heures : les événements d'un type
-   coïncident-ils avec des anomalies satellite plus souvent que le hasard ? Test de Cochran–Mantel–
-   Haenszel stratifié par mine, rapport de risques de Mantel–Haenszel avec IC 90 % par bootstrap sur les
-   mines, q-valeurs de Benjamini-Hochberg. Seul le décalage 0 peut conclure ; les décalages ±1 à ±3 mois
-   sont exploratoires. Aucune IA : que des comptages et des rangs (texte complet : `METHODE`).
+   coïncident-ils avec des anomalies satellite plus souvent que le hasard ? Statistique de Cochran–
+   Mantel–Haenszel stratifiée par mine, p-valeur par rotation circulaire des événements dans chaque mine
+   (les mois d'une mine ne sont pas indépendants), rapport de risques de Mantel–Haenszel avec IC 90 % par
+   bootstrap sur les mines, q-valeurs de Benjamini-Hochberg. Seul le décalage 0 peut conclure ; les
+   décalages ±1 à ±3 mois sont exploratoires. Aucune IA : que des comptages et des rangs (texte
+   complet : `METHODE`).
 
 Rien n'est affirmé sans données suffisantes (5 mines informatives, 10 mois-événements) ni sans correction des
 comparaisons multiples, et seuls comptent les mois où l'actualité était réellement collectée.
@@ -67,15 +69,25 @@ METHODE = (
     "GKG traité, ou, si l'historique de la mine est fait et que le normaliseur reconnaît l'un des noms "
     "cherchés dans un titre, depuis l'article le plus ancien renvoyé par l'API documentaire (jamais depuis "
     "le début de la frise de volume). "
-    "Test : Cochran–Mantel–Haenszel stratifié par mine (un tableau 2×2 par mine : mois d'événement ou "
-    "non × anomalie ou non), p-valeur bilatérale exacte (loi conditionnelle, somme des lois "
-    "hypergéométriques des mines). Effet (lift) = rapport de risques de Mantel–Haenszel, correction de "
+    "Test : statistique de Cochran–Mantel–Haenszel stratifiée par mine (un tableau 2×2 par mine : mois "
+    "d'événement ou non × anomalie ou non ; somme des anomalies tombant sur un mois d'événement). Les mois "
+    "d'une mine ne sont pas indépendants (une anomalie retenue dure au moins deux mois, les événements "
+    "arrivent en grappes) : mélanger les mois, comme le CMH exact, rejetterait trop souvent. La p-valeur "
+    "bilatérale vient donc de la rotation circulaire de la frise des événements dans chaque mine (chaque "
+    "décalage modulo la durée est également probable sous l'hypothèse nulle ; l'autocorrélation des deux "
+    "frises est conservée), loi exacte par convolution des mines. Simulation sous l'hypothèse nulle "
+    "(frises de Markov persistantes, 5 à 20 mines informatives, 24 à 60 mois) : 6 à 8 % de faux « lien "
+    "démontré » pour un test, 7 à 10 % de calculs avec au moins un faux « lien démontré » sur 24 tests ; "
+    "le CMH exact en donnait 15 à 38 % pour un test. Limite : la rotation suppose les événements "
+    "stationnaires dans la fenêtre couverte ; une tendance commune aux deux frises n'est pas corrigée. "
+    "La p-valeur du CMH exact (mois supposés indépendants) reste dans les détails. "
+    "Effet (lift) = rapport de risques de Mantel–Haenszel, correction de "
     "continuité de 0,5 sur chaque case quand aucune anomalie ne tombe hors des mois d'événement (une "
     "association parfaite donne un lift fini et élevé) ; IC 90 % par bootstrap sur les mines (500 "
     "tirages). Coefficient de corrélation de chaque type : phi intra-mine entre mois d'événement (0/1) et "
     "mois d'anomalie (0/1), sommes centrées dans chaque mine (Σ(a − n_e·K/T) / √(Σ n_e(T−n_e)/T · "
-    "Σ K(T−K)/T)), IC 90 % par les mêmes tirages de mines ; son numérateur est la statistique du test "
-    "CMH, d'où la même p-valeur. Il a son propre verdict (IC hors de 0), jamais recopié de celui du lift. "
+    "Σ K(T−K)/T)), IC 90 % par les mêmes tirages de mines ; son numérateur est la statistique du test, "
+    "d'où la même p-valeur. Il a son propre verdict (IC hors de 0), jamais recopié de celui du lift. "
     "Volume d'actualité ↔ écart du signal (|z|) : corrélation de rang centrée dans chaque mine, p-valeur "
     "par loi normale de même moyenne et même variance que la permutation des mois dans chaque mine, même "
     "bootstrap. Famille principale = décalage 0 (types × signaux, plus le volume) : q-valeurs de "
@@ -519,10 +531,51 @@ def _informative(counts: np.ndarray) -> np.ndarray:
     return (ne > 0) & (ne < t) & (k > 0) & (k < t)
 
 
-def _lift_test(counts: np.ndarray, rng: np.random.Generator, n_boot: int) -> dict:
+def _rotation_counts(hit: np.ndarray, ev: np.ndarray) -> np.ndarray:
+    """Anomalies tombant sur un mois d'événement pour chacune des T rotations circulaires des événements.
+
+    Rotation s : l'événement du mois t est placé au mois t + s (modulo T). La rotation 0 est l'observé.
+    """
+    t = len(hit)
+    idx = (np.arange(t)[:, None] + np.arange(t)[None, :]) % t
+    return (ev.astype(bool)[idx] & hit.astype(bool)[None, :]).sum(axis=1)
+
+
+def _rotation_p(vecs: list[tuple[np.ndarray, np.ndarray]]) -> float | None:
+    """p-valeur bilatérale exacte du test par rotation intra-mine (somme des anomalies sur événement).
+
+    Les mois d'une mine ne sont pas indépendants : une anomalie retenue dure au moins deux mois
+    (persistance |z| ≥ 2 deux mois de suite) et les événements arrivent en grappes. Mélanger les mois
+    (loi hypergéométrique du test CMH exact) suppose qu'ils sont échangeables : sous persistance, ce test
+    rejette trop souvent (simulation : 12 à 16 % au lieu de 10 % pour p < 0,10). Faire tourner la frise
+    des événements de chaque mine garde son autocorrélation et celle des anomalies ; sous H0 (frises
+    indépendantes, événements stationnaires), chacune des T rotations est également probable, d'où la
+    loi exacte de Σ a : produit de convolution des lois des rotations de chaque mine. p = P(|S − E| ≥
+    |obs − E|), E = Σ n_e·K/T.
+    """
+    dist = np.ones(1)
+    obs, mean = 0, 0.0
+    for hit, ev in vecs:
+        a = _rotation_counts(hit, ev)
+        if np.ptp(a) == 0:
+            continue  # toutes les rotations donnent le même compte : la mine n'apprend rien
+        dist = np.convolve(dist, np.bincount(a) / len(a))
+        obs += int(a[0])
+        mean += float(a.mean())
+    if len(dist) == 1:
+        return None
+    x = np.arange(len(dist))
+    p = float(dist[np.abs(x - mean) >= abs(obs - mean) - 1e-9].sum())
+    return min(1.0, max(p, np.finfo(float).tiny))
+
+
+def _lift_test(counts: np.ndarray, rng: np.random.Generator, n_boot: int,
+               vecs: list[tuple[np.ndarray, np.ndarray]] | None = None) -> dict:
     """counts : (mines × 4) [T, K, n_e, a_e]. Lift de Mantel–Haenszel et phi intra-mine, IC 90 % par le
-    MÊME bootstrap sur les mines (mêmes tirages pour les deux), p CMH (commune : le numérateur du phi
-    intra-mine est la statistique du test, Σ(a − attendu))."""
+    MÊME bootstrap sur les mines (mêmes tirages pour les deux), p commune (le numérateur du phi
+    intra-mine est la statistique du test, Σ(a − attendu)). Avec `vecs` (frises 0/1 anomalie, événement
+    de chaque mine, dans l'ordre de `counts`) : p du test par rotation (`_rotation_p`), qui tient compte
+    de la persistance ; sinon p du CMH exact (mois supposés indépendants), toujours rendue en `p_cmh`."""
     tot = counts.sum(axis=0)
     parts = _mh_parts(counts)
     sums = [float(x.sum()) for x in parts]
@@ -535,8 +588,10 @@ def _lift_test(counts: np.ndarray, rng: np.random.Generator, n_boot: int) -> dic
     phi = float(_phi_ratio(*(float(x.sum()) for x in pp)))
     phi_lo, phi_hi = _ci(_phi_ratio(*(w @ x for x in pp)))
     test = _cmh_exact(counts)
+    p = _rotation_p(vecs) if vecs is not None else test["p_value"]
     return dict(lift=lift if np.isfinite(lift) else None, lift_lo=lo, lift_hi=hi,
-                rho=phi if np.isfinite(phi) else None, rho_lo=phi_lo, rho_hi=phi_hi, p_value=test["p_value"],
+                rho=phi if np.isfinite(phi) else None, rho_lo=phi_lo, rho_hi=phi_hi, p_value=p,
+                p_cmh=test["p_value"],
                 p_event=float(tot[3] / tot[2]) if tot[2] else None,
                 p_no_event=float((tot[1] - tot[3]) / (tot[0] - tot[2])) if tot[0] > tot[2] else None,
                 expected=test["expected"], chi2=test["chi2"],
@@ -608,11 +663,11 @@ def study(con: sqlite3.Connection, dossier_fn: DossierFn | None = None, candidat
     for etype in store.EVENT_TYPES:
         for sig in signals:
             for lag in LAGS:
-                counts = []
+                counts, vecs = [], []
                 for p in panel.values():
                     if sig not in p["sat"]:
                         continue
-                    a = p["sat"][sig][0]
+                    a = p["sat"][sig][0].sort_index()
                     ms = a.index.to_numpy() - lag  # mois de l'événement apparié à chaque mois satellite
                     keep = (ms >= p["start"]) & (ms <= p["end"])  # mois d'actualité réellement collectés
                     if not keep.any():
@@ -620,6 +675,7 @@ def study(con: sqlite3.Connection, dossier_fn: DossierFn | None = None, candidat
                     hit = np.abs(a.to_numpy()[keep]) >= Z_ALERT
                     e = np.isin(ms[keep], list(p["ev"].get(etype, ())))
                     counts.append([keep.sum(), hit.sum(), e.sum(), (hit & e).sum()])
+                    vecs.append((hit, e))
                 c = np.array(counts, dtype=float).reshape(-1, 4)
                 if not c[:, 2].sum():
                     continue  # type jamais vu sur ces mines : une ligne vide n'apprendrait rien
@@ -631,13 +687,15 @@ def study(con: sqlite3.Connection, dossier_fn: DossierFn | None = None, candidat
                 row = dict(event_type=etype, signal=sig, lag_months=lag, n_mines=n_mines, n_events=n_events,
                            lift=None, lift_lo=None, lift_hi=None, rho=None, rho_lo=None, rho_hi=None,
                            p_value=None)
-                r = _lift_test(ci, rng, n_boot) if n_mines else dict(
-                    p_event=None, p_no_event=None, expected=None, chi2=None, corrected=False)
+                r = _lift_test(ci, rng, n_boot, [v for v, ok in zip(vecs, inf, strict=True) if ok]) \
+                    if n_mines else dict(p_event=None, p_no_event=None, expected=None, chi2=None,
+                                         corrected=False, p_cmh=None)
                 det = dict(mines_panel=len(c), mines_avec_evenements=int((c[:, 2] > 0).sum()),
                            mois_evenements_total=int(c[:, 2].sum()), mines_informatives=n_mines,
                            mois_apparies=int(c[:, 0].sum()), mois_apparies_informatifs=int(ci[:, 0].sum()),
                            anomalies=int(c[:, 1].sum()),
-                           test="Cochran–Mantel–Haenszel exact", n_boot=n_boot,
+                           test="rotation circulaire intra-mine (loi exacte)", n_boot=n_boot,
+                           p_cmh_mois_independants=r.pop("p_cmh"),
                            p_anomalie_evenement=r.pop("p_event"),
                            p_anomalie_sans_evenement=r.pop("p_no_event"),
                            anomalies_attendues=r.pop("expected"), chi2_cmh=r.pop("chi2"),

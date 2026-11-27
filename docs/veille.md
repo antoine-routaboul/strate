@@ -113,11 +113,19 @@ chaîne : elle est notée et retentée au cycle suivant.
   (depuis le premier mois du flux GKG traité ; pour une mine dont l'historique est « fait » et dont un
   nom cherché est reconnu par le normaliseur, depuis l'article le plus ancien renvoyé) — sinon des
   années « sans événement » faute de collecte, ou faute de nom reconnu, fausseraient la comparaison.
-  Test : **Cochran–Mantel–Haenszel stratifié par mine** (un tableau 2×2 par mine : mois d'événement ou
-  non × anomalie ou non) ; effet = rapport de risques de Mantel–Haenszel (`lift`), IC 90 % par bootstrap
-  sur les mines, correction de continuité de 0,5 sur chaque case quand aucune anomalie ne tombe hors
-  des mois d'événement (une association parfaite donne un lift fini et élevé, pas une absence de
-  résultat ; aucune coïncidence donne un lift exact de 0, non corrigé).
+  Test : **statistique de Cochran–Mantel–Haenszel stratifiée par mine** (un tableau 2×2 par mine : mois
+  d'événement ou non × anomalie ou non), **p-valeur par rotation circulaire** de la frise des événements
+  dans chaque mine (loi exacte par convolution des mines). Les mois d'une mine ne sont pas
+  indépendants : une anomalie retenue dure au moins deux mois, les événements arrivent en grappes. Le
+  CMH exact, qui mélange les mois, rejetait trop souvent sous persistance (simulation, frises de Markov
+  de 5 à 20 mines : 15 à 38 % de p < 0,10, et jusqu'à 89 % de calculs avec au moins un faux « lien
+  démontré » sur 24 tests) ; la rotation garde l'autocorrélation des deux frises : 6 à 8 % de faux
+  « lien démontré » pour un test, 7 à 10 % des calculs de 24 tests avec au moins un. Limite : elle
+  suppose les événements stationnaires dans la fenêtre couverte. La p du CMH exact reste dans
+  `details.p_cmh_mois_independants`. Effet = rapport de risques de Mantel–Haenszel (`lift`), IC 90 %
+  par bootstrap sur les mines, correction de continuité de 0,5 sur chaque case quand aucune anomalie
+  ne tombe hors des mois d'événement (une association parfaite donne un lift fini et élevé, pas une
+  absence de résultat ; aucune coïncidence donne un lift exact de 0, non corrigé).
   **Famille principale = décalage 0 seulement** (type × signal, plus le volume d'actualité) : q-valeurs
   de Benjamini-Hochberg sur cette famille ; verdict `lien démontré` si q < 0,10 et IC hors de 1.
   Décalages −3 … +3 : calculés et stockés avec leur propre correction, verdict `exploratoire` (on ne
@@ -129,10 +137,9 @@ chaîne : elle est notée et retentée au cycle suivant.
   événements ne peut plus produire un verdict sur un IC réduit à un point.
   **Coefficient de chaque type** (colonnes `rho`, `rho_lo`, `rho_hi`) : phi intra-mine entre mois
   d'événement (0/1) et mois d'anomalie (0/1), sommes centrées dans chaque mine, IC 90 % par les mêmes
-  tirages de mines que le lift ; son numérateur est la statistique du test CMH (même p, même q).
+  tirages de mines que le lift ; son numérateur est la statistique du test (même p, même q).
   `verdict_rho` : même règle appliquée à l'IC du phi (hors de 0), jamais recopiée du verdict du lift.
-  Sous l'hypothèse nulle (simulation, 1 000 jeux de 5, 8 et 20 mines × 60 mois, un seul test donc
-  q = p) : 4,2 %, 6,4 % et 7,8 % de faux « lien démontré », pour le lift comme pour le phi.
+  Ces taux valent pour le lift comme pour le phi (même p).
   Volume d'actualité (`news_volume`) ↔ signal : corrélation de rang intra-mine, mêmes règles
   (`verdict_rho` = `verdict`). `details` dit le coefficient (`coefficient_rho`), ce que compte `n_events`
   (`unite_n`) et l'unité du bootstrap (`unite_bootstrap` = mines, `n_unites_bootstrap`).
