@@ -1048,3 +1048,37 @@ def test_cli_companies_refresh_falls_back_to_update(monkeypatch, capsys):
     fake(monkeypatch, "companies")
     with pytest.raises(SystemExit, match="ni refresh ni update"):
         run_cli(monkeypatch, "companies", "refresh")
+
+
+# -- modules réels (fumée) -----------------------------------------------------------------------------
+def test_smoke_real_modules():
+    """Modules et données réels, en lecture seule : saute proprement si les données locales manquent. Ne
+    lance ni rétro-test, ni réseau (forecast_site est en lecture seule ; backtest.json doit exister)."""
+    from strate.core import DATA_DIR
+
+    if not (DATA_DIR / "forecast" / "backtest.json").is_file():
+        pytest.skip("data/forecast/backtest.json absent : uv run strate forecast backtest")
+    c = TestClient(api.app)
+    bt = c.get("/api/forecast/backtest").json()
+    if not bt["rows"]:
+        pytest.skip(f"rétro-test sans mesure : {bt.get('message')}")
+    assert all(set(r) == set(api.BT_ROW) for r in bt["rows"])
+    assert all(r["note"] for r in bt["rows"] if r["r"] is None)  # naïf : pourquoi pas de r
+    s = c.get("/api/correlations/summary").json()
+    json.dumps(s, allow_nan=False)
+    assert all(r["verdict"] and r["unite_n"] and r["type"] in api.SYM for r in s["rows"])
+    pr = [r for r in s["rows"] if r["domaine"] == "prévisions"]
+    assert pr and all(r["n_bootstrap_unit"] <= r["n"] for r in pr)
+    try:
+        from strate import forecast
+
+        sid = str(forecast._panel()["site_id"].iloc[0])
+    except Exception as e:  # panel de production absent ou module en cours d'écriture
+        pytest.skip(f"panel de production indisponible : {e}")
+    d = c.get("/api/forecast/site", params={"site": sid}).json()
+    assert d is not None and d["historique"] and json.dumps(d, allow_nan=False)
+    if d["qualite"]:
+        assert d["qualite"]["portee"] == "global" and set(d["qualite"]) == set(api.QUALITE)
+    assert all(isinstance(p["horizon"], int) and isinstance(p["mesure"], bool) for p in d["prevision"])
+    co = c.get("/api/companies", params={"limit": 3}).json()
+    assert co["total"] >= len(co["rows"]) and all(set(r) == set(api.CO_ROW) for r in co["rows"])
