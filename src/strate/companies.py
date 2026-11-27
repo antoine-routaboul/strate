@@ -1030,6 +1030,16 @@ NOT_INVEST = re.compile(
     r"impairment\w*|write ?downs?|write ?offs?|writedowns?|depreciation\w*|deterioro|baixa contabil|"
     r"wertminderung\w*|abschreibung\w*|"
     r"reject\w*|rebuff\w*|spurn\w*|rejett\w*|rejete\w*|rechaz\w*|rejeit\w*|abgelehnt|lehnt)\b")
+# offre ou projet retiré, abandonné, annulé : cherché dans tout le titre (« BHP walks away from $49bn Anglo
+# bid »), le mot pouvant être loin du montant ; un titre qui annonce aussi un autre investissement est perdu,
+# choix assumé : un faux montant d'abandon pèse plus qu'un investissement manqué (en, fr, es, pt, de)
+WITHDRAWN = re.compile(
+    r"\b(walk(?:s|ed|ing)? away|withdr[ae]w\w*|abandon(?:s|ing)?|abandoned (?!mines?|pits?|sites?)\w+|"
+    r"scrapp(?:ed|ing)|(?:scraps|drop(?:s|ped)?)(?=.{0,30}\b(?:bid|offer|takeover|deal|plan|project)s?\b)|"
+    r"call(?:s|ed)? off|cancel\w*|shelv\w*|"
+    r"renonc\w*|retire (?:son|sa|leur) \w*|abandonn\w* (?:son|sa|ses|le|la|les|leur) \w*|annul\w*|"
+    r"desist\w*|abandona\w* (?:su|sua|el|la|o|a|los|las) \w*|retira\w* (?:su |sua |a |o )?\w*|cancela\w*|"
+    r"zuruckgezogen|zieht\w* (?:sich )?\w* ?zuruck|verzicht\w*|abgesagt)\b")
 # catégories, par ordre de priorité (la première qui correspond l'emporte)
 CATEGORIES: list[tuple[str, re.Pattern]] = [
     ("rachat/fusion", re.compile(
@@ -1111,7 +1121,7 @@ def extract_investment(title: str, domain: str | None = None) -> dict | None:
     if not isinstance(title, str) or not title.strip():
         return None
     folded = entities.fold(title)
-    if not INVEST_VERB.search(folded):
+    if not INVEST_VERB.search(folded) or WITHDRAWN.search(folded):
         return None
     for m in _AMOUNT.finditer(title):
         num = m.group("n1") or m.group("n2") or m.group("n3")

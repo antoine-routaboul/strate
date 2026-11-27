@@ -592,6 +592,13 @@ def test_extract_investment_multilingual(title, domain, montant, devise, cat):
         "Barrick annonce une dépréciation de 1 milliard de dollars",
         "Codelco rechaza oferta de US$ 2.000 millones",
         "Rio Tinto investiert trotz Abschreibung von 1 Milliarde Euro",
+        # offre retirée ou projet abandonné
+        "BHP walks away from $49bn Anglo bid",
+        "Glencore withdraws $5 billion takeover offer for Teck",
+        "Company abandons $2 billion expansion plan",
+        "Barrick renonce à son projet d'investissement de 1 milliard de dollars",
+        "Minera desiste de la compra de US$ 500 millones",
+        "Teck scraps $2 billion plan to build mine",
     ],
 )
 def test_extract_investment_rejections(title):
@@ -602,6 +609,8 @@ def test_extract_investment_rejections(title):
     "title,devise",
     [
         ("Over the next five years 2 billion dollars will be invested in the mine", "USD"),
+        ("Company invests $200 million to rehabilitate abandoned mines", "USD"),  # pas un abandon d'offre
+        ("Recycler invests $150 million in scrap metal plant", "USD"),
         ("Lithium miner attracts investors 200 million dollars for expansion", "USD"),
         ("Amateur 5 million dollar expansion approved", "USD"),
         ("Hindalco to invest Rs 2,000 crore in smelter", "INR"),
