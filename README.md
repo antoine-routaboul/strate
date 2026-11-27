@@ -1,5 +1,8 @@
 # Strate
 
+> Développé en privé en 2026, publié en open source en novembre 2026.
+> *Developed privately in 2026, open-sourced in November 2026.*
+
 Terminal open source d'*alternative data* pour le secteur minier. Strate rassemble ce que les
 terminaux financiers classiques ne couvrent pas : un catalogue mondial des mines, des images satellite,
 l'actualité minière de toutes les langues, et les données publiques des sociétés. Chaque relation
@@ -10,6 +13,20 @@ d'observations.
 satellite signals calibrated against reported production, a 24/7 multilingual news pipeline, and
 company filings data. Every relationship is shown with its correlation coefficient and confidence
 interval.*
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/emprise-production-sombre.png">
+  <img alt="Nuage de points : emprise satellite de 410 mines contre leur production annuelle, en échelle log. Corrélation 0,58 pour le minerai (245 mines) et 0,41 pour le charbon (165 mines)." src="docs/img/emprise-production.png">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/variations-satellite-sombre.png">
+  <img alt="Nuage de points : variation annuelle de la surface nue mesurée par Sentinel-2 contre variation de la production, 326 paires d'années sur 129 mines. Corrélation 0,11 ; même sens de variation dans 54 % des cas, à peine mieux que le hasard." src="docs/img/variations-satellite.png">
+</picture>
+
+La taille d'une mine vue du ciel dit l'ordre de grandeur de sa production ; ses variations d'une
+année sur l'autre ne disent presque rien des variations de production. Strate publie les deux
+résultats. Graphiques régénérables avec `uv run python scripts/figures.py`.
 
 ![Fiche d'une mine dans Strate](docs/img/fiche-mine.jpg)
 
@@ -31,7 +48,7 @@ Strate publie ses conclusions négatives au même titre que les positives.
 
 | Question | Résultat (IC 90 %) |
 |---|---|
-| La taille de l'emprise d'une mine indique-t-elle l'échelle de sa production ? | **Oui** : corrélation 0,51 (0,37 – 0,63), sans aucune image |
+| La taille de l'emprise d'une mine indique-t-elle l'échelle de sa production ? | **Oui** : 0,58 (0,49 – 0,66) sur 245 mines de minerai, 0,41 (0,28 – 0,52) sur 165 de charbon ; 0,51 (0,37 – 0,63) sur l'échantillon satellite de 107 mines |
 | L'image satellite ajoute-t-elle de l'information à la taille ? | Peu : 0,17 (0,00 – 0,33) |
 | Les variations annuelles de surface suivent-elles celles de la production ? | **Non** : bon sens dans 54 % des cas (48 – 60 %) |
 | Le radar suit-il les variations de production ? | **Non démontré** : 56 % (47 – 64 %) |
