@@ -731,6 +731,36 @@ def test_corr_stats_coefficients_interval_n_and_verdict():
     assert C.verdict(tiny, 8, 3).startswith("trop peu de données")
 
 
+def test_null_simulation_false_demonstrated_rate_below_ten_percent():
+    one = C.simulate_null(8, n_sims=300, n_boot=200, n_perm=499, seed=11)
+    assert one["taux_rho"] <= 0.10 and one["taux_r"] <= 0.10
+    pooled = C.simulate_null(4, n_companies=6, n_sims=60, n_boot=100, n_perm=199, company_effects=True,
+                             seed=12)
+    assert pooled["taux_rho"] <= 0.15  # 60 tirages : marge d'échantillonnage (5,3 % sur 1 000)
+    few = C.simulate_null(3, n_companies=3, n_sims=20, n_boot=50, n_perm=99, seed=13)
+    assert few["taux_rho"] == 0 == few["taux_r"]  # 3 grappes : jamais assez pour conclure
+
+
+def test_verdicts_per_coefficient_and_bh():
+    q = C.bh([0.01, 0.04, 0.03, np.nan, 0.5])
+    assert q[0] == pytest.approx(0.04) and q[1] == q[2] == pytest.approx(0.04 * 4 / 3)  # m = 4 tests
+    assert np.isnan(q[3]) and q[4] == 0.5
+    s = dict(r=0.6, r_lo=0.2, r_hi=0.8, rho=0.3, rho_lo=-0.1, rho_hi=0.6, p_r=0.01, p_rho=0.2, n_points=12,
+             n_societes=1, n_grappes=12)
+    assert C.verdict(s, 8, coef="r", q=0.02).startswith("lien positif démontré (IC 90 % de r")
+    assert C.verdict(s, 8, coef="rho", q=0.3).startswith("non démontré : l'IC 90 % de ρ contient 0")
+    assert "tests multiples" in C.verdict(s, 8, coef="r", q=0.2)  # IC hors de 0 mais q trop grand
+    assert C.verdict(s | dict(n_points=7), 8, coef="r", q=0.01).startswith("trop peu")
+
+
+def test_clusters_group_companies_sharing_a_dated_mine():
+    co, lk = C.build_entities(fake_catalog(), entities.load(), twins={})
+    g = C.clusters(lk)
+    assert g["anglogold"] == g["regis"]  # Tropicana : 70 / 30
+    assert g["newmont"] == g["newcrest_mining"]  # Cadia, avant et après le rachat
+    assert g["bhp"] != g["newmont"]
+
+
 def test_correlate_capex_production_lag_weighted_by_share():
     years = list(range(2008, 2020))
     rng = np.random.default_rng(0)
@@ -782,6 +812,10 @@ def test_correlate_capex_production_lag_weighted_by_share():
     lag1 = ens.loc[("CAPEX", "production (mines détenues)", 1)]
     lag0 = ens.loc[("CAPEX", "production (mines détenues)", 0)]
     assert lag1["rho"] > 0.7 and lag1["rho_lo"] > 0 and lag1["verdict"].startswith("lien positif")
+    assert lag1["verdict_rho"] == lag1["verdict"] and lag1["verdict_r"].startswith("lien positif")
+    assert lag1["q_value"] == lag1["q_rho"] < 0.10 and lag1["n_grappes"] == 6
+    assert lag1["n_bootstrap_unit"] == 6 and lag1["unite_bootstrap"].startswith("grappes")
+    assert not lag0["verdict"].startswith("lien")
     assert abs(lag0["rho"]) < lag1["rho"]
     assert lag1["n_societes"] == 6 and lag1["n_points"] == 6 * 10
     sat = ens.loc[("CAPEX", "emprise satellite (surface nue)", 0)]

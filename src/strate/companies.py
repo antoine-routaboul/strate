@@ -31,7 +31,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from scipy.stats import pearsonr, spearmanr
+from scipy.stats import pearsonr, rankdata, spearmanr
 
 from strate import entities
 from strate.core import DATA_DIR
@@ -74,8 +74,24 @@ METHODE_CORRELATIONS = (
     "Spearman. Exercice rangé dans l'année civile qui en contient la plus grande part (clôture de janvier à "
     "mai → année précédente) ; une clôture au 30 juin (BHP) est rangée l'année de clôture et reste décalée "
     "de six mois sur la production civile. L'année civile en cours est exclue (emprise et production "
-    "partielles). IC 90 % par bootstrap sur les sociétés (ensemble) ou sur les années (une société) ; "
-    "n sociétés, n points. « Démontré » seulement si l'IC 90 % de ρ exclut 0.")
+    "partielles). IC 90 % par bootstrap : sur les grappes de sociétés (ensemble ; des sociétés qui "
+    "partagent une mine forment une seule grappe, leurs séries n'étant pas indépendantes) ou sur les années "
+    "(une société). p de permutation (4 999 tirages) : années permutées à l'intérieur de chaque société "
+    "(ensemble : le test porte sur le lien année par année, pas sur les écarts de niveau entre sociétés) "
+    "ou entre elles (une société). q de Benjamini-Hochberg sur la famille de tous les tests d'une mise à "
+    "jour (r et ρ, ensemble et sociétés, effectif minimal atteint). « Démontré » exige les trois : IC 90 % "
+    "du coefficient hors de 0, q < 0,10, et l'effectif minimal (une société : 8 années ; ensemble : 20 "
+    "points et 6 grappes). verdict_r et verdict_rho sont tirés chacun de son propre IC et de son q. "
+    "Simulation sous l'hypothèse nulle (x et y indépendants, simulate_null) : l'ancienne règle (IC de ρ "
+    "seul) donnait 23 % de « démontré » à tort pour une société sur 5 ans et 32 % sur un ensemble de "
+    "3 sociétés × 3 ans ; IC + p < 0,10 sans seuil d'effectif donne 7 à 9 % ; la règle complète, test "
+    "seul dans sa famille, 5,6 % (r : 6,1 %) pour une société sur 8 ans (2 000 tirages), 4,2 % (r : 5,3 %) "
+    "pour 6 sociétés × 4 ans et 5,3 % (r : 6,3 %) pour 10 × 5 avec des niveaux moyens corrélés entre "
+    "sociétés (1 000 tirages) ; dans une famille de 12 tests nuls, 0,5 %. Les seuils d'effectif ne sont "
+    "pas là pour ce taux, que le test de permutation tient déjà, mais pour l'IC : sous 6 grappes ou "
+    "8 années, le bootstrap n'a que quelques centaines de rééchantillons distincts (3 grappes : 10). "
+    "Limites : années supposées échangeables (variations annuelles peu autocorrélées) ; une société cotée "
+    "à la SEC sur peu d'exercices ou sans mine datée n'entre pas.")
 
 # Codes SIC (Standard Industrial Classification, champ « sic » de data.sec.gov/submissions) acceptés pour un
 # CIK trouvé automatiquement (registre SEC par nom ou ticker, Wikidata P5531) ; la graine vérifiée passe
@@ -1423,13 +1439,22 @@ def _close_month(ends: pd.Series) -> int:
 
 # -- corrélations ----------------------------------------------------------------------------------------
 CORR_COLS = ["portee", "company_id", "x", "y", "decalage", "r", "r_lo", "r_hi", "rho", "rho_lo", "rho_hi",
-             "n_societes", "n_points", "verdict", "calcule_le"]
-MIN_POINTS_COMPANY = 5  # points d'une société pour sa propre corrélation
+             "p_r", "p_rho", "q_r", "q_rho", "q_value", "n_societes", "n_grappes", "n_points",
+             "n_points_decales", "n_bootstrap_unit", "unite_bootstrap", "verdict_r", "verdict_rho", "verdict",
+             "calcule_le"]
+# Seuils fixés par simulation sous l'hypothèse nulle (simulate_null, chiffres dans METHODE_CORRELATIONS) :
+# en dessous, l'IC bootstrap est trop étroit et le test de permutation trop grossier pour conclure.
+MIN_POINTS_COMPANY = 8  # années appariées d'une société pour sa propre corrélation
 MIN_YEARS_POOLED = 3  # une société n'entre dans l'ensemble qu'avec au moins 3 années appariées
+MIN_POINTS_POOLED = 20  # points de l'ensemble
+MIN_GRAPPES = 6  # grappes indépendantes (sociétés sans mine commune) pour l'ensemble
+Q_MAX = 0.10  # seuil de Benjamini-Hochberg sur la famille des tests d'une mise à jour
+N_PERM = 4999
 
 
-def _ci(vals: list[float]) -> tuple[float, float]:
-    v = [x for x in vals if np.isfinite(x)]
+def _ci(vals) -> tuple[float, float]:
+    v = np.asarray(vals, dtype=float)
+    v = v[np.isfinite(v)]
     if len(v) < 20:
         return np.nan, np.nan
     lo, hi = np.percentile(v, [5, 95])
@@ -1442,48 +1467,185 @@ def _coefs(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
     return float(pearsonr(x, y).statistic), float(spearmanr(x, y).statistic)
 
 
+def _pearson_rows(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
+    """r de Pearson ligne par ligne (tirages en lignes) ; NaN si une ligne a moins de 3 valeurs distinctes."""
+    X, Y = np.atleast_2d(X).astype(float), np.atleast_2d(Y).astype(float)
+    Xc, Yc = X - X.mean(1, keepdims=True), Y - Y.mean(1, keepdims=True)
+    den = np.sqrt((Xc ** 2).sum(1) * (Yc ** 2).sum(1))
+    with np.errstate(invalid="ignore", divide="ignore"):
+        r = (Xc * Yc).sum(1) / den
+    bad = (_nuniq_rows(X) < 3) | (_nuniq_rows(Y) < 3) | ~(den > 0)
+    return np.where(bad, np.nan, r)
+
+
+def _nuniq_rows(A: np.ndarray) -> np.ndarray:
+    S = np.sort(A, axis=1)
+    return 1 + (np.diff(S, axis=1) != 0).sum(1)
+
+
+def _two_sided(obs: float, null: np.ndarray) -> float:
+    """p bilatéral d'un test de permutation : 2 × la plus petite queue, correction +1 (jamais 0)."""
+    null = null[np.isfinite(null)]
+    if not np.isfinite(obs) or len(null) == 0:
+        return np.nan
+    hi = (1 + np.sum(null >= obs - 1e-12)) / (len(null) + 1)
+    lo = (1 + np.sum(null <= obs + 1e-12)) / (len(null) + 1)
+    return float(min(1.0, 2 * min(hi, lo)))
+
+
 def corr_stats(d: pd.DataFrame, x: str = "x", y: str = "y", group: str | None = "company_id",
-               n_boot: int = 1000, seed: int = 0) -> dict:
-    """r de Pearson, ρ de Spearman et leurs IC 90 % par bootstrap : sur les groupes (sociétés) si `group`,
-    sinon sur les points. Toujours avec n points et n groupes."""
+               cluster: str | None = None, n_boot: int = 1000, n_perm: int = N_PERM, seed: int = 0) -> dict:
+    """r de Pearson, ρ de Spearman, IC 90 % bootstrap et p de permutation.
+
+    Avec `group` (ensemble) : bootstrap sur les grappes `cluster` (sociétés reliées par une mine commune,
+    à défaut les sociétés), permutation des années À L'INTÉRIEUR de chaque société (le test porte sur le
+    lien année par année, pas sur les écarts de niveau moyen entre sociétés). Sans `group` (une société) :
+    bootstrap et permutation sur les années."""
     d = d.replace([np.inf, -np.inf], np.nan).dropna(subset=[x, y])
     n, k = len(d), (d[group].nunique() if group else 1)
-    r, rho = _coefs(d[x].to_numpy(), d[y].to_numpy())
-    res = dict(r=r, r_lo=np.nan, r_hi=np.nan, rho=rho, rho_lo=np.nan, rho_hi=np.nan, n_points=int(n),
-               n_societes=int(k))
+    unit = cluster if group and cluster and cluster in d else group
+    g = d[unit].nunique() if unit else n
+    r, rho = _coefs(d[x].to_numpy(float), d[y].to_numpy(float))
+    res = dict(r=r, r_lo=np.nan, r_hi=np.nan, rho=rho, rho_lo=np.nan, rho_hi=np.nan, p_r=np.nan,
+               p_rho=np.nan, n_points=int(n), n_societes=int(k), n_grappes=int(g))
     if not np.isfinite(r):
         return res
     rng = np.random.default_rng(seed)
-    rs, rhos = [], []
-    if group and k >= 2:
-        parts = [g[[x, y]].to_numpy() for _, g in d.groupby(group)]
-        for _ in range(n_boot):
-            b = np.concatenate([parts[i] for i in rng.integers(0, k, k)])
-            a, c = _coefs(b[:, 0], b[:, 1])
-            rs.append(a)
-            rhos.append(c)
+    xv, yv = d[x].to_numpy(float), d[y].to_numpy(float)
+    # bootstrap
+    if group and g >= 2:
+        parts = [np.flatnonzero((d[unit] == u).to_numpy()) for u in d[unit].unique()]
+        rs, rhos = np.full(n_boot, np.nan), np.full(n_boot, np.nan)
+        for b in range(n_boot):
+            idx = np.concatenate([parts[i] for i in rng.integers(0, g, g)])
+            bx, by = xv[idx], yv[idx]
+            rs[b] = _pearson_rows(bx, by)[0]
+            rhos[b] = _pearson_rows(rankdata(bx), rankdata(by))[0]
     elif not group:
-        arr = d[[x, y]].to_numpy()
-        for _ in range(n_boot):
-            b = arr[rng.integers(0, n, n)]
-            a, c = _coefs(b[:, 0], b[:, 1])
-            rs.append(a)
-            rhos.append(c)
+        idx = rng.integers(0, n, (n_boot, n))
+        bx, by = xv[idx], yv[idx]
+        rs = _pearson_rows(bx, by)
+        rhos = _pearson_rows(rankdata(bx, axis=1), rankdata(by, axis=1))
+    else:
+        rs = rhos = np.array([])
     res["r_lo"], res["r_hi"] = _ci(rs)
     res["rho_lo"], res["rho_hi"] = _ci(rhos)
+    # permutation
+    if n_perm > 0:
+        P = np.tile(np.arange(n), (n_perm, 1))
+        blocks = [np.flatnonzero((d[group] == u).to_numpy()) for u in d[group].unique()] if group \
+            else [np.arange(n)]
+        for ix in blocks:
+            P[:, ix] = rng.permuted(np.tile(ix, (n_perm, 1)), axis=1)
+        rx, ry = rankdata(xv), rankdata(yv)
+        res["p_r"] = _two_sided(r, _pearson_rows(np.tile(xv, (n_perm, 1)), yv[P]))
+        res["p_rho"] = _two_sided(rho, _pearson_rows(np.tile(rx, (n_perm, 1)), ry[P]))
     return res
 
 
-def verdict(s: dict, min_points: int, min_groups: int = 1) -> str:
-    if s["n_points"] < min_points or s["n_societes"] < min_groups or not np.isfinite(s["rho"]):
-        return f"trop peu de données (n = {s['n_points']}, sociétés = {s['n_societes']})"
-    if not np.isfinite(s["rho_lo"]):
+def bh(p) -> np.ndarray:
+    """q de Benjamini-Hochberg (NaN ignorés, gardés NaN)."""
+    p = np.asarray(p, dtype=float)
+    q = np.full(p.shape, np.nan)
+    ok = np.flatnonzero(np.isfinite(p))
+    if len(ok) == 0:
+        return q
+    order = ok[np.argsort(p[ok])]
+    m = len(ok)
+    vals = p[order] * m / np.arange(1, m + 1)
+    q[order] = np.minimum(1.0, np.minimum.accumulate(vals[::-1])[::-1])
+    return q
+
+
+def enough(s: dict, min_points: int, min_units: int = 1) -> bool:
+    units = s.get("n_grappes", s.get("n_societes", 1))
+    return s["n_points"] >= min_points and units >= min_units
+
+
+def verdict(s: dict, min_points: int, min_groups: int = 1, coef: str = "rho", q: float | None = None) -> str:
+    """Verdict d'UN coefficient (`coef` = r ou rho) tiré de son propre IC 90 % et de son q. « Démontré »
+    exige les trois : effectif minimal, IC 90 % hors de 0, q < Q_MAX. Sans q fourni : q = q_<coef> de s,
+    à défaut le p de permutation (famille d'un seul test)."""
+    sym = "ρ" if coef == "rho" else "r"
+    if q is None:
+        q = s.get(f"q_{coef}")
+        q = s.get(f"p_{coef}") if q is None or not np.isfinite(q) else q
+    if not enough(s, min_points, min_groups) or not np.isfinite(s[coef]):
+        return (f"trop peu de données (n = {s['n_points']}, sociétés = {s['n_societes']}, "
+                f"grappes indépendantes = {s.get('n_grappes', s['n_societes'])})")
+    lo, hi = s[f"{coef}_lo"], s[f"{coef}_hi"]
+    if not np.isfinite(lo) or not np.isfinite(hi):
         return "intervalle incalculable : chiffres indicatifs"
-    if s["rho_lo"] > 0:
-        return "lien positif démontré (IC 90 % de ρ au-dessus de 0)"
-    if s["rho_hi"] < 0:
-        return "lien négatif démontré (IC 90 % de ρ sous 0)"
-    return "non démontré : l'IC 90 % de ρ contient 0"
+    if lo <= 0 <= hi:
+        return f"non démontré : l'IC 90 % de {sym} contient 0"
+    if q is None or not np.isfinite(q) or q >= Q_MAX:
+        qs = "inconnu" if q is None or not np.isfinite(q) else f"{q:.2f}"
+        return f"non démontré : IC 90 % de {sym} hors de 0 mais q = {qs} ≥ {Q_MAX:.2f} (tests multiples)"
+    side = "positif" if lo > 0 else "négatif"
+    where = "au-dessus de 0" if lo > 0 else "sous 0"
+    return f"lien {side} démontré (IC 90 % de {sym} {where}, q = {q:.3f})"
+
+
+def demonstrated(v) -> bool:
+    return isinstance(v, str) and "démontré" in v and not v.startswith("non ")
+
+
+def simulate_null(n_points: int, n_companies: int = 1, family: int = 1, n_sims: int = 500,
+                  company_effects: bool = False, n_boot: int = 300, n_perm: int = 999,
+                  seed: int = 0) -> dict:
+    """Part de verdicts « démontré » quand x et y sont indépendants (hypothèse nulle vraie), avec la règle
+    du module. n_companies = 1 : corrélation d'une société sur n_points années ; sinon ensemble de
+    n_companies sociétés × n_points années (une grappe chacune). `family` tests nuls par mise à jour,
+    corrigés ensemble par Benjamini-Hochberg. company_effects : niveaux moyens corrélés entre sociétés
+    (lien entre sociétés sans lien année par année)."""
+    rng = np.random.default_rng(seed)
+    hits = {"r": 0, "rho": 0}
+    total = 0
+    pooled = n_companies > 1
+    for _ in range(n_sims):
+        stats = []
+        for _ in range(family):
+            if pooled:
+                mu = rng.normal(size=(n_companies, 1)) * (1.0 if company_effects else 0.0)
+                xs = mu + rng.normal(size=(n_companies, n_points))
+                ys = mu + rng.normal(size=(n_companies, n_points))
+                d = pd.DataFrame(dict(company_id=np.repeat(np.arange(n_companies), n_points),
+                                      x=xs.ravel(), y=ys.ravel()))
+                s = corr_stats(d, n_boot=n_boot, n_perm=n_perm, seed=int(rng.integers(1 << 30)))
+            else:
+                d = pd.DataFrame(dict(x=rng.normal(size=n_points), y=rng.normal(size=n_points)))
+                s = corr_stats(d, group=None, n_boot=n_boot, n_perm=n_perm, seed=int(rng.integers(1 << 30)))
+            stats.append(s)
+        mins = (MIN_POINTS_POOLED, MIN_GRAPPES) if pooled else (MIN_POINTS_COMPANY, 1)
+        ps = [s[f"p_{c}"] if enough(s, *mins) else np.nan for s in stats for c in ("r", "rho")]
+        qs = bh(ps)
+        for i, s in enumerate(stats):
+            for j, c in enumerate(("r", "rho")):
+                hits[c] += demonstrated(verdict(s, *mins, coef=c, q=qs[2 * i + j]))
+        total += family
+    return dict(n_points=n_points, n_companies=n_companies, family=family, n_sims=n_sims,
+                taux_r=hits["r"] / total, taux_rho=hits["rho"] / total)
+
+
+def clusters(lk: pd.DataFrame) -> dict[str, str]:
+    """Société → grappe : les sociétés qui partagent une mine datée (coentreprise, propriétaire et
+    exploitant) forment une seule unité de bootstrap, leurs séries n'étant pas indépendantes."""
+    d = dated_links(lk)
+    parent: dict[str, str] = {c: c for c in d["company_id"]}
+
+    def root(c: str) -> str:
+        while parent[c] != c:
+            parent[c] = parent[parent[c]]
+            c = parent[c]
+        return c
+
+    for _, g in d.groupby("site_id"):
+        cs = list(g["company_id"])
+        for c in cs[1:]:
+            a, b = root(cs[0]), root(c)
+            if a != b:
+                parent[max(a, b)] = min(a, b)
+    return {c: root(c) for c in parent}
 
 
 PAIRS = [  # (x, y, décalage) ; x et y sont des variations annuelles en log
@@ -1495,8 +1657,11 @@ PAIRS = [  # (x, y, décalage) ; x et y sont des variations annuelles en log
 
 def correlate(facts: pd.DataFrame, lk: pd.DataFrame, *, cat: pd.DataFrame | None = None,
               prod: pd.DataFrame | None = None, twins: dict[str, str] | None = None,
-              reader: Callable[[str], pd.DataFrame] = _optical, n_boot: int = 1000) -> pd.DataFrame:
-    """Toutes les corrélations du § 2 : sur l'ensemble (portee = « ensemble ») et par société."""
+              reader: Callable[[str], pd.DataFrame] = _optical, n_boot: int = 1000, n_perm: int = N_PERM,
+              today: date | None = None) -> pd.DataFrame:
+    """Toutes les corrélations du § 2 : sur l'ensemble (portee = « ensemble ») et par société. Les q de
+    Benjamini-Hochberg portent sur la famille de tous les tests effectués (r et ρ, ensemble et sociétés,
+    effectif minimal atteint) ; les verdicts de r et de ρ sont tirés chacun de son IC et de son q."""
     from strate import catalog
 
     run_at = _now()
@@ -1514,29 +1679,55 @@ def correlate(facts: pd.DataFrame, lk: pd.DataFrame, *, cat: pd.DataFrame | None
     changes = perimeter_changes(lk)
     series = {
         "CAPEX": fact_growth(facts, "capex", changes), "effectifs": fact_growth(facts, "effectifs", changes),
-        "production (mines détenues)": company_growth(lk, mine_production_growth(cat, prod, sites, twins)),
-        "emprise satellite (surface nue)": company_growth(lk, mine_footprint_growth(sites, reader)),
+        "production (mines détenues)": company_growth(
+            lk, mine_production_growth(cat, prod, sites, twins, today=today)),
+        "emprise satellite (surface nue)": company_growth(
+            lk, mine_footprint_growth(sites, reader, today=today)),
     }
-    rows = []
+    grappe = clusters(lk)
+    rows, mins = [], []
     for xn, yn, lag in PAIRS:
         xs, ys = series[xn], series[yn]
         if xs.empty or ys.empty:
-            d = pd.DataFrame(columns=["company_id", "annee", "x", "y"])
+            d = pd.DataFrame(columns=["company_id", "annee", "x", "y", "ecart_mois"])
         else:
             d = xs.rename(columns={"valeur": "x"}).merge(
                 ys.assign(annee=ys["annee"] - lag).rename(columns={"valeur": "y"})[
                     ["company_id", "annee", "y"]],
                 on=["company_id", "annee"])
+        d = d.assign(grappe=[grappe.get(c, c) for c in d["company_id"]])
         cnt = d.groupby("company_id").size() if len(d) else pd.Series(dtype=int)
         pooled = d[d["company_id"].isin(cnt[cnt >= MIN_YEARS_POOLED].index)]
-        s = corr_stats(pooled, n_boot=n_boot)
+        s = corr_stats(pooled, cluster="grappe", n_boot=n_boot, n_perm=n_perm)
         rows.append(dict(portee="ensemble", company_id=None, x=xn, y=yn, decalage=lag, **s,
-                         verdict=verdict(s, 8, 3), calcule_le=run_at))
+                         n_points_decales=_shifted(pooled), n_bootstrap_unit=s["n_grappes"],
+                         unite_bootstrap="grappes de sociétés sans mine commune", calcule_le=run_at))
+        mins.append((MIN_POINTS_POOLED, MIN_GRAPPES))
         for cid in cnt[cnt >= MIN_POINTS_COMPANY].index:
-            s = corr_stats(d[d["company_id"] == cid], group=None, n_boot=n_boot)
+            one = d[d["company_id"] == cid]
+            s = corr_stats(one, group=None, n_boot=n_boot, n_perm=n_perm)
+            s["n_grappes"] = s["n_points"]  # une société : les années sont l'unité de bootstrap
             rows.append(dict(portee="societe", company_id=cid, x=xn, y=yn, decalage=lag, **s,
-                             verdict=verdict(s, MIN_POINTS_COMPANY), calcule_le=run_at))
+                             n_points_decales=_shifted(one), n_bootstrap_unit=s["n_points"],
+                             unite_bootstrap="années", calcule_le=run_at))
+            mins.append((MIN_POINTS_COMPANY, 1))
+    ps = [r[f"p_{c}"] if enough(r, *m) else np.nan
+          for r, m in zip(rows, mins, strict=True) for c in ("r", "rho")]
+    qs = bh(ps)
+    for i, (r, m) in enumerate(zip(rows, mins, strict=True)):
+        r["q_r"], r["q_rho"] = qs[2 * i], qs[2 * i + 1]
+        r["q_value"] = r["q_rho"]
+        r["verdict_r"] = verdict(r, *m, coef="r", q=r["q_r"])
+        r["verdict_rho"] = verdict(r, *m, coef="rho", q=r["q_rho"])
+        r["verdict"] = r["verdict_rho"]
     return pd.DataFrame(rows, columns=CORR_COLS)
+
+
+def _shifted(d: pd.DataFrame) -> int:
+    """Points venant d'un exercice clos à trois mois ou plus du 31 décembre (décalé sur l'année civile)."""
+    if "ecart_mois" not in d or d.empty:
+        return 0
+    return int((pd.to_numeric(d["ecart_mois"], errors="coerce") >= 3).sum())
 
 
 # -- stockage ---------------------------------------------------------------------------------------------
