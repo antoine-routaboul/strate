@@ -1,0 +1,189 @@
+{
+  "date": "2026-11-24",
+  "fenetre": [
+    2016,
+    2019
+  ],
+  "mines": 129,
+  "paires_annees": 326,
+  "taille": {
+    "rho": 0.48430611885029096,
+    "ic90": [
+      0.3474349268668831,
+      0.5955878135717659
+    ],
+    "mines": 107,
+    "fenetre_seule": {
+      "rho": 0.5140091027309839,
+      "ic90_bas": 0.37465131357783116,
+      "ic90_haut": 0.6304209250552908,
+      "mines": 107,
+      "lecture": "taille de la fenêtre (dérivée de l'emprise connue), sans aucune image"
+    },
+    "fraction_nue": {
+      "rho": 0.16898842061952626,
+      "ic90_bas": 0.004820621016387381,
+      "ic90_haut": 0.3263561405289246,
+      "mines": 107,
+      "lecture": "surface nue / fenêtre d'analyse : ce que l'image ajoute à la taille"
+    }
+  },
+  "variation": {
+    "rho": 0.10799719718165356,
+    "ic90": [
+      0.021523973946831965,
+      0.18482698751435894
+    ],
+    "bon_sens": [
+      0.5406976744186046,
+      0.47593421815604664,
+      0.5976365367612052
+    ]
+  },
+  "reglage": {
+    "rho_reglage": 0.19549352230647712,
+    "rho_test": [
+      0.06052934910346464,
+      -0.061565087540276536,
+      0.18003556063627188
+    ],
+    "seuils_testes": {
+      "ndvi_bare": 0.15,
+      "swir_change": 0.16
+    },
+    "retenus": "seuils par défaut"
+  },
+  "alertes": {
+    "precision": [
+      0.2905027932960894,
+      0.22680112682809878,
+      0.35468510211309173
+    ],
+    "taux_de_base": 0.294478527607362
+  },
+  "modele_surface_nue": {
+    "nature": "surface nue Sentinel-2 dans une fenêtre dimensionnée sur l'emprise connue : encode surtout la taille de l'emprise ; comparer à « fenetre_seule » (aucune image)",
+    "usage": "diagnostic de calibration, pas d'estimation de production",
+    "minerai": {
+      "intercept": 6.183000297516171,
+      "slope": 0.6029814018720318,
+      "n": 57,
+      "facteur_median": 3.514298735285803,
+      "facteur_90": 10.032314898357152,
+      "surface_min_km2": 0.08587927686758262,
+      "surface_max_km2": 80.20252005590501,
+      "exclues_saturees": 8,
+      "fenetre_seule": {
+        "facteur_median": 3.164758723337257,
+        "facteur_90": 10.110250431749266
+      },
+      "fraction_nue_seule": {
+        "facteur_median": 4.0331369977605185,
+        "facteur_90": 12.887981018660863
+      },
+      "rho": {
+        "surface_nue": 0.4850272232304901,
+        "fraction_nue": 0.18265491314493132,
+        "fenetre": 0.4960453902569468
+      }
+    },
+    "charbon": {
+      "intercept": 6.115471558760185,
+      "slope": 0.5243141151232609,
+      "n": 40,
+      "facteur_median": 2.0254329561165916,
+      "facteur_90": 11.858794182760851,
+      "surface_min_km2": 0.10127210168834977,
+      "surface_max_km2": 112.44045156881639,
+      "exclues_saturees": 2,
+      "fenetre_seule": {
+        "facteur_median": 2.1485620005340067,
+        "facteur_90": 8.374080033804464
+      },
+      "fraction_nue_seule": {
+        "facteur_median": 2.2672590680251634,
+        "facteur_90": 13.614484961378775
+      },
+      "rho": {
+        "surface_nue": 0.677110694183865,
+        "fraction_nue": 0.33264540337711074,
+        "fenetre": 0.5148785491531926
+      }
+    }
+  },
+  "modele_emprise": {
+    "charbon": {
+      "intercept": 6.254449476132316,
+      "slope": 0.3474023603346121,
+      "n": 165,
+      "rho": 0.4060027449156587,
+      "facteur_median": 2.156735724882877,
+      "facteur_90": 8.818420663206634,
+      "moitie_tenue_a_l_ecart": {
+        "n": 89,
+        "facteur_median": 2.345463384372204,
+        "facteur_90": 9.235440835526857
+      },
+      "emprise_min_km2": 0.1277672866093679,
+      "emprise_max_km2": 201.66290407354705
+    },
+    "minerai": {
+      "intercept": 5.898667139083618,
+      "slope": 0.7611180086807269,
+      "n": 245,
+      "rho": 0.5783663225253535,
+      "facteur_median": 2.506110770758707,
+      "facteur_90": 8.48264032162667,
+      "moitie_tenue_a_l_ecart": {
+        "n": 132,
+        "facteur_median": 2.5526927209466805,
+        "facteur_90": 8.419981545641797
+      },
+      "emprise_min_km2": 0.13522369309503143,
+      "emprise_max_km2": 303.35025834700605
+    }
+  },
+  "radar": {
+    "metrique_temporelle": "activity_db",
+    "mines_test": 73,
+    "n_boot": 1000,
+    "variation": [
+      0.11234206491630844,
+      -0.03411038210644884,
+      0.2531743499271929
+    ],
+    "bon_sens": [
+      0.5578947368421052,
+      0.4725274725274725,
+      0.6391932390314072
+    ],
+    "bon_sens_grands_mouvements": [
+      0.5901639344262295,
+      0.4775774971297359,
+      0.6923076923076923
+    ],
+    "intra_mine_niveau": [
+      0.13441279926239943,
+      -0.020350466526599418,
+      0.2697600089368688
+    ],
+    "taille": {
+      "gain_erreur": {
+        "facteur": 1.044745058807859,
+        "ic90": [
+          0.9262366099565159,
+          1.075482853679809
+        ]
+      },
+      "mines": 94,
+      "verdict": "rejeté : n'améliore pas l'estimation de production (IC 90 % du gain inclut 1)"
+    },
+    "verdict": "non démontré : aucun intervalle à 90 % n'exclut le hasard"
+  },
+  "echantillon": {
+    "eligibles": 436,
+    "tirees": 150,
+    "retenues": 135,
+    "exclues": 15
+  }
+}

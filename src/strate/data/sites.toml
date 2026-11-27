@@ -1,0 +1,176 @@
+# Graphe d'entités — dossier Mine, V0.
+# Coordonnées : uniquement depuis une source citée (Wikidata ou Wikipedia).
+# Propriétaires : état connu fin 2025, à revérifier avant toute conclusion.
+# radius_m : demi-côté du carré analysé autour du point, doit couvrir fosse + verses + résidus.
+
+[companies.equinox]
+name = "Equinox Gold"
+tickers = ["TSX:EQX", "NYSE:EQX"]
+# pas d'article Wikipedia anglais
+
+[companies.agnico]
+name = "Agnico Eagle Mines"
+tickers = ["TSX:AEM", "NYSE:AEM"]
+wikipedia = "Agnico_Eagle"
+
+[companies.newmont]
+name = "Newmont"
+tickers = ["NYSE:NEM", "TSX:NGT", "ASX:NEM"]
+wikipedia = "Newmont"
+
+[companies.northern_star]
+name = "Northern Star Resources"
+tickers = ["ASX:NST"]
+wikipedia = "Northern_Star_Resources"
+
+[companies.anglogold]
+name = "AngloGold Ashanti"
+tickers = ["NYSE:AU", "JSE:ANG"]
+wikipedia = "AngloGold_Ashanti"
+
+[companies.regis]
+name = "Regis Resources"
+tickers = ["ASX:RRL"]
+wikipedia = "Regis_Resources"
+
+[companies.bhp]
+name = "BHP"
+tickers = ["ASX:BHP", "NYSE:BHP", "LSE:BHP"]
+wikipedia = "BHP"
+
+[sites.greenstone]
+name = "Greenstone"
+wikipedia = "Greenstone_gold_mine"
+country = "CA"
+region = "Ontario"
+commodity = ["gold"]
+lat = 49.677409
+lon = -86.928214
+radius_m = 4000
+owners = [{ company = "equinox", share = 1.0 }]
+stage = "production"
+coord_source = "https://en.wikipedia.org/wiki/Greenstone_gold_mine"
+known_events = [
+  { date = "2024-05", event = "Premier or coulé (mise en production)" },
+]
+
+[sites.detour_lake]
+name = "Detour Lake"
+wikipedia = "Detour_Lake_Mine"
+country = "CA"
+region = "Ontario"
+commodity = ["gold"]
+lat = 50.0137
+lon = -79.7225
+radius_m = 5000
+owners = [{ company = "agnico", share = 1.0 }]
+stage = "production"
+coord_source = "https://www.wikidata.org/wiki/Q16509413"
+
+[sites.canadian_malartic]
+name = "Canadian Malartic"
+wikipedia = "Canadian_Malartic_Mine"
+country = "CA"
+region = "Québec"
+commodity = ["gold"]
+lat = 48.1118895
+lon = -78.1308392
+radius_m = 4000
+owners = [{ company = "agnico", share = 1.0 }]
+stage = "production"
+coord_source = "https://www.wikidata.org/wiki/Q3407218"
+
+[sites.brucejack]
+name = "Brucejack"
+wikipedia = "Brucejack_mine"
+country = "CA"
+region = "British Columbia"
+commodity = ["gold", "silver"]
+lat = 56.4675
+lon = -130.19139
+radius_m = 3000
+owners = [{ company = "newmont", share = 1.0 }]
+stage = "production"
+coord_source = "https://www.wikidata.org/wiki/Q131553642"
+
+[sites.hope_bay]
+name = "Hope Bay"
+wikipedia = "Hope_Bay_Mine"
+country = "CA"
+region = "Nunavut"
+commodity = ["gold"]
+lat = 68.1375
+lon = -106.60944444
+radius_m = 4000
+owners = [{ company = "agnico", share = 1.0 }]
+stage = "exploration"
+coord_source = "https://en.wikipedia.org/wiki/Hope_Bay_Mine"
+known_events = [
+  { date = "2022-02", event = "Production suspendue, retour à l'exploration" },
+]
+
+[sites.super_pit]
+name = "Super Pit (KCGM)"
+wikipedia = "Super_Pit_gold_mine"
+country = "AU"
+region = "Western Australia"
+commodity = ["gold"]
+lat = -30.77472222
+lon = 121.50944444
+radius_m = 4000
+owners = [{ company = "northern_star", share = 1.0 }]
+stage = "production"
+coord_source = "https://en.wikipedia.org/wiki/Super_Pit_gold_mine"
+
+[sites.boddington]
+name = "Boddington"
+wikipedia = "Boddington_gold_mine"
+country = "AU"
+region = "Western Australia"
+commodity = ["gold", "copper"]
+lat = -32.7378
+lon = 116.36
+radius_m = 5000
+owners = [{ company = "newmont", share = 1.0 }]
+stage = "production"
+coord_source = "https://www.wikidata.org/wiki/Q4936418"
+
+[sites.tropicana]
+name = "Tropicana"
+wikipedia = "Tropicana_Gold_Mine"
+country = "AU"
+region = "Western Australia"
+commodity = ["gold"]
+lat = -29.24055556
+lon = 124.53861111
+radius_m = 6000
+owners = [{ company = "anglogold", share = 0.7 }, { company = "regis", share = 0.3 }]
+stage = "production"
+# Wikidata (Q7846201) donne -29.4167, 124.917 : point à ~40 km de la mine, vérifié sur image.
+coord_source = "https://en.wikipedia.org/wiki/Tropicana_Gold_Mine"
+
+[sites.cadia]
+name = "Cadia"
+wikipedia = "Cadia-Ridgeway_mine"
+country = "AU"
+region = "New South Wales"
+commodity = ["gold", "copper"]
+lat = -33.467
+lon = 148.993
+radius_m = 4000
+owners = [{ company = "newmont", share = 1.0 }]
+stage = "production"
+coord_source = "https://www.wikidata.org/wiki/Q1025139"
+
+[sites.olympic_dam]
+name = "Olympic Dam"
+wikipedia = "Olympic_Dam_mine"
+country = "AU"
+region = "South Australia"
+commodity = ["copper", "uranium", "gold", "silver"]
+lat = -30.4444
+lon = 136.867
+radius_m = 5000
+owners = [{ company = "bhp", share = 1.0 }]
+stage = "production"
+coord_source = "https://www.wikidata.org/wiki/Q1473809"

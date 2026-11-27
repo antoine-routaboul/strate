@@ -4,8 +4,8 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 # données calculées (régénérables avec `strate update`)
-data/
-logs/
+/data/
+/logs/
 .DS_Store
 
 # configuration locale (contact SEC, clés) : jamais versionnée
