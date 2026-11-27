@@ -530,23 +530,30 @@ const map=L.map('map',{preferCanvas:true,worldCopyJump:true}).setView([20,10],2)
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:14,attribution:'© contributeurs OpenStreetMap'}).addTo(map);
 const renderer=L.canvas({padding:.5}); let hi=null, STATS={};
 
+// Démarrage : chaque route est lue à part (une réponse vide, nulle ou en erreur ne bloque pas les autres) ;
+// arr()/obj() ramènent toute réponse à la forme attendue, jamais d'exception sur une base vide.
 async function init(){
-  const [pts,stats,rad,cal]=await Promise.all([api('/api/catalog/points'),api('/api/catalog/stats'),api('/api/radar'),api('/api/calibration')]); CAL=cal||{}; CAL_READY=true; STATS=stats||{};
+  const got=await Promise.allSettled([api('/api/catalog/points'),api('/api/catalog/stats'),api('/api/radar'),api('/api/calibration')]);
+  const [ptsR,statsR,radR,calR]=got.map(x=>x.status==='fulfilled'?x.value:null);
+  got.filter(x=>x.status==='rejected').forEach(x=>console.error(x.reason));
+  const cal=obj(calR), stats=obj(statsR), rad=arr(radR).map(obj), pts=arr(ptsR).filter(Array.isArray);
+  CAL=cal; CAL_READY=true; STATS=stats;
   $('#count').textContent=`${fmt(stats.total,0)} sites dans ${stats.pays||0} pays · ${fmt(stats.avec_emprise_satellite,0)} avec emprise réelle · ${fmt(stats.avec_production_reelle,0)} avec production publiée`;
   $('#sources').innerHTML=`<p>${fmt(stats.mines_actives_icmm,0)} mines actives nommées · ${fmt(stats.usines_fonderies_raffineries,0)} usines, fonderies et raffineries · ${fmt(stats.mines_wikidata,0)} mines Wikidata · ${fmt(stats.emprises_sans_nom,0)} emprises satellite sans nom</p>
     <p class="meta">${fmt(stats.avec_emprise_satellite,0)} avec emprise réelle · ${fmt(stats.avec_production_reelle,0)} avec production réelle · ${fmt(stats.avec_article_wikipedia,0)} avec article Wikipedia</p>
-    <ul style="margin:12px 0 0;padding-left:18px">${(stats.sources||[]).map(s=>`<li>${esc(s)}</li>`).join('')}</ul>`;
+    <ul style="margin:12px 0 0;padding-left:18px">${arr(stats.sources).map(s=>`<li>${esc(s)}</li>`).join('')}</ul>`;
   // bindTooltip(chaîne) passe par innerHTML : les noms viennent de Wikidata (éditable par tous), donc esc()
   for(const [id,la,lo] of pts) PTS.set(id,[la,lo]);  // calque veille : position catalogue de la mine citée
-  for(const k of [2,3,1,0]) for(const [id,la,lo,kind,name] of pts){ if(kind!==k)continue;
+  for(const k of [2,3,1,0]) for(const [id,la,lo,kind,name] of pts){ if(kind!==k||num(la)==null||num(lo)==null)continue;
     L.circleMarker([la,lo],{renderer,radius:k===0?3:2.2,stroke:false,fillColor:COL[kind],fillOpacity:.85}).on('click',()=>open(id)).bindTooltip(esc(name||'Emprise minière sans nom')).addTo(map); }
-  const wl=await api('/api/sites');
+  let wl=[]; try{ wl=arr(await api('/api/sites')).map(obj).filter(s=>s.id&&num(s.lat)!=null&&num(s.lon)!=null); }catch(e){ console.error(e); }
   for(const s of wl){ PTS.set(s.id,[s.lat,s.lon]);
     L.circleMarker([s.lat,s.lon],{renderer,radius:6,color:tok('--tracked','#c4242a'),weight:2,fillOpacity:.15}).on('click',()=>open(s.id)).bindTooltip(esc(s.nom)).addTo(map); }
   drawRadar(rad);
 }
 function drawRadar(rad){
-  $('#radar tbody').innerHTML=rad.map(r=>`<tr class="row${r.site===CURRENT?' sel':''}" data-id="${esc(r.site)}"><td>${lvl(Math.min(r.niveau,2))}</td><td><a class="nm" href="#/site/${esc(enc(r.site))}">${esc(r.nom)}</a></td><td style="white-space:nowrap">${esc(String(r.date).slice(0,7))}</td><td class="meta">${esc(r.explication)||'—'}</td></tr>`).join('')
+  rad=arr(rad).map(obj).filter(r=>r.site);
+  $('#radar tbody').innerHTML=rad.map(r=>`<tr class="row${r.site===CURRENT?' sel':''}" data-id="${esc(r.site)}"><td>${lvl(Math.min(num(r.niveau)??0,2))}</td><td><a class="nm" href="#/site/${esc(enc(r.site))}">${esc(r.nom||r.site)}</a></td><td style="white-space:nowrap">${esc(String(r.date??'—').slice(0,7))}</td><td class="meta">${esc(r.explication)||'—'}</td></tr>`).join('')
     ||'<tr><td colspan=4 class="meta">Aucune mine suivie n’a de données récentes.</td></tr>';
   document.querySelectorAll('#radar tr.row').forEach(tr=>tr.onclick=e=>{ if(!e.target.closest?.('a')) open(tr.dataset.id); });
 }
@@ -623,22 +630,25 @@ function siteHead(s,src,wiki,wd){
     <p class="sub">${esc(s.pays)}${s.region?', '+esc(s.region):''}${s.metaux?' · '+esc(s.metaux):''}</p>
     <div class="kv"><div>Type / statut</div><div>${esc(s.type||s.stade)}${s.confiance?' · confiance '+esc(s.confiance):''}</div><div>Propriétaire(s)</div><div>${esc(s.proprietaires)||'—'}</div>
     <div>Emprise réelle</div><div>${s.emprise_km2?fmt(s.emprise_km2,2)+' km² (contours satellite Maus 2022)':'non cartographiée'}</div>
-    <div>Zone analysée</div><div>carré de ${fmt(2*s.rayon_m/1000,1)} km de côté</div>
-    <div>Coordonnées</div><div>${Number(s.lat).toFixed(4)}, ${Number(s.lon).toFixed(4)} · ${src}${wiki}${wd}</div>
+    <div>Zone analysée</div><div>${num(s.rayon_m)!=null?`carré de ${fmt(2*s.rayon_m/1000,1)} km de côté`:'—'}</div>
+    <div>Coordonnées</div><div>${num(s.lat)!=null&&num(s.lon)!=null?`${s.lat.toFixed(4)}, ${s.lon.toFixed(4)}`:'—'} · ${src}${wiki}${wd}</div>
     <div>Sources</div><div>${esc(s.sources)}${s.production_reelle?' · production réelle disponible':''}</div>
     ${s.derniere_date?`<div>Signaux satellite</div><div>jusqu'à ${esc(s.derniere_date)}${s.analyse?'':' (anciens)'}</div>`:''}</div>`;
 }
 async function renderSite(id,live){
-  const s=await api('/api/site?site='+enc(id));
+  const s=obj(await api('/api/site?site='+enc(id)));
   if(!live()) return;
+  // réponse vide (base sans cette mine) : une phrase, pas une fiche de champs vides
+  if(!s.nom&&!s.id&&num(s.lat)==null){ charts.forEach(c=>c.destroy()); charts=[];
+    $('#detail').innerHTML=`<div class="crumb"><a href="#/carte">Carte</a></div><h1 class="title">${esc(id)}</h1><p class="meta">Aucune donnée pour cette mine (catalogue vide ou identifiant inconnu).</p>`; return; }
   // jumeau catalogue d'une mine suivie : le serveur renvoie la fiche suivie. Dossier, images et suivi d'analyse
   // partent de son id (sinon dossier vide et suivi d'un id que le serveur ne met jamais en file)
   if(s.id&&s.id!==id){ id=s.id; CURRENT=id; location.hash='/site/'+enc(id);
     document.querySelectorAll('#radar tr').forEach(tr=>tr.classList.toggle('sel',tr.dataset.id===id)); }
   document.title=`${s.nom||id} — Strate`;
-  map.setView([s.lat,s.lon],Math.max(map.getZoom(),10));
-  if(hi) map.removeLayer(hi);
-  hi=L.rectangle(L.latLng(s.lat,s.lon).toBounds(2*s.rayon_m),{color:tok('--tracked','#c4242a'),weight:1.5,fill:false}).addTo(map);
+  if(hi){ map.removeLayer(hi); hi=null; }
+  if(num(s.lat)!=null&&num(s.lon)!=null){ map.setView([s.lat,s.lon],Math.max(map.getZoom(),10));
+  hi=L.rectangle(L.latLng(s.lat,s.lon).toBounds(2*(num(s.rayon_m)??1000)),{color:tok('--tracked','#c4242a'),weight:1.5,fill:false}).addTo(map); }
   const wiki=s.wikipedia?` · <a href="https://en.wikipedia.org/wiki/${esc(enc(s.wikipedia))}" target="_blank" rel="noopener">Wikipedia</a>`:'';
   const wd=/^Q\d+$/.test(String(s.wikidata||''))?` · <a href="https://www.wikidata.org/wiki/${esc(s.wikidata)}" target="_blank" rel="noopener">Wikidata</a>`:'';
   const sc=String(s.source_coordonnees||'');
@@ -665,7 +675,8 @@ async function renderSite(id,live){
     return;
   }
   $('#detail').innerHTML=siteHead(s,src,wiki,wd)+'<p class="meta" style="margin-top:16px">Chargement des signaux…</p>';
-  const [dos,ev]=await Promise.all([api('/api/dossier?site='+enc(id)),api('/api/events?site='+enc(id))]);
+  const [dosR,evR]=await Promise.all([api('/api/dossier?site='+enc(id)),api('/api/events?site='+enc(id))]);
+  const dos=arr(dosR).map(obj).filter(r=>typeof r.date==='string'), ev=arr(evR).map(obj);
   if(!live()) return;
   const months=dos.filter(r=>r.bare_km2!=null).map(r=>r.date.slice(0,7));
   const first=months.find(m=>/-0[89]$/.test(m))||months[0], last=[...months].reverse().find(m=>/-0[89]$/.test(m))||months.at(-1);
@@ -950,10 +961,10 @@ function scrNote(f){
 }
 async function scrInit(){
   SCR.loaded=true; let f;
-  try{ f=await api('/api/screener/facets'); }catch(e){ SCR.loaded=false; $('#scr_total').textContent='Screener indisponible : '+errTxt(e); return; }
-  $('#l_pays').innerHTML=Object.keys(f.pays||{}).map(p=>`<option value="${esc(p)}">`).join('');
-  $('#f_com').innerHTML+=Object.entries(f.commodites||{}).map(([c,n])=>`<option value="${esc(c)}">${esc(c)} (${fmt(n,0)})</option>`).join('');
-  $('#f_cat').innerHTML+=Object.entries(f.categories||{}).map(([c,n])=>`<option value="${esc(c)}">${esc(c)} (${fmt(n,0)})</option>`).join('');
+  try{ f=obj(await api('/api/screener/facets')); }catch(e){ SCR.loaded=false; $('#scr_total').textContent='Screener indisponible : '+errTxt(e); return; }
+  $('#l_pays').innerHTML=Object.keys(obj(f.pays)).map(p=>`<option value="${esc(p)}">`).join('');
+  $('#f_com').innerHTML+=Object.entries(obj(f.commodites)).map(([c,n])=>`<option value="${esc(c)}">${esc(c)} (${fmt(n,0)})</option>`).join('');
+  $('#f_cat').innerHTML+=Object.entries(obj(f.categories)).map(([c,n])=>`<option value="${esc(c)}">${esc(c)} (${fmt(n,0)})</option>`).join('');
   SCR.facets=f; $('#scr_note').innerHTML=scrNote(f);
   ['#f_com','#f_cat','#f_emp','#f_real','#f_ana','#f_alert','#f_bbox'].forEach(id=>$(id).onchange=()=>{SCR.page=1;scrLoad();});
   ['#f_q','#f_pays','#f_emin','#f_emax','#f_pmin'].forEach(id=>{let t;$(id).oninput=()=>{clearTimeout(t);t=setTimeout(()=>{SCR.page=1;scrLoad();},300);};});
@@ -986,7 +997,7 @@ async function scrLoad(){
   const my=++SCR.seq;  // seule la dernière requête a le droit d'afficher (filtres changés vite)
   let r; try{ r=await api(`/api/screener?${p}&page=${SCR.page}&per_page=${SCR.per}`); }
   catch(e){ if(my===SCR.seq){ console.error(e); $('#scr_total').textContent='Erreur de chargement : '+errTxt(e); } return; }
-  if(my!==SCR.seq) return; SCR.total=r.total; SCR.shown=p.toString();
+  if(my!==SCR.seq) return; r=obj(r); r.total=num(r.total)??0; r.rows=arr(r.rows).map(obj); SCR.total=r.total; SCR.shown=p.toString();
   $('#scr_csv').href='/api/screener.csv?'+p;  // l'export suit la table affichée
   document.querySelectorAll('#scr th[data-s]').forEach(th=>{const on=th.dataset.s===SCR.sort; th.classList.toggle('s',on);th.classList.toggle('asc',on&&!SCR.desc);
     th.setAttribute?.('aria-sort',on?(SCR.desc?'descending':'ascending'):'none');});
@@ -1007,7 +1018,7 @@ async function jobsPoll(){
   clearTimeout(jobT); const my=++JOBSEQ;  // un seul cycle de sondage à la fois, même si on l'appelle de plusieurs endroits
   let j; try{ j=await api('/api/jobs'); }catch(e){ console.error(e); if(my===JOBSEQ) jobT=setTimeout(jobsPoll,30000); return; }
   if(my!==JOBSEQ) return;
-  const all=j.analyses||[], act=all.filter(a=>/^en /.test(a.statut));
+  const all=arr(obj(j).analyses).map(obj), act=all.filter(a=>/^en /.test(String(a.statut??'')));
   $('#jobs').textContent=act.length?`${act.length} ${plur(act.length,'analyse')} en cours ou en file`:'';
   if(act.length) jobT=setTimeout(jobsPoll,10000);
   else if(all.length){ try{ drawRadar(await api('/api/radar')); if(SCR.loaded) scrLoad(); }catch(e){ console.error(e); } }

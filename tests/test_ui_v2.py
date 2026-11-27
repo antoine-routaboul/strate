@@ -266,7 +266,7 @@ const ctx=vm.createContext({document:{querySelector:$el,querySelectorAll:()=>[]}
   location:loc,window:{addEventListener(){}},setTimeout:()=>0,clearTimeout(){},setInterval:()=>0,clearInterval(){},
   console:{error(){},log(){}},Response,TypeError,URLSearchParams,Proxy});
 vm.runInContext(src+`
-globalThis.P={corrBadge,parseRoute,show,setCAL:c=>{CAL=c;},calReady:v=>{CAL_READY=v;},PG,view:()=>VIEW,sub:()=>SUB,
+globalThis.P={corrBadge,parseRoute,show,route,setCAL:c=>{CAL=c;},calReady:v=>{CAL_READY=v;},PG,view:()=>VIEW,sub:()=>SUB,
   cur:()=>CURRENT};`,ctx);
 const P=ctx.P, out={};
 async function check(name,fn){ try{ const r=await fn(); out[name]=r===true?true:String(r); }
@@ -556,6 +556,26 @@ BOOT_SITE = r"""
 })();
 """
 
+# chaque API répond vide (null, {} ou []) : aucune exception, aucun « undefined » à l'écran, sur toutes
+# les pages
+EMPTY_ALL = r"""
+  const BODY=JSON.parse(process.argv[5]);
+  const answer=async()=>{ for(let k=0;k<6;k++){
+    fetches.filter(f=>!f.done).forEach(f=>{ f.done=true; f.ok(BODY); }); await flush(); } };
+  await answer();
+  const routes=['#/carte','#/screener','#/veille/flux','#/veille/correlations','#/veille/suivies',
+    '#/veille/etat',
+    '#/societes','#/societes/capex','#/societes/effectifs','#/societe/x','#/previsions','#/previsions/mine/m1',
+    '#/previsions/retro-test','#/methode/calibration','#/methode/sources','#/methode/correlations','#/site/m1'];
+  const bad=[];
+  for(const h of routes){ loc.hash=h; try{ P.route(); }catch(e){ ERRS.push(h+' '+e.stack); } await answer();
+    for(const [k,el] of Object.entries(els)){ const t=String(el.innerHTML||'')+String(el.textContent||'');
+      if(/undefined|NaN|\[object/.test(t)) bad.push(h+' '+k+' '+t.slice(0,160)); } }
+  process.stdout.write(JSON.stringify({errs:ERRS.slice(0,10),bad:[...new Set(bad)].slice(0,10),
+    co:$el('#co_list').innerHTML,cal:$el('#me_cal').innerHTML}));
+})();
+"""
+
 CHECKS = ["badge", "badge_never_upgrades_server_verdict", "routes", "one_view_at_a_time",
           "directory_empty_message", "directory_escapes_names", "directory_sorts_amounts_within_currency",
           "company_sheet_with_badges", "company_sheet_uses_retained_fact",
@@ -593,3 +613,23 @@ def test_deep_link_redrawn_after_boot(tmp_path_factory, hash_):
     prefix = HARNESS[:HARNESS.index("(async()=>{\n") + len("(async()=>{\n")]
     res = _run(tmp_path_factory, prefix + (BOOT_SITE if "site" in hash_ else BOOT_CHECKS), hash_)
     assert res.get("deep_link_calibration") is True, res
+
+
+@needs_node
+@pytest.mark.parametrize("body", ["null", "{}", "[]"])
+def test_every_page_survives_empty_api(tmp_path_factory, body):
+    prefix = HARNESS[:HARNESS.index("(async()=>{\n") + len("(async()=>{\n")]
+    spy = "console:{error(...a){ERRS.push(a.join(' '));},log(){}}"
+    prefix = prefix.replace("console:{error(){},log(){}}", spy)
+    trap = "process.on('unhandledRejection',e=>ERRS.push('rejet : '+(e&&e.stack||e)));"
+    prefix = "const ERRS=[]; " + trap + "\n" + prefix
+    h = tmp_path_factory.mktemp("ui_empty") / "harness.js"
+    h.write_text(prefix + EMPTY_ALL, "utf-8")
+    cal = ROOT / "src" / "strate" / "data" / "calibration.json"
+    cmd = [NODE, str(h), str(HTML), str(cal), "", body]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    assert p.returncode == 0, p.stderr
+    res = json.loads(p.stdout)
+    assert res["errs"] == [] and res["bad"] == [], res
+    assert "Aucune donnée société" in res["co"]  # message clair plutôt qu'une table vide
+    assert "Calibration absente" in res["cal"]
