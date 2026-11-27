@@ -335,7 +335,9 @@ def _populate(path):
                 "'terminé')", (_iso(NOW - timedelta(days=1)),))
     con.execute("INSERT INTO tracked(site_id, site_name, reason, since, last_event_at, events_count) "
                 "VALUES ('escondida','Escondida','actualité','x',?,1)", (_iso(NOW - timedelta(days=2)),))
-    corr = "INSERT INTO correlations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    corr = ("INSERT INTO correlations(run_at, scope, event_type, signal, lag_months, n_mines, n_events, "
+            "lift, lift_lo, lift_hi, rho, rho_lo, rho_hi, p_value, q_value, verdict, details) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
     con.execute(corr, ("2026-11-01T00:00:00Z", "global", "accident", "bare_km2", 0, 5, 10, 9.0, 1, 2,
                        None, None, None, 0.5, 0.5, "non démontré", None))  # ancien calcul
     con.execute(corr, ("2026-11-26T00:00:00Z", "global", "accident", "bare_km2", 0, 8, 20, float("inf"), 1.1,
@@ -587,3 +589,22 @@ def test_interval_must_be_finite_positive(db, bad):
     with pytest.raises(ValueError):
         daemon.run_forever(interval_s=bad, max_cycles=1)
     assert not db.exists()
+
+
+def test_old_database_gains_verdict_rho_column(tmp_path):
+    # base créée avant la colonne verdict_rho : init l'ajoute, sans perdre les lignes
+    import sqlite3
+    db = tmp_path / "veille.db"
+    old = "\n".join(x for x in store.SCHEMA.splitlines() if "verdict_rho" not in x)
+    assert "verdict_rho" not in old
+    c = sqlite3.connect(db)
+    c.executescript(old)
+    c.execute("INSERT INTO correlations(run_at, scope, event_type, signal, lag_months, n_mines, n_events, "
+              "verdict) VALUES ('r', 'global', 'accident', 'bare_km2', 0, 5, 10, 'non démontré')")
+    c.commit()
+    c.close()
+    con = store.init(db)
+    cols = [r[1] for r in con.execute("PRAGMA table_info(correlations)")]
+    assert cols[-1] == "verdict_rho" and con.execute("SELECT COUNT(*) FROM correlations").fetchone()[0] == 1
+    store.init(db).close()                                 # deuxième passage : rien à ajouter, pas d'erreur
+    con.close()

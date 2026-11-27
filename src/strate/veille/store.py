@@ -119,13 +119,14 @@ CREATE TABLE IF NOT EXISTS correlations (
     lift        REAL,                      -- P(anomalie | événement) / P(anomalie | sans événement)
     lift_lo     REAL,
     lift_hi     REAL,
-    rho         REAL,                      -- corrélation de rang (volume vs signal), sinon NULL
+    rho         REAL,                      -- rang intra-mine (volume) ou phi intra-mine (type × signal)
     rho_lo      REAL,
     rho_hi      REAL,
     p_value     REAL,                      -- CMH exacte (lift) ; loi normale (volume ↔ signal)
     q_value     REAL,                      -- p corrigée des comparaisons multiples (Benjamini-Hochberg)
     verdict     TEXT NOT NULL,             -- 'lien démontré' (q < 0,10) | 'non démontré' | 'trop peu…'
     details     TEXT,                      -- JSON
+    verdict_rho TEXT,                      -- même règle sur l'IC de rho (volume) ou du phi (types)
     PRIMARY KEY (run_at, scope, event_type, signal, lag_months)
 );
 
@@ -170,10 +171,21 @@ def connect(path: Path | None = None) -> sqlite3.Connection:
     return con
 
 
+# colonnes ajoutées après la première version : ajoutées aux bases existantes (ALTER TABLE)
+_ADDED_COLUMNS = (("correlations", "verdict_rho", "TEXT"),)
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    for table, col, typ in _ADDED_COLUMNS:
+        if col not in {r[1] for r in con.execute(f"PRAGMA table_info({table})")}:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+
+
 def init(path: Path | None = None) -> sqlite3.Connection:
     con = connect(path)
     with _lock:
         con.executescript(SCHEMA)
+        _migrate(con)
         con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', ?)",
                     (str(SCHEMA_VERSION),))
         con.commit()

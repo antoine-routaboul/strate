@@ -166,6 +166,36 @@ def test_no_coincidence_is_not_a_positive_lift():
     assert r["lift"] is None and r["lift_lo"] is None and r["p_value"] is None
 
 
+def test_phi_is_within_mine_correlation_of_event_and_anomaly_months():
+    # phi intra-mine = corrélation des indicateurs 0/1 centrés dans chaque mine, calculée mois par mois
+    rng = np.random.default_rng(3)
+    xs, ys, counts = [], [], []
+    for _ in range(6):
+        e = rng.random(40) < 0.2
+        h = (rng.random(40) < 0.15) | (e & (rng.random(40) < 0.4))
+        xs.append(e - e.mean())
+        ys.append(h - h.mean())
+        counts.append([40, h.sum(), e.sum(), (e & h).sum()])
+    x, y = np.concatenate(xs), np.concatenate(ys)
+    r = correlate._lift_test(np.array(counts, dtype=float), np.random.default_rng(0), 300)
+    assert r["rho"] == pytest.approx(float(x @ y / np.sqrt((x @ x) * (y @ y))))
+    assert r["rho_lo"] <= r["rho"] <= r["rho_hi"]
+    r0 = correlate._lift_test(np.array([[60, 6, 3, 0]] * 8, dtype=float), np.random.default_rng(0), 200)
+    assert r0["rho"] < 0 and r0["rho_hi"] < 0                # aucune coïncidence : phi négatif
+    rn = correlate._lift_test(np.array([[60, 0, 3, 0]] * 8, dtype=float), np.random.default_rng(0), 200)
+    assert rn["rho"] is None and rn["rho_lo"] is None        # aucune anomalie : rien à estimer
+
+
+def test_verdict_rho_uses_its_own_interval():
+    row = dict(event_type="accident", lag_months=0, q_value=0.001, lift_lo=1.3, lift_hi=4.0,
+               rho_lo=-0.01, rho_hi=0.2)
+    assert correlate._verdict(row) == "lien démontré"
+    assert correlate._verdict(row, "rho") == "non démontré"   # jamais recopié du lift
+    assert correlate._verdict(row | {"rho_lo": 0.02}, "rho") == "lien démontré"
+    assert correlate._verdict(row | {"rho_lo": None, "rho_hi": None}, "rho") == "non démontré"
+    assert correlate._verdict(row | {"lag_months": 1}, "rho") == "exploratoire"
+
+
 # -- étude d'événements -----------------------------------------------------------------------------
 N_MONTHS = 60  # 2020-01 → 2024-12
 
@@ -211,6 +241,12 @@ def test_study_finds_planted_link_at_lag_zero(con):
     assert hit["p_value"] < 1e-6 and hit["q_value"] < 0.10
     assert hit["verdict"] == "lien démontré" and hit["details"]["famille"] == "principale"
     assert hit["details"]["p_anomalie_evenement"] == pytest.approx(1.0)
+    # chaque ligne de type porte aussi son phi intra-mine, son IC et son propre verdict
+    assert hit["rho"] > 0.5 and hit["rho_lo"] > 0 and hit["verdict_rho"] == "lien démontré"
+    assert hit["details"]["coefficient_rho"].startswith("phi intra-mine")
+    assert hit["details"]["unite_bootstrap"] == "mines" and hit["details"]["n_unites_bootstrap"] == 8
+    assert all(r["rho"] is not None and r["verdict_rho"] for r in rows if r["event_type"] != "volume")
+    assert all(acc[k]["verdict_rho"] == "exploratoire" for k in acc if k)
     # les autres décalages : calculés, jamais affirmés
     assert all(acc[k]["verdict"] == "exploratoire" for k in acc if k)
     assert acc[2]["details"]["famille"] == "exploratoire"
@@ -433,9 +469,10 @@ def test_run_once_writes_rows_and_respects_recompute(con):
     assert st[0] == 1 and json.loads(st[1])["lignes"] == c["lignes"]
     n = con.execute("SELECT COUNT(*) FROM correlations WHERE scope='global'").fetchone()[0]
     assert n == c["lignes"]
-    row = con.execute("SELECT details, verdict FROM correlations WHERE event_type='accident' "
-                      "AND lag_months=0 AND signal='bare_km2'").fetchone()
+    row = con.execute("SELECT details, verdict, rho, rho_lo, verdict_rho FROM correlations "
+                      "WHERE event_type='accident' AND lag_months=0 AND signal='bare_km2'").fetchone()
     assert json.loads(row[0])["mines_panel"] == 6 and row[1] == "lien démontré"
+    assert row[2] > 0 and row[3] > 0 and row[4] == "lien démontré"          # phi écrit avec son verdict
     assert c["liens_demontres"] >= 1 and c["exploratoires"] >= 1
     # 15 min plus tard : pas de recalcul (toutes les 6 h au plus)
     c2 = correlate.run_once(con, now=NOW + timedelta(minutes=15), **kw)

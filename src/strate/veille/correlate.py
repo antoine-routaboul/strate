@@ -72,7 +72,10 @@ METHODE = (
     "hypergéométriques des mines). Effet (lift) = rapport de risques de Mantel–Haenszel, correction de "
     "continuité de 0,5 sur chaque case quand aucune anomalie ne tombe hors des mois d'événement (une "
     "association parfaite donne un lift fini et élevé) ; IC 90 % par bootstrap sur les mines (500 "
-    "tirages). "
+    "tirages). Coefficient de corrélation de chaque type : phi intra-mine entre mois d'événement (0/1) et "
+    "mois d'anomalie (0/1), sommes centrées dans chaque mine (Σ(a − n_e·K/T) / √(Σ n_e(T−n_e)/T · "
+    "Σ K(T−K)/T)), IC 90 % par les mêmes tirages de mines ; son numérateur est la statistique du test "
+    "CMH, d'où la même p-valeur. Il a son propre verdict (IC hors de 0), jamais recopié de celui du lift. "
     "Volume d'actualité ↔ écart du signal (|z|) : corrélation de rang centrée dans chaque mine, p-valeur "
     "par loi normale de même moyenne et même variance que la permutation des mois dans chaque mine, même "
     "bootstrap. Famille principale = décalage 0 (types × signaux, plus le volume) : q-valeurs de "
@@ -482,8 +485,28 @@ def _cmh_exact(counts: np.ndarray) -> dict:
     return dict(p_value=min(1.0, max(p, np.finfo(float).tiny)), expected=expected, chi2=chi2)
 
 
+def _phi_parts(counts: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Sommes centrées de chaque mine pour le phi intra-mine (mois d'événement 0/1 × mois d'anomalie 0/1).
+
+    Dans une mine : Sxy = a − n_e·K/T (anomalies sur un mois d'événement moins leur nombre attendu, le
+    terme même du test CMH), Sxx = n_e·(T − n_e)/T, Syy = K·(T − K)/T. Une mine sans événement, sans
+    mois sans événement ou sans anomalie apporte 0 aux trois sommes, comme au test.
+    """
+    t, k, ne, a = (counts[:, i].astype(float) for i in range(4))
+    tt = np.where(t > 0, t, 1.0)
+    return a - ne * k / tt, ne * (t - ne) / tt, k * (t - k) / tt
+
+
+def _phi_ratio(sxy, sxx, syy):
+    with np.errstate(divide="ignore", invalid="ignore"):
+        den = np.sqrt(np.asarray(sxx, dtype=float) * np.asarray(syy, dtype=float))
+        return np.where(den > 0, np.asarray(sxy, dtype=float) / np.where(den > 0, den, 1.0), np.nan)
+
+
 def _lift_test(counts: np.ndarray, rng: np.random.Generator, n_boot: int) -> dict:
-    """counts : (mines × 4) [T, K, n_e, a_e]. Lift de Mantel–Haenszel, IC 90 % bootstrap mines, p CMH."""
+    """counts : (mines × 4) [T, K, n_e, a_e]. Lift de Mantel–Haenszel et phi intra-mine, IC 90 % par le
+    MÊME bootstrap sur les mines (mêmes tirages pour les deux), p CMH (commune : le numérateur du phi
+    intra-mine est la statistique du test, Σ(a − attendu))."""
     tot = counts.sum(axis=0)
     parts = _mh_parts(counts)
     sums = [float(x.sum()) for x in parts]
@@ -492,8 +515,12 @@ def _lift_test(counts: np.ndarray, rng: np.random.Generator, n_boot: int) -> dic
     m = len(counts)
     w = rng.multinomial(m, np.full(m, 1 / m), size=n_boot)  # mines tirées avec remise
     lo, hi = _ci(_mh_ratio(*(w @ x for x in parts)))
+    pp = _phi_parts(counts)
+    phi = float(_phi_ratio(*(float(x.sum()) for x in pp)))
+    phi_lo, phi_hi = _ci(_phi_ratio(*(w @ x for x in pp)))
     test = _cmh_exact(counts)
-    return dict(lift=lift if np.isfinite(lift) else None, lift_lo=lo, lift_hi=hi, p_value=test["p_value"],
+    return dict(lift=lift if np.isfinite(lift) else None, lift_lo=lo, lift_hi=hi,
+                rho=phi if np.isfinite(phi) else None, rho_lo=phi_lo, rho_hi=phi_hi, p_value=test["p_value"],
                 p_event=float(tot[3] / tot[2]) if tot[2] else None,
                 p_no_event=float((tot[1] - tot[3]) / (tot[0] - tot[2])) if tot[0] > tot[2] else None,
                 expected=test["expected"], chi2=test["chi2"],
@@ -593,6 +620,8 @@ def study(con: sqlite3.Connection, dossier_fn: DossierFn | None = None, candidat
                            correction_continuite=r.pop("corrected"))
                 row.update(r)
                 row["_tested"] = n_mines >= MIN_MINES and n_events >= MIN_EVENT_MONTHS
+                det.update(coefficient_rho="phi intra-mine (mois d'événement × mois d'anomalie)",
+                           unite_n="mois-événements", unite_bootstrap="mines", n_unites_bootstrap=len(c))
                 row["details"] = det
                 rows.append(row)
     for sig in signals:
@@ -621,7 +650,10 @@ def study(con: sqlite3.Connection, dossier_fn: DossierFn | None = None, candidat
                        lift=None, lift_lo=None, lift_hi=None, **_rho_test(pairs, rng, n_boot))
             row["_tested"] = len(pairs) >= MIN_MINES and n_months >= MIN_EVENT_MONTHS
             row["details"] = dict(mois_apparies=int(sum(len(v) for v, _ in pairs)), mesure="|z| du signal",
-                                  test="rang intra-mine, loi normale de la permutation", n_boot=n_boot)
+                                  test="rang intra-mine, loi normale de la permutation", n_boot=n_boot,
+                                  coefficient_rho="rho de Spearman intra-mine (volume × |z|)",
+                                  unite_n="mois avec articles", unite_bootstrap="mines",
+                                  n_unites_bootstrap=len(pairs))
             rows.append(row)
     # deux familles corrigées séparément : le décalage 0 (seul à pouvoir conclure) et les autres
     # (exploratoires). Les lignes sous le minimum de données ne sont pas des tests.
@@ -633,19 +665,22 @@ def study(con: sqlite3.Connection, dossier_fn: DossierFn | None = None, candidat
             r["details"]["famille"] = "principale" if primary else "exploratoire"
     for r in rows:
         r["verdict"] = _verdict(r)
+        r["verdict_rho"] = _verdict(r, "rho")
         del r["_tested"]
     return rows
 
 
-def _verdict(r: dict) -> str:
+def _verdict(r: dict, coef: str | None = None) -> str:
+    """Verdict d'UN coefficient, d'après son propre IC : `coef` = 'lift' (IC hors de 1) ou 'rho' (IC hors
+    de 0 : rho du volume, phi d'un type). Par défaut : le lift pour un type, le rho pour le volume (colonne
+    `verdict`). Mêmes règles pour les deux : décalage 0, assez de données, q < 0,10 (q du test commun)."""
     if r["q_value"] is None:
         return TROP_PEU
     if r["lag_months"] != PRIMARY_LAG:
         return EXPLORATOIRE  # calculé, montré, jamais affirmé
-    if r["event_type"] == "volume":
-        lo, hi, null = r["rho_lo"], r["rho_hi"], 0.0
-    else:
-        lo, hi, null = r["lift_lo"], r["lift_hi"], 1.0
+    coef = coef or ("rho" if r["event_type"] == "volume" else "lift")
+    lo, hi = r.get(f"{coef}_lo"), r.get(f"{coef}_hi")
+    null = 1.0 if coef == "lift" else 0.0
     outside = lo is not None and hi is not None and (lo > null or hi < null)
     return DEMONTRE if r["q_value"] < Q_ALERT and outside else NON_DEMONTRE
 
@@ -657,7 +692,7 @@ def write(con: sqlite3.Connection, rows: list[dict], run_at: str) -> int:
         con.execute("DELETE FROM correlations WHERE scope = 'global'")
         return 0
     cols = ("event_type", "signal", "lag_months", "n_mines", "n_events", "lift", "lift_lo", "lift_hi",
-            "rho", "rho_lo", "rho_hi", "p_value", "q_value", "verdict")
+            "rho", "rho_lo", "rho_hi", "p_value", "q_value", "verdict", "verdict_rho")
     con.executemany(
         f"INSERT OR REPLACE INTO correlations(run_at, scope, {', '.join(cols)}, details) "
         f"VALUES (?, 'global', {', '.join('?' * len(cols))}, ?)",

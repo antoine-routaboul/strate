@@ -122,7 +122,15 @@ chaîne : elle est notée et retentée au cycle suivant.
   de Benjamini-Hochberg sur cette famille ; verdict `lien démontré` si q < 0,10 et IC hors de 1.
   Décalages −3 … +3 : calculés et stockés avec leur propre correction, verdict `exploratoire` (on ne
   déclare rien sur eux). `trop peu de données` si moins de 5 mines ou 10 mois-événements.
-  Volume d'actualité (`news_volume`) ↔ signal : corrélation de rang intra-mine, mêmes règles.
+  **Coefficient de chaque type** (colonnes `rho`, `rho_lo`, `rho_hi`) : phi intra-mine entre mois
+  d'événement (0/1) et mois d'anomalie (0/1), sommes centrées dans chaque mine, IC 90 % par les mêmes
+  tirages de mines que le lift ; son numérateur est la statistique du test CMH (même p, même q).
+  `verdict_rho` : même règle appliquée à l'IC du phi (hors de 0), jamais recopiée du verdict du lift.
+  Sous l'hypothèse nulle (simulation, 1 000 jeux de 5, 8 et 20 mines × 60 mois, un seul test donc
+  q = p) : 4,2 %, 6,4 % et 7,8 % de faux « lien démontré », pour le lift comme pour le phi.
+  Volume d'actualité (`news_volume`) ↔ signal : corrélation de rang intra-mine, mêmes règles
+  (`verdict_rho` = `verdict`). `details` dit le coefficient (`coefficient_rho`), ce que compte `n_events`
+  (`unite_n`) et l'unité du bootstrap (`unite_bootstrap` = mines, `n_unites_bootstrap`).
   Écrit `correlations` (scope `global`). Le texte de méthode affiché vient de `correlate.METHODE`.
 
 ### `strate.veille.daemon`
@@ -141,7 +149,7 @@ chaîne : elle est notée et retentée au cycle suivant.
 | `GET /api/veille/types` | `store.EVENT_TYPES` |
 | `GET /api/veille/events?type=&site=&lang=&country=&since=&min_conf=0.5&limit=100` | `{"total":n, "events":[{id, site_id, site_name, event_type, published_at, title, url, domain, lang, country, lat, lon, confidence, match_method}]}` (plus récents d'abord) |
 | `GET /api/veille/stats?days=30` | `{"par_type":{type:n}, "par_jour":[{jour, n}], "par_langue":{lang:n}, "par_pays":{pays:n}, "top_mines":[{site_id, site_name, n}]}` |
-| `GET /api/veille/correlations` | `{"run_at":iso\|null, "methode":str, "rows":[{event_type, signal, lag_months, n_mines, n_events, lift, lift_lo, lift_hi, rho, rho_lo, rho_hi, p_value, q_value, verdict}]}` |
+| `GET /api/veille/correlations` | `{"run_at":iso\|null, "methode":str, "rows":[{event_type, signal, lag_months, n_mines, n_events, lift, lift_lo, lift_hi, rho, rho_lo, rho_hi, p_value, q_value, verdict, verdict_rho, details}]}` (rho = phi intra-mine pour un type, rang intra-mine pour le volume) |
 | `GET /api/veille/site?site=` | `{"events":[…200 derniers], "volume":[{month, n_articles}], "tracked":{…}\|null}` |
 | `GET /api/veille/tracked` | `[{site_id, site_name, reason, since, last_event_at, events_count, analysis_status}]` |
 
