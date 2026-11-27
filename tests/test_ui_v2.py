@@ -258,12 +258,13 @@ const marker=()=>{const o={on:()=>o,bindTooltip:()=>o,addTo:()=>o};return o;};
 const L={map:()=>mapStub,tileLayer:()=>({addTo(){}}),canvas:()=>({}),circleMarker:marker,
   rectangle:()=>({addTo:()=>({})}),latLng:()=>({toBounds:()=>({})})};
 const charts=[]; class Chart{constructor(el,cfg){this.el=el;this.cfg=cfg;charts.push(this);} destroy(){}}
-const loc={hash:''};
+const loc={hash:process.argv[4]||''};
 const ctx=vm.createContext({document:{querySelector:$el,querySelectorAll:()=>[]},L,Chart,fetch:fetchStub,
   location:loc,window:{addEventListener(){}},setTimeout:()=>0,clearTimeout(){},setInterval:()=>0,clearInterval(){},
   console:{error(){},log(){}},Response,TypeError,URLSearchParams,Proxy});
 vm.runInContext(src+`
-globalThis.P={corrBadge,parseRoute,show,setCAL:c=>{CAL=c;},PG,view:()=>VIEW,sub:()=>SUB};`,ctx);
+globalThis.P={corrBadge,parseRoute,show,setCAL:c=>{CAL=c;},calReady:v=>{CAL_READY=v;},PG,view:()=>VIEW,sub:()=>SUB,
+  cur:()=>CURRENT};`,ctx);
 const P=ctx.P, out={};
 async function check(name,fn){ try{ const r=await fn(); out[name]=r===true?true:String(r); }
   catch(e){ out[name]='exception: '+(e&&e.stack||e); } }
@@ -439,9 +440,39 @@ const done=()=>fetches.forEach(f=>f.done=true);
   });
   await check('calibration_page',()=>{
     P.setCAL(CAL); P.show('methode','calibration'); const h=$el('#me_cal').innerHTML;
-    P.setCAL({}); P.show('methode','calibration'); const e=$el('#me_cal').innerHTML; P.setCAL(CAL);
+    P.setCAL({}); P.show('methode','calibration'); const e=$el('#me_cal').innerHTML;
+    P.calReady(true); P.show('methode','calibration'); const e2=$el('#me_cal').innerHTML; P.calReady(false);
+    P.setCAL(CAL);
     return (h.includes('IC 90 %')&&h.includes('Fisher z')&&/pas<\/b> été confrontées/.test(h)&&clean(h)
-      &&e.includes('Calibration pas encore chargée'))||h;
+      &&e.includes('Chargement')&&e2.includes('Calibration absente'))||[h,e,e2].join('\n');
+  });
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+
+# lien direct ou rechargement : la page est routée avant la fin de init() (calibration pas encore là)
+BOOT_CHECKS = r"""
+  await check('deep_link_calibration',async()=>{
+    const before=$el('#me_cal').innerHTML;
+    take('/api/catalog/points').ok([]); take('/api/catalog/stats').ok({}); take('/api/radar').ok([]);
+    take('/api/calibration').ok(CAL); await flush(); take('/api/sites').ok([]); await flush();
+    const after=$el('#me_cal').innerHTML;
+    return (before.includes('Chargement')&&!before.includes('absente')&&after.includes('IC 90 %')
+      &&clean(after))
+      ||[before,after].join('\n');
+  });
+  process.stdout.write(JSON.stringify(out));
+})();
+"""
+# fiche rechargée avant la calibration : redessinée une fois quand elle arrive (note et badges de calibration)
+BOOT_SITE = r"""
+  await check('deep_link_calibration',async()=>{
+    take('/api/site?site=m1').ok({nom:'M',lat:0,lon:0,rayon_m:1000}); await flush();
+    const n0=fetches.filter(f=>f.url.includes('/api/site?site=m1')).length;
+    take('/api/catalog/points').ok([]); take('/api/catalog/stats').ok({}); take('/api/radar').ok([]);
+    take('/api/calibration').ok(CAL); await flush(); take('/api/sites').ok([]); await flush();
+    const n1=fetches.filter(f=>f.url.includes('/api/site?site=m1')).length;
+    return (n0===1&&n1===2&&P.cur()==='m1')||JSON.stringify({n0,n1});
   });
   process.stdout.write(JSON.stringify(out));
 })();
@@ -454,19 +485,31 @@ CHECKS = ["badge", "badge_never_upgrades_server_verdict", "routes", "one_view_at
           "calibration_page"]
 
 
+def _run(tmp_path_factory, body: str, hash_: str = "") -> dict:
+    h = tmp_path_factory.mktemp("ui_v2") / "harness.js"
+    h.write_text(body, "utf-8")
+    cal = ROOT / "src" / "strate" / "data" / "calibration.json"
+    p = subprocess.run([NODE, str(h), str(HTML), str(cal), hash_], capture_output=True, text=True, timeout=60)
+    assert p.returncode == 0, p.stderr
+    return json.loads(p.stdout)
+
+
 @pytest.fixture(scope="module")
 def node_results(tmp_path_factory):
     if NODE is None:
         pytest.skip("Node absent : comportements de la page non rejoués")
-    h = tmp_path_factory.mktemp("ui_v2") / "harness.js"
-    h.write_text(HARNESS, "utf-8")
-    cal = ROOT / "src" / "strate" / "data" / "calibration.json"
-    p = subprocess.run([NODE, str(h), str(HTML), str(cal)], capture_output=True, text=True, timeout=60)
-    assert p.returncode == 0, p.stderr
-    return json.loads(p.stdout)
+    return _run(tmp_path_factory, HARNESS)
 
 
 @needs_node
 @pytest.mark.parametrize("name", CHECKS)
 def test_page_behaviour(node_results, name):
     assert node_results.get(name) is True, node_results.get(name)
+
+
+@needs_node
+@pytest.mark.parametrize("hash_", ["#/methode/calibration", "#/site/m1"])
+def test_deep_link_redrawn_after_boot(tmp_path_factory, hash_):
+    prefix = HARNESS[:HARNESS.index("(async()=>{\n") + len("(async()=>{\n")]
+    res = _run(tmp_path_factory, prefix + (BOOT_SITE if "site" in hash_ else BOOT_CHECKS), hash_)
+    assert res.get("deep_link_calibration") is True, res

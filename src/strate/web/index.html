@@ -504,6 +504,10 @@ a.mine{color:var(--accent)}
 <script>
 const $=s=>document.querySelector(s), api=(p,o)=>fetch(p,o).then(r=>{if(!r.ok)throw r;return r.json()});
 let charts=[], poll=null, CAL={}, CURRENT=null, OPEN_SEQ=0, VIEW=null, SUB=null;
+// CAL_READY : la demande de calibration a abouti (ou échoué) ; OPEN_CAL : la fiche ouverte a été dessinée après.
+// Un lien direct (#/methode/calibration, #/site/<id>, #/screener) est routé avant la fin de init() : afterBoot()
+// redessine alors ce qui dépend de la calibration.
+let CAL_READY=false, OPEN_CAL=false;
 const LBL={bare_km2:'Surface nue (km²)',water_km2:'Surface en eau (km²)',change_km2:'Empreinte minière modifiée sur 1 an (km²)',new_bare_km2:'Surface nouvellement défrichée sur 1 an (km²)',site_views:'Vues Wikipedia — mine',owner_views:'Vues Wikipedia — propriétaire(s)',activity_db:'Activité radar, mine − environnement (dB) — expérimental, non validé'};
 // catégories de la carte : bleu = mines actives (la donnée principale), puis trois teintes sourdes lisibles sur les deux thèmes
 const COL=['#3f7cc8','#c7832b','#8b9098','#5e9c8f'];
@@ -524,7 +528,7 @@ L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:14,att
 const renderer=L.canvas({padding:.5}); let hi=null, STATS={};
 
 async function init(){
-  const [pts,stats,rad,cal]=await Promise.all([api('/api/catalog/points'),api('/api/catalog/stats'),api('/api/radar'),api('/api/calibration')]); CAL=cal||{}; STATS=stats||{};
+  const [pts,stats,rad,cal]=await Promise.all([api('/api/catalog/points'),api('/api/catalog/stats'),api('/api/radar'),api('/api/calibration')]); CAL=cal||{}; CAL_READY=true; STATS=stats||{};
   $('#count').textContent=`${fmt(stats.total,0)} sites dans ${stats.pays||0} pays · ${fmt(stats.avec_emprise_satellite,0)} avec emprise réelle · ${fmt(stats.avec_production_reelle,0)} avec production publiée`;
   $('#sources').innerHTML=`<p>${fmt(stats.mines_actives_icmm,0)} mines actives nommées · ${fmt(stats.usines_fonderies_raffineries,0)} usines, fonderies et raffineries · ${fmt(stats.mines_wikidata,0)} mines Wikidata · ${fmt(stats.emprises_sans_nom,0)} emprises satellite sans nom</p>
     <p class="meta">${fmt(stats.avec_emprise_satellite,0)} avec emprise réelle · ${fmt(stats.avec_production_reelle,0)} avec production réelle · ${fmt(stats.avec_article_wikipedia,0)} avec article Wikipedia</p>
@@ -601,7 +605,7 @@ $('#cmd').addEventListener('blur',()=>setTimeout(()=>{ if(document.activeElement
 // ne doit rien toucher (fiche, carte, graphiques, suivi). Chaque appel prend un jeton ; seul le dernier vit.
 async function open(id){
   const seq=++OPEN_SEQ, live=()=>seq===OPEN_SEQ;
-  clearInterval(poll); poll=null; CURRENT=id; location.hash='/site/'+enc(id);
+  clearInterval(poll); poll=null; CURRENT=id; OPEN_CAL=CAL_READY; location.hash='/site/'+enc(id);
   show('site');  // recherche, lien ou « précédent » depuis une autre page : la fiche et sa carte s'affichent
   document.querySelectorAll('#radar tr').forEach(tr=>tr.classList.toggle('sel',tr.dataset.id===id));
   charts.forEach(c=>c.destroy()); charts=[];
@@ -937,7 +941,7 @@ async function scrInit(){
   $('#l_pays').innerHTML=Object.keys(f.pays||{}).map(p=>`<option value="${esc(p)}">`).join('');
   $('#f_com').innerHTML+=Object.entries(f.commodites||{}).map(([c,n])=>`<option value="${esc(c)}">${esc(c)} (${fmt(n,0)})</option>`).join('');
   $('#f_cat').innerHTML+=Object.entries(f.categories||{}).map(([c,n])=>`<option value="${esc(c)}">${esc(c)} (${fmt(n,0)})</option>`).join('');
-  $('#scr_note').innerHTML=scrNote(f);
+  SCR.facets=f; $('#scr_note').innerHTML=scrNote(f);
   ['#f_com','#f_cat','#f_emp','#f_real','#f_ana','#f_alert','#f_bbox'].forEach(id=>$(id).onchange=()=>{SCR.page=1;scrLoad();});
   ['#f_q','#f_pays','#f_emin','#f_emax','#f_pmin'].forEach(id=>{let t;$(id).oninput=()=>{clearTimeout(t);t=setTimeout(()=>{SCR.page=1;scrLoad();},300);};});
   $('#f_reset').onclick=()=>{document.querySelectorAll('#view-screener .filters input').forEach(i=>i.type==='checkbox'?i.checked=false:i.value='');$('#f_com').value='';$('#f_cat').value='';SCR.page=1;scrLoad();};
@@ -1881,7 +1885,7 @@ function calBadges(compact){
 function calPage(){
   setHead('methode',head('Calibration',`Confrontation des signaux satellite à la production publiée${CAL.date?` · calibration du ${esc(CAL.date)}`:''}`));
   const el=$('#me_cal');
-  if(num(CAL.mines)==null){ el.innerHTML=box('Calibration pas encore chargée ou absente : uv run strate calibrate'); return; }
+  if(num(CAL.mines)==null){ el.innerHTML=CAL_READY?box('Calibration absente : uv run strate calibrate'):loading(); return; }
   const a=CAL.alertes||{}, prec=Array.isArray(a.precision)?a.precision:[];
   const p=calNote().replace(/^<h2>[^<]*<\/h2>/,'').replace(/<details[\s\S]*$/,'');
   el.innerHTML=`<h2 style="margin-top:0">Ce que l’on sait</h2>${p}
@@ -1993,9 +1997,16 @@ function menus(){
 if(document.addEventListener){ try{ menus(); }catch(e){ console.error(e); } }
 chartTheme();
 window.addEventListener('hashchange',route);
+// fin de init() : les vues routées avant l'arrivée de la calibration sont redessinées une fois, rien d'autre
+function afterBoot(){
+  CAL_READY=true;
+  if(SCR.facets) $('#scr_note').innerHTML=scrNote(SCR.facets);
+  if(VIEW==='methode') pageRender('methode',SUB);
+  else if(VIEW==='site'&&CURRENT&&!OPEN_CAL) open(CURRENT);
+}
 const BOOT=init();
 route();
-BOOT.then(jobsPoll).catch(e=>{$('#status').textContent='Erreur de chargement';console.error(e)});
+BOOT.then(()=>{ afterBoot(); jobsPoll(); }).catch(e=>{ afterBoot(); $('#status').textContent='Erreur de chargement'; console.error(e); });
 vBeat();
 </script>
 </body>
