@@ -217,6 +217,24 @@ def test_forecast_site(tmp_path):
     assert fc.forecast_site("J001", out=tmp_path, panel=p, today=TODAY)["site_id"] == "m001"
 
 
+def test_future_anchor_uses_same_family_as_tuning():
+    """Avenir : modèle d'emprise de la coupe de l'année d'origine, comme dans le rétro-test (pas un autre)."""
+    p = _panel("revert", n=40, seed=4, y1=2019)
+    bt = fc.run_backtest(p, n_boot=30, today=TODAY)
+    assert "avenir" not in bt["emprise"]
+    coef = next(tuple(x[2:]) for x in bt["emprise"]["par_origine"] if x[:2] == ["minerai", 2019])
+    g = p[p["site_id"] == "m003"]
+    lfp = math.log10(g["footprint_km2"].iat[0])
+    assert fc._future_anchor("minerai", lfp, bt, 2019) == pytest.approx(fc._anchor_ln("minerai", lfp, coef))
+    assert math.isnan(fc._future_anchor("minerai", lfp, bt, 1990))  # pas d'ajustement : pas de rappel
+    f = fc.site_forecast_frame(g, bt, TODAY)
+    s, t = f[f["model"] == "tendance+taille"], f[f["model"] == "tendance"]
+    anc = fc._anchor_ln("minerai", lfp, coef)
+    lam = fc.pull(bt["reglages"]["kappa"], s["h"].to_numpy(float))
+    lt = np.log(t["value"].to_numpy(float))
+    assert np.log(s["value"].to_numpy(float)) == pytest.approx(lt + lam * (anc - lt))
+
+
 def test_forecast_site_is_read_only(tmp_path):
     p = _panel("trend", n=12, y1=2019)
     r = fc.forecast_site("m001", out=tmp_path, panel=p, today=TODAY)

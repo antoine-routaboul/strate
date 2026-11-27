@@ -74,8 +74,8 @@ METHODE = (
     "les intervalles 80 % / 90 % bâtis avec les erreurs ≤ 2014 seulement. Un seul φ et un seul κ, réglés "
     "sur la moyenne des MSE relatives des horizons 1 à 3. Un modèle n'est retenu que si "
     "la borne basse de l'IC 90 % de son skill est > 0 ; sinon le naïf reste retenu. Le modèle d'emprise "
-    "est ré-estimé à chaque origine sur les seules productions ≤ t − h ; les coefficients publiés dans "
-    "calibration.json (ajustés sur 2017–2020) ne servent qu'aux prévisions d'avenir.")
+    "est ré-estimé à chaque origine sur la coupe des productions de l'année d'origine (≤ t − h) ; les "
+    "prévisions d'avenir utilisent ce même ajustement, à l'année de la dernière valeur connue de la mine.")
 
 
 # =============================================================================================
@@ -455,15 +455,6 @@ def _eval_frame(c: pd.DataFrame, p: np.ndarray, p_naif: np.ndarray, bounds: list
                          "p_naif": p_naif, "lo80": lo80, "hi80": hi80, "lo90": lo90, "hi90": hi90})
 
 
-def _calibration_emprise() -> dict:
-    try:
-        from strate.screener import calibration
-        return calibration().get("modele_emprise") or {}
-    except Exception as e:  # noqa: BLE001
-        log.warning("calibration.json illisible : %s", e)
-        return {}
-
-
 def run_backtest(panel: pd.DataFrame, n_boot: int = N_BOOT, today: date | None = None) -> dict:
     """Rétro-test sur un panel (sans écrire) ; voir le docstring du module."""
     today = today or date.today()
@@ -500,10 +491,6 @@ def run_backtest(panel: pd.DataFrame, n_boot: int = N_BOOT, today: date | None =
     petit = [r for r in rows if retenu.get(str(r["horizon"])) == r["model"] != "naif" and r["skill"] < 0.05]
     all_c = pd.concat([tune_c, test_c])
     q_all = error_quantiles(_errors(all_c, predict(all_c, phi, kappa)))  # avenir : toutes les erreurs
-    cal = _calibration_emprise()
-    emprise_avenir = {k: [v["intercept"], v["slope"], v.get("n"), math.log10(v["emprise_min_km2"]),
-                          math.log10(v["emprise_max_km2"])] for k, v in cal.items()
-                      if {"intercept", "slope", "emprise_min_km2", "emprise_max_km2"} <= set(v)}
     years = panel["year"].astype(int)
     res = base | {
         "statut": "ok", "rows": rows, "retenu": retenu, "rows_reglage": rows_reglage,
@@ -511,7 +498,8 @@ def run_backtest(panel: pd.DataFrame, n_boot: int = N_BOOT, today: date | None =
                      "rappel_par_horizon": {h: float(pull(kappa, h)) for h in range(1, H_MAX + 1)}},
         "intervalles": {"test": q_tune, "avenir": q_all, "quantiles": list(Q)},
         "emprise": {"par_origine": [[k, o, *v] for (k, o), v in sorted(coefs.items())],
-                    "avenir": emprise_avenir, "source_avenir": "calibration.json (modele_emprise)"},
+                    "source_avenir": "par_origine, à l'année de la dernière valeur connue de la mine (même "
+                                     "famille de modèle que pour le réglage de κ et les intervalles)"},
         "donnees": {"source": "Jasansky et al. 2023 (CC BY 4.0), série principale de chaque mine",
                     "mines": int(panel["site_id"].nunique()), "annees": [int(years.min()), int(years.max())],
                     "mines_avec_emprise": int(panel.loc[panel["emprise_type"].notna(), "site_id"].nunique()),
@@ -562,12 +550,17 @@ def _reglages(bt: dict) -> tuple[float, float]:
     return tuple(float(v) if _finite(v) else 0.0 for v in (reg.get("phi"), reg.get("kappa")))
 
 
-def _future_anchor(kind, lfp: float, bt: dict) -> float:
-    coef = (bt.get("emprise") or {}).get("avenir", {}).get(kind) if isinstance(kind, str) else None
-    if coef is None and isinstance(kind, str):  # pas de calibration : dernier ajustement disponible
-        par = [x for x in (bt.get("emprise") or {}).get("par_origine", []) if x[0] == kind]
-        coef = par[-1][2:] if par else None
-    return _anchor_ln(kind, lfp, tuple(coef) if coef else None)
+def _future_anchor(kind, lfp: float, bt: dict, origin: int) -> float:
+    """Ordre de grandeur pour une prévision d'avenir faite depuis l'origine `origin` (dernière année connue).
+
+    Même famille que le rétro-test : le modèle d'emprise ré-estimé sur la coupe de l'année d'origine
+    (par_origine). Sans ajustement pour ce (type, année) — moins de MIN_ANCHOR mines —, pas de rappel,
+    exactement comme pour les cas du rétro-test. κ et les quantiles d'erreur ont été réglés sur ce même
+    ancrage ; la calibration.json (autre échantillon, 2017–2020) n'est plus utilisée ici."""
+    if not isinstance(kind, str):
+        return math.nan
+    par = {(x[0], int(x[1])): tuple(x[2:]) for x in (bt.get("emprise") or {}).get("par_origine", [])}
+    return _anchor_ln(kind, lfp, par.get((kind, int(origin))))
 
 
 def site_forecast_frame(g: pd.DataFrame, bt: dict, today: date | None = None) -> pd.DataFrame:
@@ -586,7 +579,7 @@ def site_forecast_frame(g: pd.DataFrame, bt: dict, today: date | None = None) ->
         return pd.DataFrame(columns=cols)
     kind, fp = g["emprise_type"].iat[0], g["footprint_km2"].iat[0]
     lfp = math.log10(fp) if isinstance(kind, str) and np.isfinite(fp) else math.nan
-    c = pd.DataFrame({"h": hs, "l0": l0, "slope": sl, "anchor": _future_anchor(kind, lfp, bt)})
+    c = pd.DataFrame({"h": hs, "l0": l0, "slope": sl, "anchor": _future_anchor(kind, lfp, bt, o)})
     preds = predict(c, *_reglages(bt))
     quant = (bt.get("intervalles") or {}).get("avenir") or {}
     frames = []
