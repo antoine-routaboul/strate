@@ -259,6 +259,24 @@ def test_ledger_is_append_only(tmp_path):
     assert n3 == n1 and len(fc.read_ledger(tmp_path)) == n1 + n2 + n3
 
 
+def test_ledger_dedup_compares_with_true_last_row(tmp_path, monkeypatch):
+    """Dernière ligne aux bornes NaN : la comparaison se fait avec elle, pas avec un mélange de lignes."""
+    key = {"site_id": "m000", "serie": "minerai extrait", "target_year": 2027, "model": "naif"}
+    old = pd.DataFrame([key | {"made_at": "2026-01-01T00:00:00Z", "value": 10.0, "lo80": 5.0, "hi80": 20.0,
+                               "lo90": 4.0, "hi90": 25.0},
+                        key | {"made_at": "2026-02-01T00:00:00Z", "value": 10.0, "lo80": np.nan,
+                               "hi80": np.nan, "lo90": np.nan, "hi90": np.nan}])[fc.LEDGER_COLS]
+    tmp_path.mkdir(exist_ok=True)
+    old.to_parquet(tmp_path / fc.LEDGER_NAME, index=False)
+    (tmp_path / fc.BACKTEST_NAME).write_text("{}", "utf-8")
+    same_as_first = pd.DataFrame([key | {"h": 1, "value": 10.0, "lo80": 5.0, "hi80": 20.0, "lo90": 4.0,
+                                         "hi90": 25.0}])
+    monkeypatch.setattr(fc, "all_forecasts", lambda *a, **k: same_as_first)
+    # identique à la 1re ligne mais pas à la dernière (bornes NaN) : c'est une nouvelle prévision
+    assert fc.write_ledger(out=tmp_path, panel=pd.DataFrame(), now=datetime(2026, 3, 1, tzinfo=UTC)) == 1
+    assert fc.write_ledger(out=tmp_path, panel=pd.DataFrame(), now=datetime(2026, 4, 1, tzinfo=UTC)) == 0
+
+
 # -- panel réel (structure) -------------------------------------------------------------------------
 def test_production_panel_main_series_dedup_and_emprise():
     cat = pd.DataFrame({

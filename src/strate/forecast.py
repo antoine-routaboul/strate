@@ -737,7 +737,9 @@ def write_ledger(out: Path | None = None, panel: pd.DataFrame | None = None, tod
     with _locked(out):
         old = read_ledger(out)
         if len(old):
-            last = old.sort_values("made_at", kind="stable").groupby(key, as_index=False).last()
+            # vraie dernière ligne de chaque clé (GroupBy.last sauterait les NaN colonne par colonne et
+            # mélangerait des lignes d'époques différentes)
+            last = old.sort_values("made_at", kind="stable").drop_duplicates(key, keep="last")
             vals = ["value", "lo80", "hi80", "lo90", "hi90"]
             m = new.merge(last[key + vals], on=key, how="left", suffixes=("", "_old"))
             same = np.ones(len(m), bool)
