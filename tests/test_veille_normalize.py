@@ -723,3 +723,95 @@ def test_duplicate_takes_over_when_original_fails(con, idx, monkeypatch):
     assert out["doublons"] == 0 and out["erreurs"] == 1
     ev = {tuple(e) for e in con.execute("SELECT doc_id, site_id FROM events")}
     assert ev == {("q2", "c_kol")}
+
+
+# -- noms faits de mots de lieu (« Red Lake ») : indexés comme le collecteur les cherche ---------------
+ROWS4 = [
+    ("p_rl", "Red Lake", "Red Lake Mine", 51.03, -93.83, "Canada", 7.6, True, "x"),
+    ("p_cm", "Copper Mountain", None, 49.33, -120.53, "Canada", 10.0, True, "x"),
+    ("p_alias", "Other Mine", "Copper Hill", 10.0, 10.0, "Chile", None, False, None),
+]
+
+
+@pytest.fixture(scope="module")
+def idx4():
+    cols = ["id", "name", "aliases", "lat", "lon", "country", "footprint_km2", "has_production", "icmm"]
+    df = pd.DataFrame(ROWS4, columns=cols)
+    df["wikidata"] = None
+    df["wikipedia"] = None
+    return N.build_index(df)
+
+
+def test_place_name_keys_match_collect_query_names(idx4):
+    from strate.veille import collect
+    for name in ("Red Lake", "Copper Mountain"):
+        assert collect._place_name_key(name) is not None and N.place_key(name) in idx4.words, name
+    assert ("copper", "hill") not in idx4.words           # alias : refusé ici comme par le collecteur
+    assert N.place_key("Escondida") is None
+
+
+def test_region_plus_relief_name_needs_nearby_place():
+    # « Ural Mountains » (fiche Wikidata) : jamais un nom de plusieurs mots cherché seul, sinon toute
+    # actualité minière de l'Oural lui serait rattachée (0,675 avant correction)
+    cols = ["id", "name", "aliases", "lat", "lon", "country", "footprint_km2", "has_production", "icmm"]
+    df = pd.DataFrame([("u", "Ural Mountains", "Lake Victoria", 60.0, 59.0, "Russia", None, False, None)],
+                      columns=cols).assign(wikidata=None, wikipedia=None)
+    ix = N.build_index(df)
+    assert N.word_key("Ural Mountains") is None and N.word_key("Lake Victoria") is None
+    assert ix.place_keys == {("ural", "mountains")}           # nom principal : lieu exigé ; alias : rien
+    assert N.match(_doc("Gold mine flooded in the Ural Mountains"), ix)[0] == []
+    assert N.match(_doc("Gold mine flooded in the Ural Mountains", [_loc("Russia", 60, 100, typ=1)]),
+                   ix)[0] == []
+    m, _ = N.match(_doc("Ural Mountains mine flooded", [_loc("Karpinsk, Russia", 59.9, 59.2)]), ix)
+    assert list(_sites(m)) == ["u"]
+
+
+def test_place_name_with_mine_query_reaches_threshold(idx4):
+    # article de l'API documentaire (sans thèmes ni lieux) renvoyé par la requête « "Red Lake" mine »
+    doc = _doc("Red Lake mine strike ends", hint="p_rl")
+    m, _ = N.match(doc, idx4)
+    assert _sites(m)["p_rl"]["method"] == "requête+nom"
+    rows = N._event_rows({**doc, "id": "x", "published_at": "2026-11-01T00:00:00Z", "url": "https://a.b",
+                          "domain": "a.b"}, m, idx4, "t")
+    assert rows[0][14] >= 0.5                                # confiance : compté par le corrélateur
+
+
+def test_place_name_needs_nearby_place_without_query(idx4):
+    near = [_loc("Red Lake, Ontario, Canada", 51.03, -93.80)]
+    m, _ = N.match(_doc("Red Lake mine output rises", near), idx4)
+    assert _sites(m)["p_rl"]["method"] == "mot+lieu" and m[0]["strength"] * 0.9 >= 0.5
+    for locs in ([], [_loc("Canada", 60, -95, typ=1)], [_loc("Red Lake, Minnesota", 47.88, -95.02)]):
+        m, _ = N.match(_doc("Red Lake mine output rises", locs), idx4)
+        assert m == [], locs                                  # ville homonyme, pays seul, aucun lieu
+    m, _ = N.match(_doc("Copper Mountain mine strike", [_loc("Princeton, Canada", 49.46, -120.51)]), idx4)
+    assert list(_sites(m)) == ["p_cm"]
+
+
+def test_hint_confirmed_by_name_of_unindexed_or_duplicate_record():
+    # fiches en double (< 10 km) et fiche non étayée : leur nom n'est pas dans l'index de recherche, mais la
+    # requête de CETTE fiche est confirmée par son nom dans le titre (sinon : 0,5 × classement < 0,5)
+    cols = ["id", "name", "aliases", "lat", "lon", "country", "footprint_km2", "has_production", "icmm"]
+    df = pd.DataFrame([("h1", "Huaron Mines", None, -11.01, -76.45, "Peru", None, False, "x"),
+                       ("h2", "Huaron", None, -11.02, -76.44, "Peru", 3.0, True, "x"),
+                       ("w1", "Whitney Mine", None, 38.28, -108.72, "United States", None, False, None)],
+                      columns=cols).assign(wikidata=None, wikipedia=None)
+    ix = N.build_index(df)
+    assert ix.words[("huaron",)] == ("h2",) and ix.same_as["h1"] == "h2"
+    m, _ = N.match(_doc("Huaron mine strike", hint="h1"), ix)
+    assert [(x["site_id"], x["method"]) for x in m] == [("h1", "requête+nom")]   # pas deux fois la mine
+    m, _ = N.match(_doc("Whitney Mine flooded", hint="w1"), ix)
+    assert _sites(m)["w1"]["method"] == "requête+nom"
+    m, _ = N.match(_doc("Whitney Mine No 2 flooded", hint="w1"), ix)
+    assert _sites(m)["w1"]["method"] == "requête"                                # autre unité
+
+
+def test_doc_history_flags_follow_recognised_query_names(con, idx4, monkeypatch):
+    from strate.veille import collect
+    monkeypatch.setattr(collect.catalog, "load", lambda: pd.DataFrame())
+    con.executemany("INSERT INTO tracked(site_id, site_name, reason, since, backfill_status) "
+                    "VALUES (?, ?, 'r', '2026-11-01T00:00:00Z', ?)",
+                    [("p_rl", "Red Lake", "fait"), ("p_cm", "Ural Mountains", "fait"),
+                     ("p_alias", "Other Mine", None)])
+    assert N.flag_doc_names(con, idx4) == (1, 1)
+    flags = dict(con.execute("SELECT key, value FROM meta WHERE key LIKE 'doc_reconnu:%'").fetchall())
+    assert flags == {"doc_reconnu:p_rl": "1", "doc_reconnu:p_cm": "0"}

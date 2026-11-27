@@ -724,11 +724,9 @@ def _distinctive(name: str) -> frozenset[str]:
     ni pays (« Peru », « Papua New Guinea »), ni gentilés (« Chinese »), ni seulement des régions
     (« Nevada », « Katanga »), ni un pays ou une région suivi d'une étendue (« Atacama Desert », « Chile
     Plateau ») ; vide = nom inutilisable."""
-    folded = entities.fold(name)
-    rest = _COUNTRY_RE.sub(" ", folded)
+    rest = _COUNTRY_RE.sub(" ", entities.fold(name))
     core = frozenset(t for t in catalog._core(catalog._tokens(rest)) if t not in _DEMONYMS)
-    geo_named = rest != folded or bool(core & _REGIONS)
-    if core <= _REGIONS or (geo_named and core - _GEO_FEATURES <= _REGIONS and not _has_mine_word(name)):
+    if core <= _REGIONS or (region_like(name) and not _has_mine_word(name)):
         return frozenset()
     return core
 
@@ -742,6 +740,22 @@ mine mines pit pits colliery collieries quarry quarries shaft shafts mina minas 
 
 def _has_mine_word(name: str) -> bool:
     return bool(_MINE_TYPE.intersection(re.findall(r"[a-z0-9]+", entities.fold(name))))
+
+
+def _geo_words(name: str) -> tuple[str, set[str], set[str]]:
+    """(nom replié, pays marqués par _PAYS, mots utiles) et, parmi ces mots, les pays et régions."""
+    f = _COUNTRY_RE.sub(lambda m: " " + _PAYS + m.group(0).replace(" ", "") + " ", entities.fold(name))
+    words = {t for t in catalog._tokens(f) if not t.isdigit() and t not in _DEMONYMS and len(t) > 1}
+    return f, words, {t for t in words if t.startswith(_PAYS) or t in _REGIONS}
+
+
+def region_like(name: str) -> bool:
+    """Nom fait d'un pays ou d'une région et seulement de mots d'orientation, de relief, d'étendue ou de
+    substances anglaises (« Ural Mountains », « Lake Victoria », « Copper Chile », « Cerro Colorado ») :
+    un lieu géographique ou une tournure de titre, pas un nom de mine. Les mots d'ouvrage (« Mine »)
+    sont ignorés ; partagé avec `normalize`, qui ne cherche ces noms qu'avec un lieu à moins de 50 km."""
+    _, words, geo = _geo_words(name)
+    return bool(geo) and not words - geo - _REGION_MAKERS - _GEO_FEATURES - _EN_SECTOR
 
 
 # Mots de lieu (relief, eau, orientation, taille, couleur) : non distinctifs seuls, mais à plusieurs ils
@@ -784,14 +798,11 @@ def _place_name_key(name: str) -> frozenset[str] | None:
     lieu, le pays ou la région ne doit pas non plus ouvrir le nom. « Cobre Panama » passe : « cobre » n'est
     pas de l'anglais. Coût connu : « Cerro Colorado » (Chili) est refusé, « colorado » étant aussi un État
     américain ; la règle ne distingue pas l'adjectif espagnol du nom de région."""
-    f = _COUNTRY_RE.sub(lambda m: " " + _PAYS + m.group(0).replace(" ", "") + " ", entities.fold(name))
+    f, words, geo = _geo_words(name)
     toks = catalog._tokens(f)
-    words = {t for t in toks if not t.isdigit() and t not in _DEMONYMS and len(t) > 1}
-    geo = {t for t in words if t.startswith(_PAYS) or t in _REGIONS}
     if len(words) < 2 or not (words & _PLACE_WORDS or geo):
         return None
-    if geo and not words - geo - _REGION_MAKERS - _GEO_FEATURES - _EN_SECTOR \
-            and (not _has_mine_word(name) or not words - geo - _REGION_MAKERS):
+    if region_like(name) and (not _has_mine_word(name) or not words - geo - _REGION_MAKERS):
         return None
     if not words & _PLACE_WORDS:
         first = next((t for t in re.findall(r"[a-z0-9]+", f) if t in toks), None)

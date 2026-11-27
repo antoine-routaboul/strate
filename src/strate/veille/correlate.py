@@ -64,8 +64,9 @@ METHODE = (
     "suite, par rapport à la même saison des années précédentes), signaux optiques et radar seulement. "
     "Événement = au moins un article du type ce mois-là (confiance ≥ 0,5). Couverture : pour chaque mine, "
     "seuls comptent les mois où l'actualité était réellement collectée, depuis le premier mois du flux "
-    "GKG traité, ou, si l'historique de la mine est fait, depuis l'article le plus ancien renvoyé par "
-    "l'API documentaire (jamais depuis le début de la frise de volume). "
+    "GKG traité, ou, si l'historique de la mine est fait et que le normaliseur reconnaît l'un des noms "
+    "cherchés dans un titre, depuis l'article le plus ancien renvoyé par l'API documentaire (jamais depuis "
+    "le début de la frise de volume). "
     "Test : Cochran–Mantel–Haenszel stratifié par mine (un tableau 2×2 par mine : mois d'événement ou "
     "non × anomalie ou non), p-valeur bilatérale exacte (loi conditionnelle, somme des lois "
     "hypergéométriques des mines). Effet (lift) = rapport de risques de Mantel–Haenszel, correction de "
@@ -316,8 +317,13 @@ def coverage(con: sqlite3.Connection, canon: Callable[[str], str] | None = None)
     ok = bool(first) and len(first) >= 6 and first[:6].isdigit()
     gkg = _midx(int(first[:4]), int(first[4:6])) if ok else None
     # historique « fait » : sous l'id suivi ou sous sa jumelle (une jumelle suivie avant le renvoi a pu
-    # être renommée dans `tracked` alors que ses articles gardent l'ancien id dans hint_site)
+    # être renommée dans `tracked` alors que ses articles gardent l'ancien id dans hint_site). Seulement
+    # si le normaliseur reconnaît l'un des noms cherchés (meta « doc_reconnu ») : sinon aucun article de
+    # la requête ne devient un événement, et ses années compteraient « sans événement » faute de nom.
+    reconnu = {canon(k.split(":", 1)[1]) for k, v in con.execute(
+        "SELECT key, value FROM meta WHERE key LIKE 'doc_reconnu:%'") if v == "1"}
     fait = {canon(r[0]) for r in con.execute("SELECT site_id FROM tracked WHERE backfill_status = 'fait'")}
+    fait &= reconnu
     doc: dict[str, int] = {}
     # 1re source : la date du plus ancien article renvoyé, notée par la collecte (survit à une purge)
     for key, oldest in con.execute("SELECT key, value FROM meta WHERE key LIKE 'doc_oldest:%'"):

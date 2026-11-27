@@ -54,7 +54,10 @@ chaîne : elle est notée et retentée au cycle suivant.
   toutes les 6 s au plus**, 429 → attendre) pour les mines de `tracked` sans `backfill_status` :
   `mode=timelinevolraw` (volume mensuel depuis 2017 → `news_volume`) et `mode=artlist`
   (`maxrecords=250`, `sort=datedesc` → `raw_docs` avec `hint_site`). Requête = nom(s) de la mine entre
-  guillemets + « mine ».
+  guillemets + « mine ». Noms refusés : sans mot distinctif, pays ou région seuls, et pays/région +
+  relief, étendue ou substance anglaise (« Ural Mountains », « Lake Victoria », « Copper Chile ») sauf si
+  le nom porte un mot d'ouvrage (« Turkey Creek Mine »). Un nom principal fait de mots de lieu (« Red
+  Lake », « Cobre Panama ») est gardé en phrase exacte.
 - `fetch_names(con) -> int` : noms de chaque mine du catalogue **dans toutes les langues** (libellés et
   alias Wikidata, par lots `VALUES`, en POST) → `data/veille/names.parquet` (`site_id, name, lang`),
   rafraîchi au plus une fois par semaine.
@@ -70,7 +73,16 @@ chaîne : elle est notée et retentée au cycle suivant.
   mine qui séparent). Un nom de mine doit apparaître **en entier** dans le titre ou les organisations.
   Les noms ambigus (plusieurs mines) sont tranchés par la géographie GDELT (lieu à < 50 km, sinon même
   pays) ; sans arbitrage possible : pas de rattachement. `hint_site` (requête par mine) : rattachement
-  direct, confiance plus basse si le nom n'apparaît pas.
+  direct, confiance plus basse si le nom n'apparaît pas. Le nom est cherché parmi TOUS les noms de la
+  fiche visée, même ceux que l'index de recherche écarte (fiche non étayée, trop d'homonymes, double
+  d'une autre fiche à moins de 10 km).
+- **Noms faits de mots de lieu** (`normalize.place_key`) : les noms principaux que le collecteur
+  cherche en phrase exacte (« Red Lake », « Copper Mountain ») et les noms région + relief (« Ural
+  Mountains ») sont indexés, mais comme des mots courants : rattachés seulement avec un lieu GDELT
+  ponctuel à moins de 50 km ou par la requête de la mine (« Red Lake » est aussi une ville).
+- Après chaque lot, `meta` « doc_reconnu:<mine> » dit, pour chaque mine dont l'historique est fait, si
+  l'un des noms cherchés par l'API est reconnu dans un titre (sur le catalogue de novembre 2026 : 412
+  mines sur 56 014 ne le sont pas, contre 25 728 avant la correction).
 - **Classement** (`store.EVENT_TYPES`) par thèmes GDELT (KILL, MANMADE_DISASTER*, UNSAFE_WORK_ENVIRONMENT
   → accident ; STRIKE, PROTEST, ECON_UNIONS → social ; LEGISLATION, ARREST, WB_849… → juridique ;
   ENV_* pollution → environnement ; ECON_BANKRUPTCY, ECON_STOCKMARKET, ECON_IPO… → finance ;
@@ -92,9 +104,9 @@ chaîne : elle est notée et retentée au cycle suivant.
   suivies/analysées ; anomalie satellite = alerte persistante retenue par `fusion.dossier`
   (|a_signal| ≥ 2) par signal ; événement = au moins un événement du type ce mois (confiance ≥ 0,5).
   **Couverture** : pour chaque mine, seuls comptent les mois où l'actualité était réellement collectée
-  (depuis le premier mois du flux GKG traité ; pour une mine dont l'historique est « fait », depuis
-  l'article le plus ancien renvoyé) — sinon des années « sans événement » faute de collecte fausseraient
-  la comparaison.
+  (depuis le premier mois du flux GKG traité ; pour une mine dont l'historique est « fait » et dont un
+  nom cherché est reconnu par le normaliseur, depuis l'article le plus ancien renvoyé) — sinon des
+  années « sans événement » faute de collecte, ou faute de nom reconnu, fausseraient la comparaison.
   Test : **Cochran–Mantel–Haenszel stratifié par mine** (un tableau 2×2 par mine : mois d'événement ou
   non × anomalie ou non) ; effet = rapport de risques de Mantel–Haenszel (`lift`), IC 90 % par bootstrap
   sur les mines, correction de continuité de 0,5 sur chaque case quand aucune anomalie ne tombe hors

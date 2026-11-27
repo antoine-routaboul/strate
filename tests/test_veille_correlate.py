@@ -289,6 +289,26 @@ def test_study_no_link_on_independent_data(con):
 
 
 # -- couverture d'actualité -------------------------------------------------------------------------
+def _reconnu(con, sid, ok=True):
+    """Drapeau du normaliseur : l'un des noms cherchés par l'API documentaire est reconnu."""
+    con.execute("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
+                (f"doc_reconnu:{sid}", "1" if ok else "0"))
+
+
+def test_doc_coverage_needs_recognised_query_name(con):
+    # « Red Lake » avant correction : historique fait, aucun article devenu événement faute de nom reconnu.
+    # Ses années de requête ne doivent pas compter comme des mois « sans événement ».
+    con.execute("INSERT INTO tracked(site_id, reason, since, backfill_status) VALUES "
+                "('rl', 'r', '2026-11-01T00:00:00Z', 'fait'), ('ok', 'r', '2026-11-01T00:00:00Z', 'fait'), "
+                "('vieux', 'r', '2026-11-01T00:00:00Z', 'fait')")
+    con.executemany("INSERT INTO meta(key, value) VALUES (?, ?)",
+                    [(f"doc_oldest:{s}", "2019-03-01T00:00:00Z") for s in ("rl", "ok", "vieux")])
+    _reconnu(con, "rl", ok=False)
+    _reconnu(con, "ok")                                  # « vieux » : jamais vérifié → pas compté
+    con.commit()
+    assert correlate.coverage(con)[1] == {"ok": correlate._midx(2019, 3)}
+
+
 def test_coverage_from_gkg_feed_and_doc_history(con):
     assert correlate.coverage(con) == (None, {})
     gkg_done(con, "20260512091500")
@@ -300,6 +320,7 @@ def test_coverage_from_gkg_feed_and_doc_history(con):
         for d in ("2024-03-02T10:00:00Z", "2026-10-01T10:00:00Z"):
             con.execute("INSERT INTO raw_docs(id, source, fetched_at, published_at, url, hint_site, status) "
                         "VALUES (?, 'gdelt_doc', ?, ?, ?, ?, 'rejected')", (sid + d, d, d, "u" + d, sid))
+        _reconnu(con, sid)
     con.commit()
     gkg, doc = correlate.coverage(con)
     assert gkg == correlate._midx(2026, 5)
@@ -311,6 +332,7 @@ def test_coverage_from_gkg_feed_and_doc_history(con):
                 "VALUES ('j9', 'gdelt_doc', 'x', '2023-07-01T00:00:00Z', 'u9', 'icmm9', 'done')")
     con.execute("INSERT INTO raw_docs(id, source, fetched_at, published_at, url, hint_site, status) "
                 "VALUES ('g9', 'gdelt_gkg', 'x', '2019-01-01T00:00:00Z', 'g9', 'real9', 'done')")
+    _reconnu(con, "real9")
     con.commit()
     _, doc = correlate.coverage(con, lambda s: {"icmm9": "real9"}.get(s, s))
     assert doc["real9"] == correlate._midx(2023, 7)  # seuls les articles de l'API documentaire comptent
@@ -502,6 +524,8 @@ def test_coverage_reads_doc_oldest_meta_even_after_purge(con):
                 "('m1', 'r', '2026-11-01T00:00:00Z', 'fait'), ('m2', 'r', '2026-11-01T00:00:00Z', NULL)")
     con.execute("INSERT INTO meta(key, value) VALUES ('doc_oldest:m1', '2022-04-17T08:00:00Z'), "
                 "('doc_oldest:m2', '2021-01-01T00:00:00Z'), ('doc_oldest:m3', 'abîmé')")
+    for sid in ("m1", "m2", "m3"):
+        _reconnu(con, sid)
     con.commit()
     _, doc = correlate.coverage(con)
     assert doc == {"m1": correlate._midx(2022, 4)}       # m2 : historique non fait ; m3 : valeur illisible

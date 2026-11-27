@@ -40,7 +40,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit
 import pandas as pd
 
 from strate import catalog, entities
-from strate.veille import store
+from strate.veille import collect, store
 
 log = logging.getLogger(__name__)
 
@@ -368,7 +368,28 @@ def word_key(name: str) -> tuple[str, ...] | None:
         return None
     if entities.fold(" ".join(seq)) in entities.COUNTRY_ALIASES:
         return None
+    if len(seq) >= 2 and re.search(r"[A-Za-z]", name) and collect.region_like(name):
+        return None      # « Ural Mountains », « Lake Victoria » : un lieu (voir `place_key`)
     return seq
+
+
+def place_key(name: str) -> tuple[str, ...] | None:
+    """Clé d'un nom PRINCIPAL (catalogue, liste suivie) fait seulement de mots de lieu, de pays ou
+    génériques (« Red Lake », « Copper Mountain ») : les noms que le collecteur accepte en phrase exacte
+    pour l'API documentaire (`collect._place_name_key`), sans quoi les articles de cette requête ne
+    deviendraient jamais des événements alors que la couverture de la mine serait comptée ; et les noms
+    de région + relief (`collect.region_like` : « Ural Mountains », « Cerro Colorado »), que le collecteur
+    ne cherche pas.
+
+    Ces noms sont aussi des noms de lieux (« Red Lake » est une ville de l'Ontario, « Ural Mountains » une
+    chaîne de montagnes) : `match` les traite comme un nom d'un mot de mots courants, donc seulement
+    confirmés par un lieu GDELT ponctuel à moins de 50 km ou par la requête de la mine (« requête+nom »)."""
+    if not isinstance(name, str) or word_key(name) is not None:
+        return None
+    if collect._place_name_key(name) is None and not collect.region_like(name):
+        return None
+    seq = _seq(name)
+    return seq if 2 <= len(seq) <= 8 else None
 
 
 def _tail_variant(seq: tuple[str, ...]) -> tuple[str, ...] | None:
@@ -417,6 +438,12 @@ class NameIndex:
     words: dict[tuple[str, ...], tuple[str, ...]] = field(default_factory=dict)
     cjk: dict[str, list[tuple[str, tuple[str, ...], bool]]] = field(default_factory=dict)
     twin_of: dict[str, str] = field(default_factory=dict)   # id catalogue → id de la liste suivie
+    place_keys: frozenset[tuple[str, ...]] = frozenset()    # clés de `place_key` : lieu ou requête exigés
+    same_as: dict[str, str] = field(default_factory=dict)   # fiche en double (< 10 km, même nom) → gardée
+    # toutes les clés de chaque fiche, AVANT les filtres (fiche étayée, homonymes, doubles) : servent
+    # seulement à confirmer qu'un article renvoyé par la requête d'une mine cite bien l'un de ses noms
+    keys_of: dict[str, set[tuple[str, ...]]] = field(default_factory=dict)
+    cjk_of: dict[str, set[str]] = field(default_factory=dict)
     notable: frozenset[str] = frozenset()  # fiche étayée : liste suivie, ICMM, Wikipedia, emprise, production
     maxlen: int = 1
     dropped_generic: int = 0              # clés écartées : trop d'homonymes
@@ -451,14 +478,20 @@ def build_index(cat: pd.DataFrame | None, watch: list | None = None, names: pd.D
     notable: set[str] = set()
     raw_w: dict[tuple[str, ...], tuple[set[str], set[str]]] = {}
     raw_c: dict[str, tuple[set[str], set[str], list[bool]]] = {}
+    places: set[tuple[str, ...]] = set()
 
     def put_w(key, site_id, rank):
         raw_w.setdefault(key, (set(), set()))[rank].add(site_id)
+        idx.keys_of.setdefault(site_id, set()).add(key)
 
-    def add(site_id: str, name) -> None:
+    def add(site_id: str, name, main: bool = False) -> None:
         if not isinstance(name, str) or not name.strip():
             return
         name = html.unescape(" ".join(name.split()))
+        if main and (pk := place_key(name)):
+            # nom principal fait de mots de lieu, cherché tel quel par le collecteur : même nom ici
+            put_w(pk, site_id, 0)
+            places.add(pk)
         parts = [(name, 0)] + [(p.strip(), 1) for p in _SPLIT.split(name) if p and p.strip() != name]
         for part, rank in parts:
             if not part:
@@ -467,6 +500,7 @@ def build_index(cat: pd.DataFrame | None, watch: list | None = None, names: pd.D
                 k = cjk_key(part)
                 if k:
                     e = raw_c.setdefault(k[0], (set(), set(), [True]))
+                    idx.cjk_of.setdefault(site_id, set()).add(k[0])
                     e[rank].add(site_id)
                     e[2][0] = e[2][0] and k[1]
                 continue
@@ -481,7 +515,7 @@ def build_index(cat: pd.DataFrame | None, watch: list | None = None, names: pd.D
         idx.sites[s.id] = (s.name, _num(s.lat), _num(s.lon), entities.norm_country(s.country))
         prio[s.id] = 100
         notable.add(s.id)
-        add(s.id, s.name)
+        add(s.id, s.name, main=True)
     if cat is not None and len(cat):
         idx.catalog_rows = len(cat)
         cols = {c: (cat[c].tolist() if c in cat else [None] * len(cat))
@@ -498,7 +532,7 @@ def build_index(cat: pd.DataFrame | None, watch: list | None = None, names: pd.D
                 prio[cid] = 2 * fp + prod + isinstance(cols["wikidata"][i], str)
                 if fp or prod or isinstance(cols["icmm"][i], str) or isinstance(cols["wikipedia"][i], str):
                     notable.add(cid)
-            add(sid, nm)
+            add(sid, nm, main=True)
             al = cols["aliases"][i]
             if isinstance(al, str):
                 aliases = [a for a in dict.fromkeys(x.strip() for x in al.split(";")) if a]
@@ -519,9 +553,12 @@ def build_index(cat: pd.DataFrame | None, watch: list | None = None, names: pd.D
         kept: list[str] = []
         for sid in sorted(ids, key=lambda x: (-prio.get(x, 0), x)):
             _, la, lo, _ = idx.sites.get(sid, (None, None, None, None))
-            if la is not None and lo is not None and any(
-                    (k := idx.sites.get(o)) and k[1] is not None and k[2] is not None
-                    and _km(la, lo, k[1], k[2]) <= CLUSTER_KM for o in kept):
+            near = next((o for o in kept if la is not None and lo is not None
+                         and (k := idx.sites.get(o)) and k[1] is not None and k[2] is not None
+                         and _km(la, lo, k[1], k[2]) <= CLUSTER_KM), None)
+            if near is not None:
+                # même mine en double fiche : la requête de la fiche écartée reconnaît le nom (`match`)
+                idx.same_as.setdefault(sid, near)
                 continue
             kept.append(sid)
             if len(kept) > MAX_HOMONYMS:
@@ -529,7 +566,7 @@ def build_index(cat: pd.DataFrame | None, watch: list | None = None, names: pd.D
         return tuple(kept)
 
     for key, (full, part) in raw_w.items():
-        if _weak_key(key):
+        if _weak_key(key) and key not in places:
             # nom d'un seul mot distinctif (« Kibali gold » compris) : seulement les fiches étayées. Wikidata
             # compte des milliers de petites mines américaines « States Mine », « High Mine », « November
             # Mine » : sans ce filtre, chaque « United States » ou « November 25 » d'un titre deviendrait
@@ -552,6 +589,7 @@ def build_index(cat: pd.DataFrame | None, watch: list | None = None, names: pd.D
     for lst in idx.cjk.values():
         lst.sort(key=lambda x: -len(x[0]))
     idx.notable = frozenset(notable)
+    idx.place_keys = frozenset(k for k in places if k in idx.words)
     return idx
 
 
@@ -1265,7 +1303,9 @@ def _scan_words(toks: list[str], idx: NameIndex, where: str, title: _Title | Non
                 out.append(_Occ(" ".join(key), ids, where, True, False, False, key, unit=True))
                 j += n
                 break
-            weak = _weak_key(key)
+            # nom fait de mots de lieu (« Red Lake ») : comme un mot seul courant, lieu ou requête exigés
+            place = key in idx.place_keys
+            weak = place or _weak_key(key)
             # « Kibali gold » : la substance du nom vaut le mot « mine » juste à côté
             window = toks[max(0, a - 3):a] + toks[b + 1:b + 4] + [t for t in key if not _is_core(t)]
             ctx = any(_is_context(t) for t in window)
@@ -1275,7 +1315,7 @@ def _scan_words(toks: list[str], idx: NameIndex, where: str, title: _Title | Non
                 ctx = tuple(vals) == key and any(_is_context(t) for t in toks)
             # un nom propre prend une majuscule : « South African bank raises… » ne parle pas de « Bank »
             lower = has_caps and all(title.raw[pos[k][0]][:1].islower() for k in range(j, j + n))
-            out.append(_Occ(" ".join(key), ids, where, weak, _all_common(key), ctx, key, lower))
+            out.append(_Occ(" ".join(key), ids, where, weak, place or _all_common(key), ctx, key, lower))
             j += n
             break
         else:
@@ -1336,6 +1376,25 @@ _LEVELS = {
     "lieu": ("nom+lieu", "mot+lieu", 1.0), "pays": ("nom+pays", "mot+pays", 1.0),
     "nom": ("nom", "mot", 1.0), "contredit": ("contredit", None, 1.0),
 }
+
+
+def _named(title: _Title, idx: NameIndex, sid: str) -> bool:
+    """Le titre cite-t-il l'un des noms de la fiche `sid` (même absent de l'index de recherche : trop
+    d'homonymes, fiche non étayée, double d'une autre fiche) ? Sert seulement à la requête par mine : la
+    requête a déjà choisi la mine, le nom présent confirme que l'article en parle (« requête+nom »).
+    Un numéro d'unité accolé (« Kolubara No 2 ») reste une autre unité."""
+    keys = idx.keys_of.get(sid, ())
+    if keys:
+        pos = [(i, _ROMAN.get(t, t)) for i, t in enumerate(title.toks) if t not in STOP]
+        vals = [v for _, v in pos]
+        for key in keys:
+            n = len(key)
+            for j in range(len(vals) - n + 1):
+                if tuple(vals[j:j + n]) == key and (any(t.isdigit() for t in key)
+                                                    or not _unit_after(title, pos[j + n - 1][0])):
+                    return True
+    cjk = idx.cjk_of.get(sid, ())
+    return bool(cjk) and any(k in _cjk_fold(" ".join(title.raw or title.toks)) for k in cjk)
 
 
 def match(doc: dict, idx: NameIndex) -> tuple[list[dict], dict]:
@@ -1413,7 +1472,10 @@ def match(doc: dict, idx: NameIndex) -> tuple[list[dict], dict]:
             continue
         seen.add(hint)
         cur = found.get(hint)
-        if cur or hint in raw_ids:
+        rep = idx.same_as.get(hint)        # requête d'une fiche en double : le nom indexé est celui du double
+        if cur is None and rep is not None and rep in raw_ids:
+            cur = found.pop(rep, None)
+        if cur or hint in raw_ids or (rep is not None and rep in raw_ids) or _named(title, idx, hint):
             ev = (cur or {}).get("evidence") or {"nom": "présent (homonymes tranchés par la requête)"}
             found[hint] = {"site_id": hint, "method": "requête+nom",
                            "strength": max(STRENGTH["requête+nom"], (cur or {}).get("strength", 0)),
@@ -1465,6 +1527,26 @@ def _event_rows(doc: dict, matches: list[dict], idx: NameIndex, created: str) ->
             doc["published_at"][:7], doc["title"], doc["url"], doc["domain"] or None, doc["lang"],
             country, la, lo, conf, m["method"], json.dumps(ev, ensure_ascii=False), created))
     return rows
+
+
+def flag_doc_names(con: sqlite3.Connection, idx: NameIndex) -> tuple[int, int]:
+    """Pour chaque mine suivie dont l'historique documentaire est fait : l'un de ses noms de requête
+    (`collect.mine_names`, ceux que l'API a cherchés) est-il reconnu dans un titre ? Écrit
+    meta « doc_reconnu:<mine> » = '1' ou '0' ; rend (reconnues, non reconnues).
+
+    Le corrélateur ne compte la couverture de l'historique documentaire que pour les mines reconnues :
+    sinon des années d'articles renvoyés par la requête, jamais devenus des événements faute de nom
+    reconnu, compteraient comme des mois « sans événement ». Recalculé à chaque passage (l'index change
+    avec le catalogue et names.parquet)."""
+    rows = con.execute("SELECT site_id, site_name FROM tracked WHERE backfill_status = 'fait'").fetchall()
+    flags = []
+    for sid, name in rows:
+        target = idx.canonical(sid)
+        ok = any(_named(_Title.of(n), idx, target) for n in collect.mine_names(sid, name))
+        flags.append((f"doc_reconnu:{sid}", "1" if ok else "0"))
+    con.executemany("INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)", flags)
+    n_ok = sum(v == "1" for _, v in flags)
+    return n_ok, len(flags) - n_ok
 
 
 _INSERT_EVENT = ("INSERT OR REPLACE INTO events(id, doc_id, site_id, site_name, event_type, published_at, "
@@ -1641,6 +1723,10 @@ def run_once(con: sqlite3.Connection, batch: int = 5000, *, index: NameIndex | N
     con.executemany("UPDATE raw_docs SET status=?, reject_reason=? WHERE id=?", updates)
     counters["evenements"] = len(events)
     counters["mines"] = len(sites_hit)
+    try:
+        counters["historiques_reconnus"], counters["historiques_non_reconnus"] = flag_doc_names(con, idx)
+    except Exception:  # un catalogue illisible ne doit pas faire perdre le lot : drapeaux au prochain cycle
+        log.exception("noms de requête non vérifiés")
     msg = (f"{counters['lus']} documents : {len(events)} événements sur {len(sites_hit)} mines, "
            f"{counters['rejetes']} rejetés, {counters['doublons']} doublons, "
            f"{counters['sans_mine']} sans mine")
