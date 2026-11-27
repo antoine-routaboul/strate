@@ -258,7 +258,8 @@ def test_forecast_site_keeps_module_site_caveat(client, env, monkeypatch):
     write_bt(env)
     d = client.get("/api/forecast/site", params={"site": "x"}).json()
     assert d["suivi_site"] == {"model": "naif", "horizon": 1, "periode": "2015–2021", "n": 6,
-                               "unite_n": None, "facteur_median": 1.08, "facteur_max": 1.25,
+                               "unite_n": "années cibles de cette mine", "facteur_median": 1.08,
+                               "facteur_max": 1.25,
                                "note": "Description de cette mine : pas d'IC, pas un test.", "portee": "mine"}
     q = d["qualite"]
     assert (q["unite_n"], q["periode"], q["n"]) == ("points (mine × année cible)", "2015–2021", 40)
@@ -328,6 +329,22 @@ def test_forecast_site_without_backtest_keeps_history(client, env, monkeypatch):
     fake(monkeypatch, "forecast", forecast_site=lambda s: {**ro, "message": None})
     d = client.get("/api/forecast/site", params={"site": "x"}).json()
     assert "strate forecast backtest" in d["message"]
+
+
+def test_forecast_site_without_backtest_quality_is_null(client, env, monkeypatch):
+    """Rétro-test absent : le module rend qualite = {"n": 0} et suivi_site = {"n": 0}. Sans aucun score,
+    l'API répond null (et non une qualité vide annotée « Score global… ») ; le message dit pourquoi."""
+    ro = {"serie": "minerai extrait", "historique": SITE["historique"], "prevision": [], "qualite": {"n": 0},
+          "qualite_par_horizon": [{"n": 0}], "suivi_site": {"n": 0}, "message": api.MSG_BACKTEST}
+    fake(monkeypatch, "forecast", forecast_site=lambda s: ro)
+    d = client.get("/api/forecast/site", params={"site": "x"}).json()
+    assert d["qualite"] is None and d["qualite_par_horizon"] == [] and d["suivi_site"] is None
+    assert d["message"] == api.MSG_BACKTEST
+    # une mine sans année de test garde son suivi (n = 0, note du module) : le modèle est connu
+    fake(monkeypatch, "forecast", forecast_site=lambda s: {**SITE, "suivi_site": {"modele": "naif", "n": 0}})
+    write_bt(env)
+    s = client.get("/api/forecast/site", params={"site": "x"}).json()["suivi_site"]
+    assert (s["model"], s["n"], s["note"]) == ("naif", 0, api.NOTE_SUIVI)
 
 
 def test_forecast_site_note_as_message(client, env, monkeypatch):

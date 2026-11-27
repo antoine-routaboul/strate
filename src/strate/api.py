@@ -936,6 +936,9 @@ def _qualite(q) -> dict | None:
     if not isinstance(q, dict):
         return None
     out = _shape(q, QUALITE)
+    scores = ("r", "rho", "r_niveau", "rho_niveau", "skill", "facteur_median", "couverture80", "couverture90")
+    if out["model"] is None and all(out[k] is None for k in scores):
+        return None  # aucun score (rétro-test absent, {"n": 0}) : null plutôt qu'une qualité vide annotée
     out["portee"] = out["portee"] or "global"
     if out["note"] is None:
         naif = out["r"] is None and out["model"] is not None
@@ -948,7 +951,10 @@ def _suivi(s) -> dict | None:
     if not isinstance(s, dict):
         return None
     out = {**_shape(s, SUIVI), "portee": "mine"}
+    if out["model"] is None and out["facteur_median"] is None:
+        return None  # rétro-test absent ({"n": 0}) : rien à décrire
     out["note"] = out["note"] or NOTE_SUIVI
+    out["unite_n"] = out["unite_n"] or "années cibles de cette mine"
     return out
 
 
