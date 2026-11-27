@@ -204,8 +204,7 @@ def test_pages_read_only_contract_fields():
     inv = _doc_fields(r"`GET /api/company\?", "investissements")
     summary = {"domaine", "x", "y", "coefficient", "type", "lo", "hi", "n", "verdict", "source"}
     # contrat partagé de cette révision (producteurs : companies, forecast, api), lu défensivement par la page
-    corr |= {"verdict_r", "verdict_rho", "q_value", "q_r", "q_rho", "lag", "rho_lo", "rho_hi"}
-    companies |= {"devise_capex", "devise_ca"}  # devise propre à chaque montant (companies.table)
+    corr |= {"lag"}  # alias de decalage, lu défensivement
     summary |= {"unite_n", "n_bootstrap_unit"}
     backtest |= {"skill_lo", "skill_hi", "note", "r_niveau", "rho_niveau"}
     prev |= {"horizon", "mesure"}
@@ -389,6 +388,18 @@ const done=()=>fetches.forEach(f=>f.done=true);
     return (order(h)==='BCAD'&&cells[1].includes('USD')&&!cells[1].includes('CAD')&&cells[3].includes('CAD')
       &&cells[3].includes('9,00 Md')&&h.includes('USD, CAD, EUR')&&clean(h))
       ||JSON.stringify({o:order(h),cells});
+  });
+  await check('capex_ranking_uses_capex_currency',async()=>{
+    // classement du CAPEX dans la devise du CAPEX (devise_capex), jamais celle du CA ni « devise »
+    done(); P.PG.co=null; P.show('societes','capex');
+    const co=(id,dc,dv,cap)=>({id,nom:id,devise:dv,devise_capex:dc,devise_ca:dv,capex_dernier:cap,
+      n_mines:1,tickers:[]});
+    take('/api/companies/correlations').ok({rows:[],methode:'m'});
+    take('/api/companies?limit=5000').ok({total:3,rows:[co('Alpha','USD','CAD',1e9),co('Beta','USD','USD',2e9),
+      co('Gamma','CAD','USD',3e9)]});
+    await flush(); const h=$el('#co_capex').innerHTML;
+    const iA=h.indexOf('Alpha'), iB=h.indexOf('Beta');
+    return (iB>=0&&iA>iB&&!h.includes('Gamma')&&h.includes('en USD seulement')&&clean(h))||h;
   });
   await check('company_sheet_with_badges',async()=>{
     done(); P.show('societes','fiche','rio');
@@ -604,7 +615,7 @@ EMPTY_ALL = r"""
 
 CHECKS = ["badge", "badge_never_upgrades_server_verdict", "routes", "one_view_at_a_time",
           "directory_empty_message", "directory_escapes_names", "directory_sorts_amounts_within_currency",
-          "directory_amount_currency_per_column",
+          "directory_amount_currency_per_column", "capex_ranking_uses_capex_currency",
           "company_sheet_with_badges", "company_sheet_uses_retained_fact",
           "company_head_never_gets_raw_tickers", "company_corr_verdicts_per_coefficient",
           "capex_page_empty", "backtest_page", "backtest_empty", "forecast_without_series",
