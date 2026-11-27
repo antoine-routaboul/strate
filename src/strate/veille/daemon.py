@@ -1,0 +1,416 @@
+"""Le service de veille : enchaîne collecte → normalisation → corrélation tous les quarts d'heure.
+
+    uv run strate veille once      # un cycle, puis rend la main
+    uv run strate veille run       # boucle sans fin (ce que lance launchd)
+    uv run strate veille install   # service launchd « com.strate.veille » (démarre avec la session)
+
+Pourquoi ces choix :
+- chaque étape est isolée : une panne réseau de la collecte n'empêche pas de normaliser ce qui est déjà
+  là, ni de recalculer les corrélations ; l'erreur est notée dans pipeline_status et retentée au cycle
+  suivant ;
+- le cycle démarre au quart d'heure pile, au rythme où GDELT publie ses fichiers ;
+- l'attente suit l'horloge murale par petits pas : après une mise en veille du Mac, le cycle manqué part
+  au réveil au lieu d'attendre encore le reste de l'intervalle ;
+- SIGTERM (launchctl, extinction) : plus aucune étape ne démarre ; l'étape en cours peut finir dans le
+  délai ExitTimeOut de launchd (60 s). Une étape plus longue (corrélation avec analyses satellite) est
+  tuée par launchd : SQLite annule sa transaction non validée (rien d'incohérent) et le battement
+  « arrêté » manque, mais l'état du service le voit inactif (pid disparu). Une étape longue peut
+  interroger `stop_requested()` entre deux unités de travail pour s'arrêter à temps ;
+- priorité basse (os.nice) : la veille ne doit jamais ralentir le Mac ;
+- un verrou de fichier empêche deux cycles simultanés (service + `veille once` lancé à la main).
+"""
+
+from __future__ import annotations
+
+import contextlib
+import fcntl
+import importlib
+import json
+import logging
+import math
+import os
+import plistlib
+import shutil
+import signal
+import sqlite3
+import subprocess
+import threading
+import time
+from datetime import UTC, datetime
+from pathlib import Path
+
+from strate.veille import store
+
+log = logging.getLogger("strate.veille")
+
+# (nom dans pipeline_status, module, limites par défaut du contrat docs/veille.md)
+STAGES: tuple[tuple[str, str, dict], ...] = (
+    ("collecte", "strate.veille.collect", {"backfill_hours": 48, "max_files": 40, "doc_queries": 6}),
+    ("normalisation", "strate.veille.normalize", {"batch": 5000}),
+    ("correlation", "strate.veille.correlate",
+     {"new_per_day": 20, "analyses_per_run": 2, "recompute_hours": 6}),
+)
+STAGE_NAMES = tuple(s[0] for s in STAGES)
+SERVICE = "service"
+INTERVAL_S = 900
+MIN_INTERVAL_S = 60  # en dessous, les cycles s'enchaîneraient sans laisser respirer GDELT ni le Mac
+NICE = 10
+POLL_S = 30  # pas d'attente : borne le retard après une mise en veille du Mac
+LOG_MAX_BYTES = 20_000_000
+
+LABEL = "com.strate.veille"
+PROJECT_DIR = Path(__file__).resolve().parents[3]
+LOG_PATH = PROJECT_DIR / "logs" / "veille.log"
+PLIST_PATH = Path.home() / "Library" / "LaunchAgents" / f"{LABEL}.plist"
+
+_stop = threading.Event()
+_signals = 0
+
+
+def _iso(t: float) -> str:
+    return datetime.fromtimestamp(t, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def stop_requested() -> bool:
+    """Vrai après SIGTERM/SIGINT : une étape longue peut s'arrêter entre deux unités de travail."""
+    return _stop.is_set()
+
+
+def finite(o):
+    """NaN et infinis → None, récursivement : le JSON strict (navigateur, FastAPI) les refuse."""
+    if isinstance(o, float):
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: finite(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [finite(v) for v in o]
+    return o
+
+
+def _jsonable(d) -> dict:
+    """Compteurs rendus sérialisables (types numpy, dates…, NaN → null) : set_status ne doit jamais
+    échouer ni écrire un `NaN` que l'API ne pourrait pas renvoyer."""
+    try:
+        out = finite(json.loads(json.dumps(d if isinstance(d, dict) else {"resultat": d}, default=str)))
+        return out if isinstance(out, dict) else {"resultat": out}
+    except (TypeError, ValueError, RecursionError):
+        return {"resultat": str(d)}
+
+
+def next_boundary(now: float, interval_s: int = INTERVAL_S, offset_s: int = 0) -> float:
+    """Prochain multiple de l'intervalle (heure UTC) strictement après `now` : 12:00, 12:15, 12:30…
+
+    Un cycle plus long que l'intervalle saute au quart d'heure suivant au lieu de s'empiler."""
+    if not interval_s or interval_s <= 0:
+        raise ValueError(f"intervalle invalide : {interval_s!r} s (il faut un nombre positif)")
+    k = (now - offset_s) // interval_s + 1
+    return k * interval_s + offset_s
+
+
+# -- un cycle ------------------------------------------------------------------------------------------
+def _status_row(con: sqlite3.Connection, stage: str) -> tuple | None:
+    """(last_run, ok, message, counters) de l'étape : sert à voir si l'étape a écrit son propre statut."""
+    r = con.execute("SELECT last_run, ok, message, counters FROM pipeline_status WHERE stage=?",
+                    (stage,)).fetchone()
+    return tuple(r) if r else None
+
+
+def _heartbeat(con: sqlite3.Connection, message: str, ok: bool = True, **counters) -> None:
+    """Ligne « service » de pipeline_status : prouve à l'API que le service tourne.
+
+    Les compteurs précédents sont gardés (dernier_cycle reste connu pendant le cycle suivant)."""
+    try:
+        r = con.execute("SELECT counters FROM pipeline_status WHERE stage=?", (SERVICE,)).fetchone()
+        try:
+            prev = json.loads(r[0]) if r and r[0] else {}
+        except ValueError:
+            prev = {}
+        merged = _jsonable({**(prev if isinstance(prev, dict) else {}), **counters, "pid": os.getpid()})
+        store.set_status(con, SERVICE, ok, message, **merged)
+        con.commit()
+    except sqlite3.Error as e:  # base verrouillée trop longtemps : le prochain battement réessaiera
+        log.warning("battement du service non écrit : %s", e)
+
+
+def _run_stage(con: sqlite3.Connection, stage: str, module: str, kwargs: dict) -> dict:
+    """Lance une étape ; toute erreur (import, réseau, données) est notée et n'arrête pas la chaîne."""
+    t0 = time.time()
+    before = _status_row(con, stage)
+    try:
+        mod = importlib.import_module(module)  # import tardif : un module absent ne casse que son étape
+        res = _jsonable(mod.run_once(con, **kwargs))
+        after = _status_row(con, stage)
+        if after == before:  # l'étape n'a pas écrit son statut : on le fait pour elle
+            store.set_status(con, stage, True, "terminé", **res)
+            ok, msg = True, "terminé"
+        else:  # l'étape a écrit son statut (elle peut avoir noté elle-même un échec) : c'est lui qui fait foi
+            ok, msg = bool(after[1]), after[2] or ""
+        con.commit()
+        dt = round(time.time() - t0, 1)
+        if ok:
+            log.info("%-13s ok en %.0f s : %s", stage, dt, res)
+            return {**res, "ok": True, "duree_s": dt}
+        log.warning("%-13s en échec (noté par l'étape) en %.0f s : %s", stage, dt, msg)
+        return {**res, "ok": False, "erreur": msg, "duree_s": dt}
+    except Exception as e:  # isolation voulue : l'étape suivante doit tourner
+        with contextlib.suppress(sqlite3.Error):
+            con.rollback()
+        msg = f"erreur : {type(e).__name__}: {e}"[:500]
+        log.exception("%-13s %s", stage, msg)
+        try:
+            store.set_status(con, stage, False, msg, duree_s=round(time.time() - t0, 1))
+            con.commit()
+        except sqlite3.Error as e2:
+            log.warning("statut de %s non écrit : %s", stage, e2)
+        return {"ok": False, "erreur": msg, "duree_s": round(time.time() - t0, 1)}
+
+
+@contextlib.contextmanager
+def _cycle_lock(db: Path):
+    """Verrou exclusif non bloquant à côté de la base : rend False si un autre cycle tourne déjà."""
+    db.parent.mkdir(parents=True, exist_ok=True)
+    with open(db.parent / "cycle.lock", "a+") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
+def run_cycle(db_path: Path | None = None, limits: dict[str, dict] | None = None,
+              stages: tuple[str, ...] | None = None, cycle: int | None = None,
+              interval_s: int = INTERVAL_S) -> dict:
+    """Un passage collecte → normalisation → corrélation. `limits` : {étape: kwargs de run_once}.
+
+    Rend {étape: compteurs | erreur}. S'arrête entre deux étapes si SIGTERM est arrivé."""
+    db = Path(db_path or store.DB_PATH)
+    limits = limits or {}
+    out: dict[str, dict] = {}
+    with _cycle_lock(db) as got:
+        if not got:
+            log.warning("un autre cycle de veille tourne déjà : celui-ci est sauté")
+            return {"saute": {"ok": False, "erreur": "un autre cycle tourne déjà"}}
+        con = store.init(db)
+        try:
+            for name, module, defaults in STAGES:
+                if stages and name not in stages:
+                    continue
+                if _stop.is_set():
+                    out[name] = {"ok": False, "erreur": "arrêt demandé avant l'étape"}
+                    continue
+                if cycle is not None:  # le battement suit l'étape : un long cycle reste visible « actif »
+                    _heartbeat(con, f"cycle {cycle} : {name} en cours", etat="en marche", cycles=cycle - 1,
+                               interval_s=interval_s, prochain=None)
+                out[name] = _run_stage(con, name, module, {**defaults, **limits.get(name, {})})
+        finally:
+            con.close()
+    return out
+
+
+# -- la boucle -------------------------------------------------------------------------------------------
+def _handle_signal(signum, _frame) -> None:
+    """1er signal : on finit l'étape en cours puis on s'arrête. 2e signal : arrêt immédiat."""
+    global _signals
+    _signals += 1
+    _stop.set()
+    if _signals > 1:
+        raise SystemExit(128 + signum)
+    log.info("signal %s reçu : arrêt après l'étape en cours", signal.Signals(signum).name)
+
+
+def _sleep_until(t_wall: float) -> None:
+    """Attend jusqu'à l'heure murale `t_wall` par petits pas (l'horloge monotone s'arrête pendant la
+    veille du Mac ; l'horloge murale, non)."""
+    while not _stop.is_set():
+        left = t_wall - time.time()
+        if left <= 0:
+            return
+        _stop.wait(min(POLL_S, left))
+
+
+def _trim_log(path: Path | None = None, max_bytes: int = LOG_MAX_BYTES) -> None:
+    """Journal launchd trop gros → copié en .1 puis vidé (launchd l'écrit en ajout : la suite repart à 0)."""
+    path = path or LOG_PATH
+    try:
+        if path.exists() and path.stat().st_size > max_bytes:
+            shutil.copyfile(path, path.with_suffix(path.suffix + ".1"))
+            with open(path, "r+") as fh:
+                fh.truncate(0)
+    except OSError as e:
+        log.warning("journal non tourné : %s", e)
+
+
+def run_forever(interval_s: int = INTERVAL_S, db_path: Path | None = None,
+                limits: dict[str, dict] | None = None, max_cycles: int | None = None,
+                offset_s: int = 0) -> int:
+    """Boucle du service. Rend le nombre de cycles faits (max_cycles : pour les essais)."""
+    global _signals
+    if not isinstance(interval_s, (int, float)) or interval_s < MIN_INTERVAL_S:
+        raise ValueError(f"intervalle invalide : {interval_s!r} s (au moins {MIN_INTERVAL_S} s)")
+    _stop.clear()
+    _signals = 0
+    if threading.current_thread() is threading.main_thread():
+        for s in (signal.SIGTERM, signal.SIGINT):
+            signal.signal(s, _handle_signal)
+    with contextlib.suppress(OSError, AttributeError):
+        os.nice(NICE)
+    db = Path(db_path or store.DB_PATH)
+    log.info("veille démarrée (pid %s, intervalle %s s, base %s)", os.getpid(), interval_s, db)
+    con = store.init(db)
+    _heartbeat(con, "démarré", etat="en marche", cycles=0, interval_s=interval_s, prochain=None)
+    con.close()
+    n, last_cycle = 0, None
+    while not _stop.is_set() and (max_cycles is None or n < max_cycles):
+        _trim_log()
+        t0 = time.time()
+        res = run_cycle(db, limits, cycle=n + 1, interval_s=interval_s)
+        n += 1
+        last_cycle = _iso(time.time())
+        nxt = next_boundary(time.time(), interval_s, offset_s)
+        ok = sum(1 for r in res.values() if r.get("ok"))
+        msg = f"cycle {n} terminé : {ok}/{len(res)} étapes ok en {time.time() - t0:.0f} s"
+        log.info("%s ; prochain à %s", msg, _iso(nxt))
+        con = store.init(db)
+        _heartbeat(con, msg, etat="en marche", cycles=n, interval_s=interval_s, dernier_cycle=last_cycle,
+                   prochain=_iso(nxt), etapes_ok=ok, etapes=len(res))
+        con.close()
+        if max_cycles is not None and n >= max_cycles:
+            break
+        _sleep_until(nxt)
+    con = store.init(db)
+    _heartbeat(con, f"arrêté après {n} cycle(s)", ok=True, etat="arrêté", cycles=n, interval_s=interval_s,
+               dernier_cycle=last_cycle)
+    con.close()
+    log.info("veille arrêtée après %s cycle(s)", n)
+    return n
+
+
+# -- état du service (lu par l'API et `strate veille status`) ----------------------------------------
+def _pid_alive(pid) -> bool | None:
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # le processus existe, sous un autre utilisateur
+        return True
+    except OSError:
+        return None
+    return True
+
+
+def service_state(row: dict | None, now: float | None = None) -> dict:
+    """{"actif", "dernier_cycle", "prochain", "message"} d'après la ligne « service » de pipeline_status.
+
+    Actif = ni arrêté, ni processus disparu, et un battement récent : une étape de corrélation lance des
+    analyses satellite (5 à 12 min par mine), d'où une marge large (3 intervalles, au moins 1 h)."""
+    if not row:
+        return {"actif": False, "dernier_cycle": None, "prochain": None, "message": None}
+    c = row.get("counters") or {}
+    if isinstance(c, str):
+        try:
+            c = json.loads(c)
+        except ValueError:
+            c = {}
+    if not isinstance(c, dict):  # compteurs JSON valides mais pas un objet ([1, 2], 3…) : ignorés
+        c = {}
+    c = finite(c)
+    now = time.time() if now is None else now
+    actif = False
+    try:
+        last = datetime.strptime(str(row.get("last_run") or ""), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        age = now - last.timestamp()
+        iv = c.get("interval_s")
+        interval = iv if isinstance(iv, (int, float)) and not isinstance(iv, bool) and iv > 0 else INTERVAL_S
+        actif = c.get("etat") != "arrêté" and age <= max(3 * interval, 3600) and _pid_alive(c.get("pid")) \
+            is not False
+    except (TypeError, ValueError):
+        pass
+
+    def txt(v):  # dates et message : du texte ou rien
+        return v if isinstance(v, str) else None
+
+    return {"actif": bool(actif), "dernier_cycle": txt(c.get("dernier_cycle")),
+            "prochain": txt(c.get("prochain")), "message": txt(row.get("message"))}
+
+
+# -- launchd -----------------------------------------------------------------------------------------------
+def plist_dict(uv: str, project: Path | None = None, log_path: Path | None = None) -> dict:
+    """Définition du service. KeepAlive : launchd le relance s'il meurt ; ThrottleInterval évite une
+    boucle de redémarrages si le démarrage échoue ; ExitTimeOut (60 s) laisse finir une étape courte
+    après SIGTERM, pas une corrélation avec analyses satellite (tuée, transaction annulée par SQLite)."""
+    project, log_path = project or PROJECT_DIR, log_path or LOG_PATH
+    env = {"PATH": f"{Path(uv).parent}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+           "PYTHONUNBUFFERED": "1"}
+    if os.environ.get("STRATE_DATA"):
+        env["STRATE_DATA"] = os.environ["STRATE_DATA"]
+    return {
+        "Label": LABEL,
+        "ProgramArguments": [uv, "run", "--project", str(project), "strate", "veille", "run"],
+        "WorkingDirectory": str(project),
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": 60,
+        "ExitTimeOut": 60,
+        "ProcessType": "Background",
+        "StandardOutPath": str(log_path),
+        "StandardErrorPath": str(log_path),
+        "EnvironmentVariables": env,
+    }
+
+
+def _domain() -> str:
+    return f"gui/{os.getuid()}"
+
+
+def _launchctl(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(["launchctl", *args], capture_output=True, text=True, check=False)
+
+
+def install(dry_run: bool = False) -> dict:
+    """Écrit ~/Library/LaunchAgents/com.strate.veille.plist et le charge (launchctl bootstrap)."""
+    uv = shutil.which("uv")
+    if not uv:
+        raise RuntimeError("uv introuvable dans le PATH : installer uv avant le service")
+    # chemin absolu sans résoudre le lien : /opt/homebrew/bin/uv survit à `brew upgrade`, pas le Cellar
+    pl = plist_dict(os.path.abspath(uv))
+    if dry_run:
+        return {"plist": str(PLIST_PATH), "contenu": pl, "charge": False}
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PLIST_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _launchctl("bootout", f"{_domain()}/{LABEL}")  # réinstallation : l'ancienne version est d'abord arrêtée
+    PLIST_PATH.write_bytes(plistlib.dumps(pl))
+    r = _launchctl("bootstrap", _domain(), str(PLIST_PATH))
+    return {"plist": str(PLIST_PATH), "contenu": pl, "charge": r.returncode == 0,
+            "launchctl": (r.stderr or r.stdout).strip()}
+
+
+def uninstall() -> dict:
+    """Arrête le service (launchctl bootout) et retire son plist."""
+    r = _launchctl("bootout", f"{_domain()}/{LABEL}")
+    existed = PLIST_PATH.exists()
+    PLIST_PATH.unlink(missing_ok=True)
+    return {"arrete": r.returncode == 0, "plist_retire": existed, "launchctl": (r.stderr or r.stdout).strip()}
+
+
+def launchd_state() -> dict:
+    """État vu par launchd : chargé ?, état, pid, dernier code de sortie."""
+    if not PLIST_PATH.exists():
+        return {"installe": False, "charge": False}
+    try:
+        r = _launchctl("print", f"{_domain()}/{LABEL}")
+    except OSError as e:
+        return {"installe": True, "charge": None, "erreur": str(e)}
+    if r.returncode != 0:
+        return {"installe": True, "charge": False}
+    out: dict = {"installe": True, "charge": True}
+    for line in r.stdout.splitlines():
+        k, _, v = line.strip().partition(" = ")
+        if k in ("state", "pid", "last exit code", "runs"):
+            out[k.replace(" ", "_")] = v
+    return out

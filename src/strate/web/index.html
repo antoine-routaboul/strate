@@ -1,0 +1,1077 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Strate — Mines</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+:root{--bg:#0b0c0e;--panel:#14161a;--line:#262a31;--text:#e6e2d8;--dim:#8b8f98;--amber:#f2a93b;--red:#ff5d5d;--green:#4cc38a;--blue:#5fa8ff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace}
+header{display:flex;gap:16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line)}
+header b{color:var(--amber);letter-spacing:.15em}
+#cmd{flex:1;max-width:520px;background:#000;border:1px solid var(--line);color:var(--amber);padding:7px 10px;font:inherit;text-transform:uppercase}
+#cmd:focus{outline:1px solid var(--amber)}
+main{display:grid;grid-template-columns:minmax(320px,420px) 1fr;gap:1px;background:var(--line);min-height:calc(100vh - 50px)}
+section{background:var(--bg);padding:14px 16px;min-width:0}
+h2{font-size:11px;color:var(--dim);letter-spacing:.12em;text-transform:uppercase;margin:16px 0 8px}
+h2:first-child{margin-top:0}
+#map{height:380px;border:1px solid var(--line);background:#111}
+table{width:100%;border-collapse:collapse}
+td,th{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+th{color:var(--dim);font-weight:normal;font-size:11px}
+tr.row{cursor:pointer} tr.row:hover,tr.sel{background:var(--panel)}
+.lvl{display:inline-block;min-width:22px;text-align:center;border-radius:3px;padding:0 5px;font-weight:bold}
+.l0{background:#1d2a23;color:var(--green)}.l1{background:#3a2c12;color:var(--amber)}.l2{background:#3d1717;color:var(--red)}
+.meta{color:var(--dim)} .meta a{color:var(--blue)}
+.title{font-size:20px;color:var(--amber);margin:0}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);padding:10px}
+.card h3{margin:0 0 6px;font-size:12px;font-weight:normal;color:var(--dim)}
+.imgs{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.imgs img{width:100%;aspect-ratio:1;object-fit:cover;background:#000;border:1px solid var(--line)}
+/* le cadre reste positionné quel que soit l'état (wait / none / chargée) : sinon le message se place contre la page */
+.imgs>div{position:relative}.imgs .wait::after{content:'Chargement de l’image satellite… (≈ 20 s la première fois)';position:absolute;left:12px;top:44px;color:var(--dim)}
+.imgs .none::after{content:'Pas d’image sans nuages ce mois-là';position:absolute;left:12px;top:44px;color:var(--dim)}
+select{background:#000;color:var(--text);border:1px solid var(--line);font:inherit;padding:3px}
+.alerts td:first-child{white-space:nowrap}
+.ev{color:var(--blue)}
+@media (max-width:860px){main{grid-template-columns:1fr}}
+.search{position:relative;flex:1;max-width:520px}.search #cmd{width:100%;max-width:none}
+#results{position:absolute;top:100%;left:0;right:0;background:#000;border:1px solid var(--line);z-index:1000;max-height:360px;overflow:auto;display:none}
+#results div{padding:6px 10px;cursor:pointer}#results div:hover,#results div.on{background:var(--panel)}
+.legend span{display:inline-block;margin-right:12px}.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px}
+button{background:var(--amber);color:#000;border:0;padding:8px 14px;font:inherit;font-weight:bold;cursor:pointer}button:disabled{opacity:.5;cursor:wait}
+.kv{display:grid;grid-template-columns:150px 1fr;gap:3px 12px}.kv div:nth-child(odd){color:var(--dim)}
+.tabs{display:flex;gap:4px}.tabs a{color:var(--dim);text-decoration:none;padding:6px 10px;border:1px solid var(--line);cursor:pointer}
+.tabs a.on{color:#000;background:var(--amber);border-color:var(--amber)}
+#view-screener{display:none;padding:14px 16px;min-height:calc(100vh - 50px)}
+.filters{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:end;margin-bottom:12px}
+.filters label{display:flex;flex-direction:column;gap:3px;color:var(--dim);font-size:11px}
+.filters input,.filters select{background:#000;color:var(--text);border:1px solid var(--line);font:inherit;padding:5px 7px}
+.filters input[type=number]{width:90px}.filters input[type=text]{width:180px}
+.filters .chk{flex-direction:row;align-items:center;gap:5px;font-size:12px;color:var(--text)}
+#scr th{cursor:pointer;white-space:nowrap;position:sticky;top:0;background:var(--bg)}#scr th.s::after{content:' ▾'}#scr th.s.asc::after{content:' ▴'}
+#scr td.n{text-align:right;white-space:nowrap}#scr th.n{text-align:right}
+.scrwrap{max-height:calc(100vh - 260px);overflow:auto;border:1px solid var(--line)}
+.pager{display:flex;gap:10px;align-items:center;margin-top:10px}
+.ghost{background:transparent;color:var(--amber);border:1px solid var(--amber)}
+a.btn{display:inline-block;padding:8px 14px;border:1px solid var(--amber);color:var(--amber);text-decoration:none}
+/* -- veille : onglet, fil, pipeline, corrélations, calque carte -- */
+[hidden]{display:none!important}
+code{color:var(--amber)}
+.tdot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-left:5px;vertical-align:middle;background:var(--dim)}
+.tdot.on{background:var(--green)}.tdot.off{background:var(--red)}
+#view-veille{display:none;padding:14px 16px;min-height:calc(100vh - 50px)}
+.vhead{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 18px;margin-bottom:10px}
+.beat{display:inline-flex;align-items:center;gap:7px}.beat i{width:8px;height:8px;border-radius:50%;background:var(--dim)}
+.beat.on i{background:var(--green);animation:beat 2s infinite}.beat.off i{background:var(--red)}
+@keyframes beat{0%{box-shadow:0 0 0 0 rgba(76,195,138,.55)}70%{box-shadow:0 0 0 8px rgba(76,195,138,0)}100%{box-shadow:0 0 0 0 rgba(76,195,138,0)}}
+/* barre de 60 s : montre sans minuteur JS quand arrive la prochaine actualisation */
+.vbar{height:2px;background:var(--line);position:relative;overflow:hidden;margin-bottom:12px}
+.vbar i{position:absolute;inset:0;background:var(--amber);opacity:.7;transform-origin:left;animation:vbar 60s linear forwards}
+@keyframes vbar{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+.pipe{display:grid;grid-template-columns:1fr 34px 1fr 34px 1fr;margin-bottom:12px}
+.pipe .arrow{position:relative}
+.pipe .arrow::before{content:'';position:absolute;left:4px;right:8px;top:50%;height:1px;background:var(--line)}
+.pipe.live .arrow::before{background:repeating-linear-gradient(90deg,var(--amber) 0 5px,transparent 5px 10px);background-size:10px 1px;animation:flow .9s linear infinite}
+.pipe .arrow::after{content:'▸';position:absolute;right:0;top:50%;transform:translateY(-52%);color:var(--dim)}
+@keyframes flow{to{background-position:10px 0}}
+.stage{background:var(--panel);border:1px solid var(--line);border-top:2px solid var(--dim);padding:10px 12px;min-width:0}
+.stage.ok{border-top-color:var(--green)}.stage.err{border-top-color:var(--red)}.stage.late{border-top-color:var(--amber)}
+.stage h3{display:flex;justify-content:space-between;gap:8px;margin:0 0 4px;font-size:12px;font-weight:normal;letter-spacing:.1em;text-transform:uppercase;color:var(--amber)}
+.stage .st{font-size:11px;letter-spacing:0;text-transform:none;color:var(--dim)}
+.stage.ok .st{color:var(--green)}.stage.err .st{color:var(--red)}.stage.late .st{color:var(--amber)}
+.stage .role{color:var(--dim);font-size:11px}.stage .msg{font-size:12px;margin:6px 0;min-height:1.45em;overflow-wrap:anywhere}
+.stage .when{color:var(--dim);font-size:11px;margin-top:6px}
+.cnt{display:grid;grid-template-columns:1fr auto;gap:1px 10px;font-size:12px}
+.cnt span:nth-child(odd){color:var(--dim)}.cnt span:nth-child(even){text-align:right;font-variant-numeric:tabular-nums}
+.totals{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);margin-bottom:12px}
+.totals div{background:var(--bg);padding:8px 10px}.totals b{display:block;font-size:20px;font-weight:normal;font-variant-numeric:tabular-nums}
+.totals span{color:var(--dim);font-size:11px}
+.vempty{border-left:2px solid var(--amber);padding:6px 10px;color:var(--amber);margin:0 0 12px}
+.vgrid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:16px}
+.vcols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.feed{max-height:680px;overflow:auto;border:1px solid var(--line)}
+.fi{display:grid;grid-template-columns:96px 1fr;gap:2px 10px;padding:8px 10px;border-bottom:1px solid var(--line);border-left:2px solid var(--c,var(--dim))}
+.fi.fresh{animation:fresh 3s ease-out}@keyframes fresh{from{background:#3a2c12}to{background:transparent}}
+.fi .side{display:flex;flex-direction:column;gap:3px;align-items:flex-start}.fi time{color:var(--dim);font-size:11px}
+.fi .t a,.vsite a.lk{color:var(--text);text-decoration:none}.fi .t a:hover,.vsite a.lk:hover{color:var(--amber);text-decoration:underline}
+.fi .m{grid-column:2;color:var(--dim);font-size:11px;display:flex;flex-wrap:wrap;gap:3px 12px;align-items:center}
+.badge{display:inline-block;font-size:10px;letter-spacing:.06em;text-transform:uppercase;padding:0 5px;border:1px solid currentColor;border-radius:2px;white-space:nowrap}
+a.mine{color:var(--amber);text-decoration:none}a.mine:hover{text-decoration:underline}
+.cf{display:inline-block;width:38px;height:4px;background:var(--line);margin-right:5px;vertical-align:middle}.cf i{display:block;height:100%;background:var(--amber)}
+.tm{padding:4px 0}.tmn{display:flex;justify-content:space-between;gap:8px}.tmn span{color:var(--dim);font-variant-numeric:tabular-nums}
+.tm>i{display:block;height:3px;background:var(--amber);opacity:.65;margin-top:3px}
+.vnone{margin:6px 0 0}
+.vcorr{display:grid;grid-template-columns:minmax(0,auto) minmax(260px,1fr);gap:14px;align-items:start}
+.hmwrap{overflow:auto;max-width:100%}
+.hm{border-collapse:separate;border-spacing:2px;width:auto}
+.hm td{min-width:58px;height:26px;padding:0 4px;text-align:center;font-size:11px;border:0;cursor:pointer;font-variant-numeric:tabular-nums;white-space:nowrap}
+.hm td:hover{outline:1px solid var(--text);outline-offset:-1px}
+.hm td.demo{outline:1px solid var(--green);outline-offset:-1px;color:#fff}
+.hm td.few{color:#59606b;background:repeating-linear-gradient(45deg,#15171b 0 4px,#101215 4px 8px)}.hm td.na{cursor:default}
+.hm td.nd{color:#8b8f98;background:#15171b;border:1px dotted #3a3f47}.hm td.xp{font-style:italic}
+.hm th.main{color:var(--amber)}
+.hm th{font-size:10px;border:0;text-align:center;padding:2px 4px}.hm th.rl{text-align:right;white-space:nowrap;padding-right:8px}
+.vnote{border-left:2px solid var(--amber);padding-left:10px;max-width:980px}
+.vsite td{vertical-align:top}.vsite .meta{font-size:11px}
+.vtog{display:inline-flex;gap:6px;align-items:center;cursor:pointer;color:var(--text)}
+.vicon{background:none;border:0}
+.vev{display:block;position:relative;border-radius:50%;background:var(--c);border:1px solid #000;box-shadow:0 0 6px var(--c)}
+.vev.new::after{content:'';position:absolute;inset:-2px;border-radius:50%;border:2px solid var(--c);animation:ping 1.8s ease-out infinite}
+@keyframes ping{from{transform:scale(1);opacity:.9}to{transform:scale(3.4);opacity:0}}
+.leaflet-popup-content-wrapper,.leaflet-popup-tip{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:2px}
+.leaflet-popup-content{font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;margin:10px 12px}
+.leaflet-popup-content a{color:var(--blue)}.leaflet-popup-content a.mine{color:var(--amber)}
+.vpop ul{margin:6px 0 0;padding:0;list-style:none}.vpop li{padding:3px 0;border-top:1px solid var(--line)}
+@media (max-width:1100px){.vgrid,.vcorr{grid-template-columns:1fr}}
+@media (max-width:860px){.pipe{grid-template-columns:1fr;gap:8px}.pipe .arrow{display:none}.vcols{grid-template-columns:1fr}.fi{grid-template-columns:1fr}.fi .m{grid-column:1}}
+@media (prefers-reduced-motion:reduce){.beat.on i,.vbar i,.pipe.live .arrow::before,.fi.fresh,.vev.new::after{animation:none}}
+</style>
+</head>
+<body>
+<header><b>STRATE</b><div class="search"><input id="cmd" placeholder="Chercher parmi toutes les mines du monde — ex. ESCONDIDA" autocomplete="off"><div id="results"></div></div><nav class="tabs"><a data-v="map" class="on">Carte</a><a data-v="screener">Screener</a><a data-v="veille">Veille<i id="v_dot" class="tdot"></i></a></nav><span class="meta" id="jobs"></span><span class="meta" id="status"></span></header>
+<main id="view-map">
+<section>
+  <h2>Carte du monde — <span id="count">…</span></h2><div id="map"></div>
+  <p class="meta legend"><span><i class="dot" style="background:#f2a93b"></i>mine active (ICMM)</span><span><i class="dot" style="background:#5fa8ff"></i>usine / fonderie / raffinerie</span><span><i class="dot" style="background:#8b8f98"></i>mine Wikidata</span><span><i class="dot" style="background:#b07cff"></i>emprise sans nom</span><span><i class="dot" style="border:2px solid #ff5d5d;width:10px;height:10px"></i>mine suivie (radar)</span></p>
+  <p class="meta"><label class="vtog"><input type="checkbox" id="v_layer">Actualité de la veille (30 jours ; un point par mine, pulsation = moins de 48 h)</label> <span id="v_lmsg"></span></p>
+  <p class="meta legend vleg" id="v_legend" hidden></p>
+  <h2>Radar — mines suivies (données de moins de 6 mois)</h2>
+  <table id="radar"><thead><tr><th>Niv.</th><th>Mine</th><th>Mois</th><th>Pourquoi</th></tr></thead><tbody></tbody></table>
+  <p class="meta">Niveau 0 = calme · 1 = une famille de signaux anormale · 2 = plusieurs familles indépendantes en même temps.<br><b>Attention :</b> une alerte satellite signale un changement physique du site, pas un changement de production : ces alertes mensuelles n'ont pas été confrontées à la production réelle.</p>
+  <h2>Sources du catalogue</h2><div id="sources" class="meta"></div>
+</section>
+<section id="detail"><p class="meta">Cliquez une mine sur la carte ou cherchez-la.</p></section>
+</main>
+<div id="view-screener">
+  <div class="filters">
+    <label>Recherche<input type="text" id="f_q" placeholder="nom, propriétaire, région"></label>
+    <label>Pays<input type="text" id="f_pays" list="l_pays" placeholder="tous"><datalist id="l_pays"></datalist></label>
+    <label>Commodité<select id="f_com"><option value="">toutes</option></select></label>
+    <label>Catégorie<select id="f_cat"><option value="">toutes</option></select></label>
+    <label>Emprise min (km²)<input type="number" id="f_emin" min="0" step="0.5"></label>
+    <label>Emprise max (km²)<input type="number" id="f_emax" min="0" step="0.5"></label>
+    <label>Prod. estimée min (Mt/an)<input type="number" id="f_pmin" min="0" step="0.5"></label>
+    <label class="chk"><input type="checkbox" id="f_emp">avec emprise</label>
+    <label class="chk"><input type="checkbox" id="f_real">avec production réelle</label>
+    <label class="chk" title="signaux satellite de moins de 6 mois ; les mines de calibration (2016–2019) n'en font pas partie"><input type="checkbox" id="f_ana">analyse récente</label>
+    <label class="chk"><input type="checkbox" id="f_alert">en alerte</label>
+    <label class="chk"><input type="checkbox" id="f_bbox">zone visible sur la carte</label>
+    <button class="ghost" id="f_reset">Réinitialiser</button>
+  </div>
+  <div class="pager" style="margin:0 0 10px"><span id="scr_total" class="meta"></span>
+    <a class="btn" id="scr_csv" href="#">Exporter en CSV</a>
+    <button id="scr_go">Analyser les 10 premières sans analyse récente</button><span class="meta" id="scr_msg"></span></div>
+  <div class="scrwrap"><table id="scr"><thead><tr>
+    <th data-s="nom">Mine</th><th data-s="pays">Pays</th><th data-s="categorie">Catégorie</th><th data-s="commodite_principale">Commodités</th>
+    <th data-s="emprise_km2" class="n">Emprise km²</th><th data-s="prod_estimee_t" class="n s">Prod. estimée /an</th><th class="n">Intervalle 90 %</th>
+    <th data-s="prod_reelle_t" class="n">Prod. réelle publiée</th><th data-s="niveau">Alerte</th></tr></thead><tbody></tbody></table></div>
+  <div class="pager"><button class="ghost" id="pg_prev">←</button><span id="pg_info" class="meta"></span><button class="ghost" id="pg_next">→</button></div>
+  <p class="meta" id="scr_note"></p>
+</div>
+<div id="view-veille">
+  <div class="vhead"><p class="title">La veille</p>
+    <span class="meta">Chaîne d’agents sans IA, 24 h/24 : actualité minière mondiale (GDELT, ~65 langues) → rattachement aux mines → signaux satellite</span>
+    <span class="beat" id="v_beat"><i></i><span id="v_beat_t">…</span></span><span class="meta" id="v_upd"></span></div>
+  <div class="vbar" id="v_bar"><i></i></div>
+  <div class="pipe" id="v_pipe"><p class="meta">Chargement…</p></div>
+  <div class="totals" id="v_tot"></div>
+  <p class="vempty" id="v_empty" hidden></p>
+  <div class="vgrid">
+    <div>
+      <h2>Fil d’actualité — <span id="v_total">…</span></h2>
+      <div class="filters">
+        <label>Type<select id="vf_type"><option value="">tous</option></select></label>
+        <label>Langue<select id="vf_lang"><option value="">toutes</option></select></label>
+        <label>Pays<select id="vf_country"><option value="">tous</option></select></label>
+        <label>Confiance min. <output id="vf_conf_o">0,5</output><input type="range" id="vf_conf" min="0" max="1" step="0.05" value="0.5"></label>
+        <label>Période<select id="vf_days"><option value="1">24 h</option><option value="7">7 jours</option><option value="30" selected>30 jours</option><option value="90">90 jours</option><option value="365">1 an</option><option value="0">tout</option></select></label>
+        <button class="ghost" id="vf_map">Voir sur la carte</button>
+      </div>
+      <div class="feed" id="v_feed"><p class="meta" style="padding:0 10px">Chargement…</p></div>
+    </div>
+    <div>
+      <h2 id="v_day_h">Événements par jour, par type</h2>
+      <div class="card"><canvas id="v_day" height="170"></canvas><p class="meta vnone" id="v_day_e"></p></div>
+      <div class="vcols">
+        <div><h2>Par langue d’origine</h2><div class="card"><canvas id="v_lang" height="210"></canvas><p class="meta vnone" id="v_lang_e"></p></div></div>
+        <div><h2>Mines les plus citées</h2><div class="card" id="v_top"></div></div>
+      </div>
+    </div>
+  </div>
+  <h2>Corrélations actualité ↔ satellite (étude d’événements)</h2>
+  <p class="meta" id="v_corrmeta"></p>
+  <div class="vcorr"><div class="hmwrap" id="v_corr"></div><div class="card" id="v_cdet"></div></div>
+  <div id="v_ctop" style="margin-top:12px"></div>
+  <p class="meta vnote"><b>À lire comme une exploration, pas une preuve.</b> Chaque case compare, sur les mines suivies
+    et analysées, la probabilité d’une anomalie satellite persistante (|z| ≥ 2) les mois où la mine fait l’actualité
+    (type donné) à celle des autres mois de la même mine : <b>lift</b> = rapport de risques de Mantel–Haenszel, 1 = aucun
+    lien (ρ = corrélation de rang intra-mine pour le volume d’actualité). Pour chaque mine, seuls comptent les mois où son
+    actualité était réellement collectée. Test : <b>Cochran–Mantel–Haenszel</b> stratifié par mine (un tableau 2×2 par
+    mine) ; intervalle à 90 % par bootstrap sur les mines ; correction de continuité 0,5 quand une case est vide.
+    Seul le <b>décalage 0</b> (même mois, colonne ★) forme la famille principale : sa <b>q-valeur</b> corrige les
+    comparaisons multiples (Benjamini-Hochberg) et « lien démontré » (★) n’y apparaît que si <b>q &lt; 0,10</b> et
+    l’intervalle exclut 1. Décalages −3 à +3 (−2 : anomalie 2 mois <i>avant</i> l’article ; +2 : 2 mois <i>après</i>),
+    en italique : calculés avec leur propre correction, toujours « exploratoire », on n’en conclut rien.
+    Hachuré : trop peu de données (moins de 5 mines ou de 10 mois-événements) ; n/d : effet non calculable.
+    Même démontré, un lien est une coïncidence statistique, pas une causalité.</p>
+  <h2>Mines suivies par la veille — <span id="v_ntr">…</span></h2>
+  <div class="scrwrap" style="max-height:420px"><table id="v_tracked"><thead><tr><th>Mine</th><th>Pourquoi</th><th>Suivie depuis</th>
+    <th>Dernier événement</th><th class="n">Événements</th><th>Analyse satellite</th></tr></thead><tbody></tbody></table></div>
+</div>
+<script>
+const $=s=>document.querySelector(s), api=(p,o)=>fetch(p,o).then(r=>{if(!r.ok)throw r;return r.json()});
+let charts=[], poll=null, CAL={}, CURRENT=null, OPEN_SEQ=0;
+const LBL={bare_km2:'Surface nue (km²)',water_km2:'Surface en eau (km²)',change_km2:'Empreinte minière modifiée sur 1 an (km²)',new_bare_km2:'Surface nouvellement défrichée sur 1 an (km²)',site_views:'Vues Wikipedia — mine',owner_views:'Vues Wikipedia — propriétaire(s)',activity_db:'Activité radar, mine − environnement (dB) — expérimental, non validé'};
+const COL=['#f2a93b','#5fa8ff','#8b8f98','#b07cff'];
+const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt=(v,d=1)=>v==null||!isFinite(v)?'—':Number(v).toLocaleString('fr-FR',{maximumFractionDigits:d});
+// calibration.json évolue avec les recalibrations : chaque champ est lu prudemment (absent → texte sans chiffre)
+const num=v=>typeof v==='number'&&isFinite(v)?v:null, firstOf=v=>Array.isArray(v)?v[0]:v;
+const pick=(...vs)=>vs.map(num).find(v=>v!=null)??null;
+// api() rejette la Response quand le serveur répond une erreur, une TypeError quand il ne répond pas
+const errTxt=e=>e instanceof Response?(e.status===404?'introuvable (404)':`erreur serveur (${e.status})`)
+  :e instanceof TypeError&&/fetch|network|load failed/i.test(e.message)?'serveur injoignable':'erreur inattendue (voir la console)';
+const plur=(n,s)=>n>1?s.replace(/(\S+)/g,'$1s'):s;  // « mine mise » → « mines mises »
+
+const map=L.map('map',{preferCanvas:true,worldCopyJump:true}).setView([20,10],2);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:14,attribution:'© OpenStreetMap'}).addTo(map);
+const renderer=L.canvas({padding:.5}); let hi=null;
+
+async function init(){
+  const [pts,stats,rad,cal]=await Promise.all([api('/api/catalog/points'),api('/api/catalog/stats'),api('/api/radar'),api('/api/calibration')]); CAL=cal||{};
+  $('#count').textContent=`${fmt(stats.total,0)} sites dans ${stats.pays||0} pays`;
+  $('#sources').innerHTML=`${fmt(stats.mines_actives_icmm,0)} mines actives nommées · ${fmt(stats.usines_fonderies_raffineries,0)} usines/fonderies/raffineries · ${fmt(stats.mines_wikidata,0)} mines Wikidata · ${fmt(stats.emprises_sans_nom,0)} emprises satellite sans nom<br>${fmt(stats.avec_emprise_satellite,0)} avec emprise réelle · ${fmt(stats.avec_production_reelle,0)} avec production réelle · ${fmt(stats.avec_article_wikipedia,0)} avec article Wikipedia<br><br>`+(stats.sources||[]).map(esc).join('<br>');
+  // bindTooltip(chaîne) passe par innerHTML : les noms viennent de Wikidata (éditable par tous), donc esc()
+  for(const [id,la,lo] of pts) PTS.set(id,[la,lo]);  // calque veille : position catalogue de la mine citée
+  for(const k of [2,3,1,0]) for(const [id,la,lo,kind,name] of pts){ if(kind!==k)continue;
+    L.circleMarker([la,lo],{renderer,radius:k===0?3:2.2,stroke:false,fillColor:COL[kind],fillOpacity:.85}).on('click',()=>open(id)).bindTooltip(esc(name||'Emprise minière sans nom')).addTo(map); }
+  const wl=await api('/api/sites');
+  for(const s of wl){ PTS.set(s.id,[s.lat,s.lon]);
+    L.circleMarker([s.lat,s.lon],{renderer,radius:6,color:'#ff5d5d',weight:2,fillOpacity:.2}).on('click',()=>open(s.id)).bindTooltip(esc(s.nom)).addTo(map); }
+  drawRadar(rad);
+  if(location.hash.length>1) open(decodeURIComponent(location.hash.slice(1)));
+}
+function drawRadar(rad){
+  $('#radar tbody').innerHTML=rad.map(r=>`<tr class="row${r.site===CURRENT?' sel':''}" data-id="${esc(r.site)}"><td><span class="lvl l${Math.min(r.niveau,2)}">${r.niveau}</span></td><td>${esc(r.nom)}</td><td>${esc(String(r.date).slice(0,7))}</td><td class="meta">${esc(r.explication)||'—'}</td></tr>`).join('');
+  document.querySelectorAll('#radar tr.row').forEach(tr=>tr.onclick=()=>open(tr.dataset.id));
+}
+
+// -- recherche ------------------------------------------------------------------------
+// /api/search tourne dans un pool de threads : les réponses peuvent revenir dans le désordre. Chaque frappe
+// (ou choix, ou Échap) incrémente QSEQ ; seule la réponse de la dernière frappe a le droit d'afficher.
+let tmo=null, QSEQ=0;
+const RES=$('#results');
+function hideResults(){QSEQ++;clearTimeout(tmo);RES.style.display='none';RES.innerHTML='';delete RES.dataset.q;}
+function pickResult(id){hideResults();$('#cmd').value='';open(id);}
+$('#cmd').addEventListener('input',e=>{const q=e.target.value.trim();if(q.length<2){hideResults();return;}
+  clearTimeout(tmo); const my=++QSEQ;
+  tmo=setTimeout(async()=>{let r=null;
+    try{r=await api('/api/search?q='+encodeURIComponent(q));}catch(err){console.error(err);}
+    if(my!==QSEQ) return;  // une frappe plus récente a rendu cette réponse caduque
+    RES.dataset.q=q;
+    RES.innerHTML=r==null?'<div class="meta">Recherche indisponible</div>':r.map((x,i)=>`<div data-id="${esc(x.id)}" class="${i?'':'on'}">${esc(x.nom||'Emprise sans nom')} <span class="meta">${esc(x.pays||'')}${x.suivi?' · suivie':''}</span></div>`).join('')||'<div class="meta">Aucun résultat</div>';
+    RES.style.display='block';
+    RES.querySelectorAll('div[data-id]').forEach(d=>d.onclick=()=>pickResult(d.dataset.id));},200);});
+$('#cmd').addEventListener('keydown',e=>{
+  // Entrée n'ouvre que la liste visible ET calculée pour le texte actuel, jamais un reste d'ancienne recherche
+  if(e.key==='Enter'&&RES.style.display==='block'&&RES.dataset.q===$('#cmd').value.trim()){const d=RES.querySelector('div.on[data-id]');if(d)pickResult(d.dataset.id);}
+  if(e.key==='Escape')hideResults();});
+
+// -- fiche d'une mine -------------------------------------------------------------------
+// open() enchaîne plusieurs requêtes : si l'utilisateur ouvre une autre mine entre-temps, la réponse tardive
+// ne doit rien toucher (fiche, carte, graphiques, suivi). Chaque appel prend un jeton ; seul le dernier vit.
+async function open(id){
+  const tok=++OPEN_SEQ, live=()=>tok===OPEN_SEQ;
+  clearInterval(poll); poll=null; CURRENT=id; location.hash=id;
+  if($('#view-map').style.display==='none') show('map');  // recherche ou « précédent » depuis l'onglet Screener
+  document.querySelectorAll('#radar tr').forEach(tr=>tr.classList.toggle('sel',tr.dataset.id===id));
+  charts.forEach(c=>c.destroy()); charts=[];
+  $('#detail').innerHTML='<p class="meta">Chargement de la fiche…</p>';
+  try{ await renderSite(id,live); }
+  catch(e){ if(!live()) return; console.error(e);
+    charts.forEach(c=>c.destroy()); charts=[];
+    $('#detail').innerHTML=`<p class="title">${esc(id)}</p><p class="meta">Impossible d'ouvrir cette fiche : ${esc(errTxt(e))}.</p>`; }
+}
+async function renderSite(id,live){
+  const s=await api('/api/site?site='+encodeURIComponent(id));
+  if(!live()) return;
+  // jumeau catalogue d'une mine suivie : le serveur renvoie la fiche suivie. Dossier, images et suivi d'analyse
+  // partent de son id (sinon dossier vide et suivi d'un id que le serveur ne met jamais en file)
+  if(s.id&&s.id!==id){ id=s.id; CURRENT=id; location.hash=id;
+    document.querySelectorAll('#radar tr').forEach(tr=>tr.classList.toggle('sel',tr.dataset.id===id)); }
+  map.setView([s.lat,s.lon],Math.max(map.getZoom(),10));
+  if(hi) map.removeLayer(hi);
+  hi=L.rectangle(L.latLng(s.lat,s.lon).toBounds(2*s.rayon_m),{color:'#ff5d5d',weight:1.5,fill:false}).addTo(map);
+  const wiki=s.wikipedia?` · <a href="https://en.wikipedia.org/wiki/${esc(s.wikipedia)}" target="_blank" rel="noopener">Wikipedia</a>`:'';
+  const wd=s.wikidata?` · <a href="https://www.wikidata.org/wiki/${esc(s.wikidata)}" target="_blank" rel="noopener">Wikidata</a>`:'';
+  const sc=String(s.source_coordonnees||'');
+  const src=sc.startsWith('http')?`<a href="${esc(sc)}" target="_blank" rel="noopener">source</a>`:esc(sc);
+  let html=`<p class="title">${esc(s.nom)}</p>
+    <div class="kv"><div>Pays</div><div>${esc(s.pays)}${s.region?', '+esc(s.region):''}</div><div>Commodités</div><div>${esc(s.metaux)}</div>
+    <div>Type / statut</div><div>${esc(s.type||s.stade)}${s.confiance?' · confiance '+esc(s.confiance):''}</div><div>Propriétaire(s)</div><div>${esc(s.proprietaires)}</div>
+    <div>Emprise réelle</div><div>${s.emprise_km2?fmt(s.emprise_km2,2)+' km² (contours satellite Maus 2022)':'non cartographiée'}</div>
+    <div>Zone analysée</div><div>carré de ${fmt(2*s.rayon_m/1000,1)} km de côté</div>
+    <div>Coordonnées</div><div>${s.lat.toFixed(4)}, ${s.lon.toFixed(4)} · ${src}${wiki}${wd}</div>
+    <div>Sources</div><div>${esc(s.sources)}${s.production_reelle?' · production réelle disponible':''}</div>
+    ${s.derniere_date?`<div>Signaux satellite</div><div>jusqu'à ${esc(s.derniere_date)}${s.analyse?'':' (anciens)'}</div>`:''}</div>`;
+  const st=s.statut_analyse||'', busy=st.startsWith('en');
+  // « analyse » = signaux de moins de ~6 mois. Une mine qui n'a que des signaux anciens (calibration 2016–2019)
+  // garde sa fiche de signaux mais doit pouvoir être mise à jour ; une analyse en cours ou en erreur est
+  // affichée même sur une fiche analysée (l'optique est enregistrée avant l'attention et le radar).
+  const block=!s.analyse||busy||st.startsWith('erreur');
+  const vs=veilleOf(s);  // actualité de la mine (veille) : null = serveur sans veille, {fetch:true} = à demander
+  if(!s.analyse&&!s.donnees_anciennes){
+    html+=prodEstimate(s)+analyseBlock(s)+vSiteBlock(vs);
+    html+=`<h2>Image satellite récente</h2><div class="imgs"><div class="wait"><img id="i1" alt="image satellite récente"></div><div class="meta" id="i1m"></div></div>`;
+    if(s.production_reelle) html+=`<h2>Production réelle (Jasansky et al. 2023)</h2><div class="card"><canvas id="prod" height="140"></canvas></div>`;
+    charts.forEach(c=>c.destroy()); charts=[];
+    $('#detail').innerHTML=html;
+    tryImg($('#i1'),id,recentMonths(s.lat),$('#i1m'));
+    if(s.production_reelle) prodChart(id,s.metaux,$('#prod'));
+    vSiteAfter(vs,id,live);
+    armAnalyse(id,busy);
+    return;
+  }
+  $('#detail').innerHTML=`<p class="title">${esc(s.nom)}</p><p class="meta">Chargement des signaux…</p>`;
+  const [dos,ev]=await Promise.all([api('/api/dossier?site='+encodeURIComponent(id)),api('/api/events?site='+encodeURIComponent(id))]);
+  if(!live()) return;
+  const months=dos.filter(r=>r.bare_km2!=null).map(r=>r.date.slice(0,7));
+  const first=months.find(m=>/-0[89]$/.test(m))||months[0], last=[...months].reverse().find(m=>/-0[89]$/.test(m))||months.at(-1);
+  const opt=ms=>ms.map(m=>`<option>${m}</option>`).join('');
+  const alerts=dos.filter(r=>r.level>=1||r.evenement_connu).reverse();
+  const marks=vs&&!vs.fetch?vMarks(vs):[];
+  html+=prodEstimate(s)+(block?analyseBlock(s):'')+calNote()+vSiteBlock(vs);
+  html+=`<h2>Changements physiques du site (satellite)</h2><div class="charts">${Object.keys(LBL).map(k=>`<div class="card"><h3>${LBL[k]}</h3><canvas id="c_${k}" height="150"></canvas></div>`).join('')}</div>
+    ${vs?`<p class="meta" id="v_marknote">${marks.length?MARKNOTE:''}</p>`:''}
+    ${s.production_reelle?`<h2>Production réelle (Jasansky et al. 2023)</h2><div class="card"><canvas id="prod" height="140"></canvas></div>`:''}
+    <h2>Avant / après (Sentinel-2, couleurs naturelles)</h2>
+    <div class="imgs"><div><select id="m1">${opt(months)}</select><img id="i1" alt="image satellite avant"></div><div><select id="m2">${opt(months)}</select><img id="i2" alt="image satellite après"></div></div>
+    <h2>Alertes et événements</h2>
+    <table class="alerts"><thead><tr><th>Mois</th><th>Niv.</th><th>Détail</th></tr></thead><tbody>${alerts.map(r=>`<tr><td>${r.date.slice(0,7)}</td><td><span class="lvl l${Math.min(r.level,2)}">${r.level}</span></td><td>${esc(r.explication)}${r.evenement_connu?` <span class="ev">◆ ${esc(r.evenement_connu)}</span>`:''}</td></tr>`).join('')||'<tr><td colspan=3 class="meta">Aucune</td></tr>'}</tbody></table>
+    ${ev.length?`<h2>Contrôle sur événements connus</h2><table><tbody>${ev.map(e=>`<tr><td>${esc(e.date)}</td><td>${esc(e.evenement)}</td><td>${e.detecte?'<span class="lvl l0">détecté</span>':'<span class="lvl l2">manqué</span>'}</td></tr>`).join('')}</tbody></table>`:''}
+    <p class="meta">Sources : Copernicus Sentinel-2 L2A (Microsoft Planetary Computer), Wikimedia Pageviews. Seuils non encore calibrés : à lire comme des pistes, pas des conclusions.</p>`;
+  charts.forEach(c=>c.destroy()); charts=[];
+  $('#detail').innerHTML=html;
+  const set=(sel,img,m)=>{$(sel).value=m;const im=$(img),box=im.parentElement;box.className='wait';im.onload=()=>box.className='';im.onerror=()=>box.className='none';im.src=`/api/thumbnail?site=${encodeURIComponent(id)}&month=${m}`;};
+  if(months.length){set('#m1','#i1',first);set('#m2','#i2',last);}
+  $('#m1').onchange=e=>set('#m1','#i1',e.target.value); $('#m2').onchange=e=>set('#m2','#i2',e.target.value);
+  for(const k of Object.keys(LBL)){
+    // a_ = z retenu (persistant, 0 pour un mois isolé) : décide des points d'alerte ; z_ = z brut, montré au survol
+    const pts=dos.filter(r=>r[k]!=null), sig={a:pts.map(r=>r['a_'+k]??null),z:pts.map(r=>r['z_'+k]??null)};
+    charts.push(line($('#c_'+k),pts.map(r=>r.date.slice(0,7)),pts.map(r=>r[k]),sig,k.endsWith('views'),marks));
+  }
+  if(s.production_reelle) prodChart(id,s.metaux,$('#prod'));
+  vSiteAfter(vs,id,live);
+  if(block) armAnalyse(id,busy);
+}
+// Bloc « Analyse » : libellé selon l'état (jamais analysée / signaux anciens / analysée mais relancée ou en
+// erreur). data-label garde le libellé pour le rétablir si le lancement échoue.
+function analyseBlock(s){
+  const st=s.statut_analyse||'', busy=st.startsWith('en'), d=s.derniere_date?esc(s.derniere_date):'';
+  const label=s.analyse?'Relancer l’analyse':s.donnees_anciennes?'Mettre à jour l’analyse':'Analyser ce site';
+  const why='L’analyse calcule son activité satellite optique et radar mois par mois depuis 2020 (≈ 5 à 12 min).';
+  const note=s.analyse?(busy?'Analyse en cours : l’attention Wikipedia et le radar s’ajoutent après l’optique, la fiche se met à jour seule à la fin.'
+      :'La dernière analyse a échoué : certaines courbes peuvent manquer.')
+    :s.donnees_anciennes?`<b>Données anciennes</b> : les signaux satellite de cette mine s’arrêtent en ${d||'?'} (échantillon de calibration), rien de récent. Les courbes ci-dessous décrivent ce passé. ${why}`
+    :`Cette mine n'a pas encore été analysée. ${why}`;
+  return `<h2>Analyse</h2><p class="meta">${note}</p>
+      <button id="go" data-label="${esc(label)}" ${busy?'disabled':''}>${busy?esc(st):esc(label)}</button> <span class="meta" id="jst">${st&&!busy?esc(st):''}</span>`;
+}
+function armAnalyse(id,busy){ const go=$('#go'); if(!go) return; go.onclick=()=>launch(id); if(busy) watch(id); }
+// Mois candidats de l'« image récente », calculés depuis aujourd'hui : mois complets des 18 derniers (le mois en
+// cours n'a pas toutes ses scènes), saison la plus claire de l'hémisphère d'abord (été boréal sans neige au nord,
+// saison sèche au sud), puis le dernier mois complet. 4 essais au plus : chaque vignette absente coûte ≈ 20 s.
+function recentMonths(lat,now=new Date()){
+  const pref=lat>0?[7,8,9]:[9,10,3], ms=[];
+  for(let k=1;k<=18;k++){ const d=new Date(now.getFullYear(),now.getMonth()-k,1);
+    ms.push({m:`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`,p:pref.includes(d.getMonth()+1)}); }
+  const best=ms.filter(x=>x.p).map(x=>x.m);
+  return [...new Set([...best.slice(0,3),ms[0].m,...best.slice(3)])].slice(0,4);
+}
+const pct=v=>v==null||!isFinite(v)?'—':Math.round(v*100)+' %';
+function tonnes(v){return v==null||!isFinite(v)?'—':v>=1e6?fmt(v/1e6,v<1e7?1:0)+' Mt':fmt(v/1e3,0)+' kt';}
+// Seule estimation servie : le modèle d'emprise (taille des contours Maus). L'estimation d'après la surface nue
+// Sentinel est retirée : elle mesurait surtout la taille du carré d'analyse, pas l'activité.
+function prodEstimate(s){
+  const f=s.production_emprise; if(!f||num(f.tonnes_an)==null) return '';
+  const f90=num(f.facteur_90), ch=f.type==='charbon'?num(CAL.modele_emprise?.charbon?.slope):null;
+  return `<h2>Production estimée d'après l'emprise — ordre de grandeur</h2>
+    <div class="card"><p style="font-size:18px;margin:0 0 6px;color:var(--amber)">≈ ${tonnes(f.tonnes_an)} de ${esc(f.type)} par an</p>
+    <p class="meta" style="margin:0">Intervalle à 90 % : ${tonnes(f.bas_90)} à ${tonnes(f.haut_90)} · erreur typique × ${fmt(f.facteur_typique,1)}${f90!=null?`, 9 fois sur 10 sous × ${fmt(f90,1)}`:''}<br>
+    D'après ${fmt(f.emprise_km2,1)} km² d'emprise réelle (contours satellite Maus, images 2019), modèle calibré sur ${f.mines_calibration??'?'} mines à production connue.
+    C'est la taille de l'emprise qui donne l'échelle, pas une mesure Sentinel : très imprécis par nature, la taille d'une mine dit son échelle, pas son rendement.${ch!=null&&ch<0.4?` Pour le charbon, l'estimation varie peu avec la taille (pente ${fmt(ch,2)}) : elle reste proche de la mine de charbon médiane.`:''}</p></div>`;
+}
+function calNote(){
+  const n=num(CAL.mines); if(n==null) return '';
+  const fw=Array.isArray(CAL.fenetre)&&CAL.fenetre.length===2?` (${esc(CAL.fenetre[0])}–${esc(CAL.fenetre[1])})`:'';
+  const me=CAL.modele_emprise||{}, v=CAL.variation||{}, a=CAL.alertes||{}, ta=CAL.taille||{};
+  // Le modèle d'emprise a sa propre population (mines de minerai / de charbon, production médiane 2017–2020 :
+  // calibrate.footprint_model), distincte des mines de la calibration satellite : chaque chiffre est attribué
+  // à son échantillon, sinon la page présente deux études comme une seule.
+  const mod=[['minerai','de minerai'],['charbon','de charbon']].map(([k,t])=>{const r=num(me[k]?.rho), m=num(me[k]?.n);
+    return r==null?null:`${fmt(r,2)}${m!=null?` sur ${fmt(m,0)} mines ${t}`:` (${k})`}`;}).filter(Boolean).join(', ');
+  // sur l'échantillon de calibration : la taille seule de la fenêtre d'analyse, puis la part de sol nu
+  // (ce que Sentinel-2 mesure vraiment), si la calibration les publie
+  const rfw=num(ta.fenetre_seule?.rho), nfw=num(ta.fenetre_seule?.mines);
+  const rfr=pick(ta.fraction_nue?.rho,CAL.fraction_nue?.rho);
+  const rv=num(v.rho), bs=num(firstOf(v.bon_sens)), prec=num(firstOf(a.precision)), base=num(a.taux_de_base);
+  const out=[`<b>Calibration satellite</b> sur ${n} mines à production réelle connue${fw}.`,
+    `L'échelle de production se lit sur la <b>taille de l'emprise</b>, pas sur une mesure propre au satellite${mod?` (modèle d'emprise, contours Maus, autre échantillon, production 2017–2020 : corrélation ${mod})`:''}.`,
+    `Sur les mines de la calibration satellite, ${rfw!=null?`la seule taille de la fenêtre d'analyse donne déjà une corrélation de ${fmt(rfw,2)}${nfw!=null?` (${fmt(nfw,0)} mines)`:''} ; `:''}la part de sol nu mesurée par Sentinel-2 ne suit la production que faiblement${rfr!=null?` (corrélation ${fmt(rfr,2)})`:''}.`];
+  if(rv!=null) out.push(`Les variations annuelles de la surface nue ne suivent pas celles de la production (corrélation ${fmt(rv,2)}${bs!=null?` ; sens correct dans ${pct(bs)} des cas`:''}).`);
+  // ce chiffre mesure une règle annuelle sur la surface nue, pas les alertes mensuelles affichées plus bas
+  if(prec!=null) out.push(`Une variation annuelle de plus de 10 % de la surface nue ne coïncide avec une vraie variation de production (&gt; 20 %) que dans ${pct(prec)} des cas${base!=null?`, contre ${pct(base)} au hasard`:''}.`);
+  out.push(`Les alertes mensuelles affichées ici (z saisonnier ≥ 2, persistant) n'ont <b>pas</b> été confrontées à la production.
+    Ces courbes décrivent donc l'évolution physique du site (expansion, résidus, défrichement), pas sa production.`);
+  return `<p class="meta" style="border-left:2px solid var(--amber);padding-left:10px">${out.join('\n    ')}</p>`;
+}
+// sig = {a, z} : a (z retenu, persistant) place les points d'alerte ; z (brut) s'affiche au survol.
+// Un mois isolé a a = 0 : afficher a ferait lire « z = 0,0 » pour une anomalie réelle mais non confirmée.
+// marks = repères d'actualité de la veille [{m:'AAAA-MM', c:couleur, t:{type:n}}] : traits verticaux (vMarkPlugin)
+// et ligne de pied de l'infobulle. Rangés sur le graphique ($vmarks) pour être posés après coup si l'actualité
+// arrive après les courbes.
+function line(el,labels,data,sig,log,marks){
+  const a=sig?.a, z=sig?.z, alert=v=>v!=null&&Math.abs(v)>=2;
+  const ch=new Chart(el,{type:'line',data:{labels,datasets:[{data,borderColor:'#f2a93b',borderWidth:1.5,
+    pointRadius:a?a.map(v=>alert(v)?4:0):2,pointBackgroundColor:a?a.map(v=>v>0?'#ff5d5d':'#5fa8ff'):'#f2a93b',tension:.2,spanGaps:true}]},
+    options:{animation:false,plugins:{legend:{display:false},tooltip:{callbacks:{afterLabel:c=>{const v=z?.[c.dataIndex];if(v==null)return '';
+      return 'z = '+v.toFixed(1)+(alert(v)&&!alert(a?.[c.dataIndex])?' (mois isolé : non retenu comme alerte)':'');},footer:vFooter}}},
+    scales:{x:{ticks:{color:'#8b8f98',maxTicksLimit:8},grid:{color:'#1c1f24'}},y:{type:log?'logarithmic':'linear',ticks:{color:'#8b8f98'},grid:{color:'#1c1f24'}}}},
+    plugins:[vMarkPlugin]});
+  ch.$vmarks=marks||[];
+  return ch;
+}
+const FR={copper:'cuivre',gold:'or',silver:'argent',zinc:'zinc',lead:'plomb',nickel:'nickel',iron:'fer','iron ore':'fer',molybdenum:'molybdène',cobalt:'cobalt',uranium:'uranium',platinum:'platine',palladium:'palladium',lithium:'lithium',tin:'étain',manganese:'manganèse'};
+// cv = le canevas de LA fiche qui a demandé la série : si une autre fiche l'a remplacé pendant la requête,
+// il n'est plus dans le document et on n'y dessine rien (sinon série d'une autre mine, puis « Canvas is already in use »).
+async function prodChart(id,metaux,cv){
+  if(!cv) return;
+  let p; try{p=await api('/api/production?site='+encodeURIComponent(id));}catch(e){console.error(e);return;}
+  if(!cv.isConnected||!p.length) return;
+  const tot={}; p.forEach(r=>tot[r.serie]=(tot[r.serie]||0)+1);
+  // série principale : minerai extrait > minerai traité > charbon > métal le plus documenté
+  const main=(metaux||'').split(',').map(m=>FR[m.trim().toLowerCase()]).filter(Boolean).map(m=>m+' (métal)').find(s=>tot[s]);
+  const pref=['minerai extrait','minerai traité','charbon'].find(s=>tot[s])||main||Object.keys(tot).sort((a,b)=>tot[b]-tot[a])[0];
+  const rows=p.filter(r=>r.serie===pref).sort((a,b)=>a.year-b.year); if(!rows.length) return;
+  const big=Math.max(...rows.map(r=>r.value_tonnes))>=1e6, div=big?1e6:1e3;
+  charts.push(line(cv,rows.map(r=>String(r.year)),rows.map(r=>r.value_tonnes/div),null,false));
+  cv.insertAdjacentHTML('beforebegin',`<h3>${esc(pref)}, ${big?'millions':'milliers'} de tonnes par an</h3>`);
+}
+// cap affiche le mois réellement montré : « récente » ne dit rien de l'âge de l'image
+function tryImg(img,id,months,cap){
+  const box=img.parentElement; let i=0;
+  const say=t=>{ if(cap) cap.textContent=t; };
+  const next=()=>{ if(i>=months.length){box.className='none';say(`Mois essayés : ${months.join(', ')}`);return;}
+    img.src=`/api/thumbnail?site=${encodeURIComponent(id)}&month=${months[i++]}`; };
+  img.onload=()=>{ box.className=''; say(`Sentinel-2, ${months[i-1]} (mois le plus récent sans nuages parmi ${months.join(', ')})`); };
+  img.onerror=next; next();
+}
+async function launch(id){
+  const go=$('#go'), jst=$('#jst'); go.disabled=true; go.textContent='…'; jst.textContent='';
+  try{ const r=await api('/api/analyze?site='+encodeURIComponent(id),{method:'POST'});
+    jobsPoll();  // compteur d'en-tête + rafraîchissement du radar même si l'on quitte cette fiche
+    if(!go.isConnected) return;  // une autre fiche est affichée : son propre suivi s'en charge
+    go.textContent=r.statut||'en file'; watch(id); }
+  catch(e){ console.error(e); if(!go.isConnected) return;
+    go.disabled=false; go.textContent=go.dataset.label||'Analyser ce site'; jst.textContent='Lancement impossible : '+errTxt(e); }
+}
+// Suivi de l'analyse de la fiche ouverte. JOBS vit en mémoire côté serveur : après un redémarrage le statut
+// revient vide, d'où l'arrêt explicite (sinon « … » et un sondage toutes les 4 s pour toujours).
+// Seuls « terminé » et « erreur… » sont finaux : « analyse » devient vrai dès l'étape optique enregistrée,
+// alors que l'attention Wikipedia et le radar tournent encore (s'arrêter là laisserait leurs courbes vides).
+function watch(id){
+  clearInterval(poll); let fails=0;
+  const h=setInterval(async()=>{
+    const stop=()=>{clearInterval(h); if(poll===h) poll=null;};
+    if(poll!==h||CURRENT!==id) return stop();
+    let s=null; try{ s=await api('/api/site?site='+encodeURIComponent(id)); fails=0; }
+    catch(e){ console.error(e); if(++fails<3) return; }
+    if(poll!==h||CURRENT!==id) return stop();  // la fiche a changé pendant la requête
+    const st=s?.statut_analyse||'', go=$('#go'), jst=$('#jst');
+    if(st==='terminé'){ stop();
+      try{ drawRadar(await api('/api/radar')); }catch(e){ console.error(e); }
+      if(CURRENT===id) open(id); return; }
+    if(st.startsWith('en')){ if(go) go.textContent=st; return; }
+    stop();
+    // erreur après l'optique : la fiche rouverte montre les signaux partiels et l'erreur dans son bloc Analyse
+    if(st.startsWith('erreur')&&s?.analyse){ if(CURRENT===id) open(id); return; }
+    if(go){ go.disabled=false; go.textContent='Réessayer'; }
+    if(jst) jst.textContent=!s?'Suivi interrompu : serveur injoignable.':st||'Analyse interrompue (serveur redémarré ?) : relancez-la.';
+  },4000);
+  poll=h;
+}
+
+// -- onglets -----------------------------------------------------------------------------
+function show(v){
+  mapBox();  // mémorise la zone visible tant que la carte est affichée
+  document.querySelectorAll('.tabs a').forEach(a=>a.classList.toggle('on',a.dataset.v===v));
+  $('#view-map').style.display=v==='map'?'':'none'; $('#view-screener').style.display=v==='screener'?'block':'none';
+  $('#view-veille').style.display=v==='veille'?'block':'none';
+  if(v==='map') setTimeout(()=>map.invalidateSize(),50);
+  // la veille ne s'actualise que visible (onglet, ou calque sur la carte) : rien ne tourne pour rien
+  if(v==='veille') vRefresh(); else vSchedule();
+  // la carte n'est jamais visible en même temps que le screener : le filtre « zone visible » se remet à jour
+  // au retour sur l'onglet, pas sur moveend
+  if(v==='screener'){ if(!SCR.loaded) scrInit(); else if($('#f_bbox').checked&&scrParams().toString()!==SCR.shown){SCR.page=1;scrLoad();} }
+}
+document.querySelectorAll('.tabs a').forEach(a=>a.onclick=()=>show(a.dataset.v));
+
+// -- screener ----------------------------------------------------------------------------
+// Avec worldCopyJump, Leaflet rend des longitudes non ramenées (est = 200). On les ramène dans [-180, 180] :
+// ouest dans [-180, 180[, est dans ]-180, 180] ; ouest > est = boîte à cheval sur l'antiméridien (lue ainsi
+// par le serveur) ; 360° ou plus = tout le globe.
+function bboxParam(w,s,e,n){
+  const wrapW=x=>((x+180)%360+360)%360-180, wrapE=x=>180-((180-x)%360+360)%360, lat=x=>Math.max(-90,Math.min(90,x));
+  const [W,E]=e-w>=360?[-180,180]:[wrapW(w),wrapE(e)];
+  return [W,lat(s),E,lat(n)].map(x=>x.toFixed(3)).join(',');
+}
+// Carte cachée (onglet Screener) : sa taille vaut 0 et getBounds() ne veut plus rien dire ; on garde la
+// dernière zone vue.
+let MAPBOX=null;
+function mapBox(){
+  if(map.getContainer().offsetWidth){const b=map.getBounds();MAPBOX=bboxParam(b.getWest(),b.getSouth(),b.getEast(),b.getNorth());}
+  return MAPBOX;
+}
+const SCR={loaded:false,page:1,per:100,sort:'prod_estimee_t',desc:true,total:0,seq:0,shown:null};
+function scrParams(){
+  const p=new URLSearchParams(), v=id=>$(id).value.trim();
+  if(v('#f_q'))p.set('q',v('#f_q')); if(v('#f_pays'))p.set('pays',v('#f_pays')); if(v('#f_com'))p.set('commodite',v('#f_com'));
+  if(v('#f_cat'))p.set('categorie',v('#f_cat')); if(v('#f_emin'))p.set('emprise_min',v('#f_emin')); if(v('#f_emax'))p.set('emprise_max',v('#f_emax'));
+  if(v('#f_pmin'))p.set('prod_min',String(parseFloat(v('#f_pmin'))*1e6));
+  if($('#f_emp').checked)p.set('avec_emprise','true'); if($('#f_real').checked)p.set('avec_prod_reelle','true');
+  if($('#f_ana').checked)p.set('analyse','true'); if($('#f_alert').checked)p.set('niveau_min','1');
+  if($('#f_bbox').checked){const b=mapBox(); if(b) p.set('bbox',b);}
+  p.set('sort',SCR.sort); p.set('desc',SCR.desc); return p;
+}
+function scrNote(f){
+  const m=CAL.modele_emprise||{};
+  const mod=(x,t)=>{x=x||{}; const ho=num(x.moitie_tenue_a_l_ecart?.facteur_90);
+    return `${t} (${x.n??'?'} mines) : erreur typique × ${fmt(x.facteur_median,1)}, 90 % des erreurs sous × ${fmt(x.facteur_90,1)}${ho!=null?` (× ${fmt(ho,1)} sur des mines tenues à l'écart)`:''}`;};
+  const sl=num(m.charbon?.slope);
+  return `<b>Production estimée</b> = ordre de grandeur d'après la taille de l'emprise réelle (contours satellite Maus, images 2019), pas une mesure Sentinel. Deux modèles calibrés sur des mines à production connue. ${mod(m.minerai,'Minerai')} ; ${mod(m.charbon,'charbon')}${sl!=null&&sl<0.4?` — pente faible (${fmt(sl,2)}) : l'estimation charbon reste proche de la mine de charbon médiane`:''}.
+    Pas d'estimation pour les usines, fonderies et raffineries, les commodités inconnues ou absentes du modèle, ni les emprises sans nom et sans commodité.
+    Tonnes de minerai (ou de charbon) extraites, pas de métal. <b>Production réelle publiée</b> = Jasansky et al. 2023 (série principale de la mine, dernière année connue). ${fmt(f.avec_prod_estimee,0)} sites estimables sur ${fmt(f.total,0)}.`;
+}
+async function scrInit(){
+  SCR.loaded=true; let f;
+  try{ f=await api('/api/screener/facets'); }catch(e){ SCR.loaded=false; $('#scr_total').textContent='Screener indisponible : '+errTxt(e); return; }
+  $('#l_pays').innerHTML=Object.keys(f.pays||{}).map(p=>`<option value="${esc(p)}">`).join('');
+  $('#f_com').innerHTML+=Object.entries(f.commodites||{}).map(([c,n])=>`<option value="${esc(c)}">${esc(c)} (${fmt(n,0)})</option>`).join('');
+  $('#f_cat').innerHTML+=Object.entries(f.categories||{}).map(([c,n])=>`<option value="${esc(c)}">${esc(c)} (${fmt(n,0)})</option>`).join('');
+  $('#scr_note').innerHTML=scrNote(f);
+  ['#f_com','#f_cat','#f_emp','#f_real','#f_ana','#f_alert','#f_bbox'].forEach(id=>$(id).onchange=()=>{SCR.page=1;scrLoad();});
+  ['#f_q','#f_pays','#f_emin','#f_emax','#f_pmin'].forEach(id=>{let t;$(id).oninput=()=>{clearTimeout(t);t=setTimeout(()=>{SCR.page=1;scrLoad();},300);};});
+  $('#f_reset').onclick=()=>{document.querySelectorAll('.filters input').forEach(i=>i.type==='checkbox'?i.checked=false:i.value='');$('#f_com').value='';$('#f_cat').value='';SCR.page=1;scrLoad();};
+  document.querySelectorAll('#scr th[data-s]').forEach(th=>th.onclick=()=>{const s=th.dataset.s; SCR.desc=SCR.sort===s?!SCR.desc:!['nom','pays','categorie','commodite_principale'].includes(s); SCR.sort=s; SCR.page=1; scrLoad();});
+  $('#pg_prev').onclick=()=>{if(SCR.page>1){SCR.page--;scrLoad();}}; $('#pg_next').onclick=()=>{if(SCR.page*SCR.per<SCR.total){SCR.page++;scrLoad();}};
+  $('#scr_go').onclick=scrAnalyze;
+  scrLoad();
+}
+// Met en file les 10 premières mines sans analyse récente NI déjà en file de la sélection affichée : mêmes filtres
+// (et même zone) que la table à l'écran, pas ceux qu'on lirait maintenant sur la carte.
+async function scrAnalyze(){
+  const b=$('#scr_go'), msg=$('#scr_msg'), p=SCR.shown??scrParams().toString();
+  b.disabled=true; msg.textContent='';
+  try{ const r=await api('/api/screener/analyze?'+p+'&n=10',{method:'POST'});
+    const n=(r.mises_en_file||[]).length, d=(r.deja_en_cours||[]).length, f=(r.deja_terminees||[]).length;
+    const fin=f?` · ${f} déjà ${f===1?'analysée':'analysées'} dans cette session (sans données récentes exploitables)`:'';
+    msg.textContent=n?`${n} ${plur(n,'mine mise')} en file (≈ 5–12 min chacune)${d?` · ${d} déjà en file ou en cours`:''}${fin}.`
+      :(d||f)?`Rien de nouveau${d?` : ${d} déjà en file ou en cours`:''}${fin}.`
+      :SCR.total?'Toutes les mines de la sélection ont déjà une analyse récente.':'La sélection est vide.';
+    jobsPoll(); }
+  catch(e){ console.error(e); msg.textContent='Échec de la mise en file : '+errTxt(e); }
+  finally{ b.disabled=false; }
+}
+const mt=v=>v==null?'—':v>=1e6?fmt(v/1e6,v<1e7?1:0)+' Mt':v>=1e3?fmt(v/1e3,0)+' kt':fmt(v,0)+' t';
+async function scrLoad(){
+  const p=scrParams();
+  const my=++SCR.seq;  // seule la dernière requête a le droit d'afficher (filtres changés vite)
+  let r; try{ r=await api(`/api/screener?${p}&page=${SCR.page}&per_page=${SCR.per}`); }
+  catch(e){ if(my===SCR.seq){ console.error(e); $('#scr_total').textContent='Erreur de chargement : '+errTxt(e); } return; }
+  if(my!==SCR.seq) return; SCR.total=r.total; SCR.shown=p.toString();
+  $('#scr_csv').href='/api/screener.csv?'+p;  // l'export suit la table affichée
+  document.querySelectorAll('#scr th[data-s]').forEach(th=>{th.classList.toggle('s',th.dataset.s===SCR.sort);th.classList.toggle('asc',th.dataset.s===SCR.sort&&!SCR.desc);});
+  $('#scr_total').textContent=`${fmt(r.total,0)} sites`;
+  $('#pg_info').textContent=r.total?`${fmt((SCR.page-1)*SCR.per+1,0)}–${fmt(Math.min(SCR.page*SCR.per,r.total),0)} sur ${fmt(r.total,0)}`:'';
+  $('#scr tbody').innerHTML=r.rows.map(x=>`<tr class="row" data-id="${esc(x.id)}">
+    <td>${esc(x.nom||'Emprise sans nom')}${x.suivi?' <span class="meta">· suivie</span>':''}${x.analyse?' <span style="color:var(--red)" title="analyse récente (signaux de moins de 6 mois)">●</span>':''}</td>
+    <td>${esc(x.pays||'—')}</td><td class="meta">${esc(x.categorie)}</td><td>${esc(x.commodites||'—')}</td>
+    <td class="n">${x.emprise_km2==null?'—':fmt(x.emprise_km2,x.emprise_km2<10?2:0)}${x.avertissement?` <span title="${esc(x.avertissement)}" style="color:var(--amber);cursor:help">⚠</span>`:''}</td>
+    <td class="n">${x.prod_estimee_t==null?'—':'≈ '+mt(x.prod_estimee_t)+' <span class="meta">'+(x.prod_estimee_type==='charbon'?'charbon':x.prod_estimee_type?'minerai':'')+'</span>'}</td>
+    <td class="n meta">${x.prod_estimee_t==null?'':mt(x.prod_estimee_bas90)+' – '+mt(x.prod_estimee_haut90)}</td>
+    <td class="n">${x.prod_reelle_t==null?'—':mt(x.prod_reelle_t)+' <span class="meta">'+esc(x.prod_reelle_serie)+', '+esc(x.prod_reelle_annee)+'</span>'}</td>
+    <td>${x.niveau==null?'':`<span class="lvl l${Math.min(x.niveau,2)}" title="${esc(x.alerte||'')}">${x.niveau}</span>`}</td></tr>`).join('')||'<tr><td colspan=9 class="meta">Aucun site ne correspond.</td></tr>';
+  document.querySelectorAll('#scr tr.row').forEach(tr=>tr.onclick=()=>open(tr.dataset.id));  // open() bascule sur la carte
+}
+let jobT=null, JOBSEQ=0;
+async function jobsPoll(){
+  clearTimeout(jobT); const my=++JOBSEQ;  // un seul cycle de sondage à la fois, même si on l'appelle de plusieurs endroits
+  let j; try{ j=await api('/api/jobs'); }catch(e){ console.error(e); if(my===JOBSEQ) jobT=setTimeout(jobsPoll,30000); return; }
+  if(my!==JOBSEQ) return;
+  const all=j.analyses||[], act=all.filter(a=>/^en /.test(a.statut));
+  $('#jobs').textContent=act.length?`Analyses : ${act.length} en cours/en file`:'';
+  if(act.length) jobT=setTimeout(jobsPoll,10000);
+  else if(all.length){ try{ drawRadar(await api('/api/radar')); if(SCR.loaded) scrLoad(); }catch(e){ console.error(e); } }
+}
+// == veille ================================================================================
+// Onglet « Veille », calque d'actualité et section « Actualité » des fiches. Ne lit que les routes /api/veille/*
+// du contrat (docs/veille.md) et la clé « veille » de /api/site. Tout champ peut manquer (base vide, étape jamais
+// lancée, serveur plus ancien) : lectures via arr()/obj()/num(), jamais d'« undefined » à l'écran, et chaque
+// chaîne venue du serveur passe par esc() (titres et domaines viennent d'articles du monde entier).
+const VT_COL={accident:'#ff5d5d',securite:'#ff4fa3',social:'#f2a93b',juridique:'#b07cff',environnement:'#4cc38a',
+  operations:'#5fa8ff',finance:'#e8d44d',autre:'#8b8f98'};
+const vcol=t=>Object.hasOwn(VT_COL,String(t))?VT_COL[t]:'#8b8f98';  // jamais une clé arbitraire dans un style
+const arr=v=>Array.isArray(v)?v:[], obj=v=>v&&typeof v==='object'&&!Array.isArray(v)?v:{};
+const safeUrl=u=>/^https?:\/\//i.test(String(u??''))?String(u):null;  // ni javascript: ni data: dans un lien
+const EMPTY='La veille n’a encore rien collecté';
+const MARKNOTE='Traits verticaux pointillés : mois où la veille a rattaché un article à cette mine (couleur = type, confiance ≥ 0,5). Survolez un mois pour le détail.';
+const SIGL={bare_km2:'Sol nu',water_km2:'Eau',change_km2:'Emprise modifiée',new_bare_km2:'Défrichement',
+  site_views:'Vues wiki mine',owner_views:'Vues wiki propr.',activity_db:'Radar'};
+const sigL=s=>Object.hasOwn(SIGL,String(s))?SIGL[s]:String(s);
+const STAGES=[['collecte','Collecteur','récupère le flux GDELT (15 min, ~65 langues), garde l’actualité minière'],
+  ['normalisation','Normaliseur','vérifie les formats, dédoublonne, rattache chaque article à une mine, le classe'],
+  ['correlation','Corrélateur','met les mines en suivi, lance leurs analyses satellite, mesure les liens']];
+const TOT=[['docs','documents collectés'],['docs_en_attente','en attente'],['rejetes','rejetés (format)'],['events','événements'],
+  ['mines_avec_evenements','mines citées'],['suivies','mines suivies'],['fichiers_faits','fichiers GDELT lus'],
+  ['fichiers_manquants','fichiers absents (réessayés)']];
+const VEI={init:null,types:{},timer:null,seq:0,lseq:0,seen:null,empty:false,charts:{},corr:[],layer:null,layerOn:false,hooked:false,ct:null};
+const PTS=new Map();  // id → [lat, lon] du catalogue : la mine plutôt que le lieu (parfois un pays entier) cité par GDELT
+
+const tms=s=>{const t=Date.parse(String(s??''));return isFinite(t)?t:null;};
+function ago(s){ const t=tms(s); if(t==null) return '—'; const d=(Date.now()-t)/1000;
+  if(d<0) return String(s).slice(0,16).replace('T',' ');  // horloge décalée : la date brute plutôt qu'« il y a −3 min »
+  if(d<90) return 'à l’instant'; if(d<3600) return `il y a ${Math.round(d/60)} min`;
+  if(d<86400) return `il y a ${Math.round(d/3600)} h`; if(d<30*86400) return `il y a ${Math.round(d/86400)} j`;
+  return String(s).slice(0,10); }
+const sinceISO=d=>new Date(Date.now()-d*864e5).toISOString().slice(0,19)+'Z';
+const day=s=>String(s??'').slice(0,10);
+const tdesc=t=>Object.hasOwn(VEI.types,String(t))?String(VEI.types[t]):'';
+const badge=t=>`<span class="badge" style="color:${vcol(t)}" title="${esc(tdesc(t))}">${esc(t||'?')}</span>`;
+// lien de mine : le href « #id » marche seul (hashchange → open), le clic intercepté rouvre même la fiche courante
+const mineLink=(id,name)=>id?`<a class="mine" href="#${esc(encodeURIComponent(id))}" data-open="${esc(id)}">${esc(name||id)}</a>`
+  :'<span>mine non rattachée</span>';
+function confBar(c){ const v=Math.max(0,Math.min(1,num(c)??0));
+  return `<span title="confiance = force du rattachement à la mine × force du classement"><span class="cf"><i style="width:${Math.round(v*100)}%"></i></span>${fmt(v,2)}</span>`; }
+const pv=v=>num(v)==null?'—':v<0.001?'&lt; 0,001':fmt(v,3);
+const lagL=l=>`${l>0?'+':l<0?'−':''}${Math.abs(l)} m`;
+const lagP=l=>l===0?'le même mois':l>0?`${l} mois après`:`${-l} mois avant`;
+const ax=()=>({ticks:{color:'#8b8f98',font:{size:10}},grid:{color:'#1c1f24'}});
+
+// -- chargement -----------------------------------------------------------------------------
+function vInit(){
+  return VEI.init??=(async()=>{
+    try{ VEI.types=obj(await api('/api/veille/types')); }catch(e){ console.error(e); VEI.types={}; }
+    const ty=Object.keys(VEI.types).length?Object.keys(VEI.types):Object.keys(VT_COL);
+    $('#vf_type').innerHTML='<option value="">tous</option>'+ty.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('');
+    $('#v_legend').innerHTML=ty.map(t=>`<span title="${esc(tdesc(t))}"><i class="dot" style="background:${vcol(t)}"></i>${esc(t)}</span>`).join('');
+  })();
+}
+function vParams(){
+  const p=new URLSearchParams(), v=id=>$(id).value;
+  for(const [k,id] of [['type','#vf_type'],['lang','#vf_lang'],['country','#vf_country']]) if(v(id)) p.set(k,v(id));
+  p.set('min_conf',String(+v('#vf_conf')||0));
+  const d=+v('#vf_days'); if(d>0) p.set('since',sinceISO(d));
+  p.set('limit','200'); return p;
+}
+// Toutes les routes en parallèle, chacune affichée (ou son erreur) indépendamment : une route en panne ne vide
+// pas le reste de l'onglet. VEI.seq : seule la dernière actualisation (filtre changé vite) a le droit d'afficher.
+async function vLoad(){
+  const my=++VEI.seq, ok=()=>my===VEI.seq; await vInit(); if(!ok()) return;
+  const d=+$('#vf_days').value||0, conf=String(+$('#vf_conf').value||0);
+  // Statistiques et découpe par type suivent la période et la confiance minimale du fil (comptes des options
+  // Langue / Pays = ce que le fil montrerait), pas les filtres type / langue / pays. Second appel aux événements :
+  // sert seulement à empiler par type le graphique par jour.
+  const split=new URLSearchParams({limit:'1000',min_conf:conf}); if(d) split.set('since',sinceISO(d));
+  const stq=new URLSearchParams({days:String(d||3650),min_conf:conf});
+  const rs=await Promise.allSettled([api('/api/veille/status'),api('/api/veille/events?'+vParams()),
+    api('/api/veille/stats?'+stq),api('/api/veille/events?'+split),api('/api/veille/correlations'),
+    api('/api/veille/tracked')]);
+  if(!ok()) return;
+  const [st,ev,sta,sp,co,tr]=rs.map(r=>r.status==='fulfilled'?{v:r.value,er:''}:{v:null,er:'indisponible : '+errTxt(r.reason)});
+  rs.filter(r=>r.status==='rejected').forEach(r=>console.error(r.reason));
+  const safe=f=>{try{f();}catch(e){console.error(e);}};
+  safe(()=>vStatus(st.v,st.er)); safe(()=>vFeed(ev.v,ev.er)); safe(()=>vStats(sta.v,sp.v,sta.er));
+  safe(()=>vCorr(co.v,co.er)); safe(()=>vTracked(tr.v,tr.er));
+  $('#v_upd').textContent=`mis à jour à ${new Date().toLocaleTimeString('fr-FR')} · actualisation toutes les 60 s`;
+  $('#v_bar').innerHTML='<i></i>';  // relance l'animation de 60 s
+}
+const vTab=()=>$('#view-veille').style.display==='block';
+const vMapShown=()=>$('#view-map').style.display!=='none';
+function vSchedule(){
+  clearTimeout(VEI.timer); VEI.timer=null;
+  if(vTab()||VEI.layerOn) VEI.timer=setTimeout(vRefresh,60000);
+}
+async function vRefresh(){
+  clearTimeout(VEI.timer); VEI.timer=null;
+  try{ if(vTab()) await vLoad(); if(VEI.layerOn&&vMapShown()) await vLayerLoad(); }catch(e){ console.error(e); }
+  vSchedule();
+}
+// pastille de l'onglet : un seul appel au chargement de la page, sans minuteur
+async function vBeat(){
+  try{ const svc=obj(obj(await api('/api/veille/status')).service), d=$('#v_dot');
+    d.className='tdot '+(svc.actif===true?'on':'off'); d.title=svc.actif===true?'service de veille actif':'service de veille arrêté';
+  }catch(e){ console.error(e); }
+}
+
+// -- état de la chaîne ---------------------------------------------------------------------
+function vBeatSet(svc,sx){
+  const b=$('#v_beat'), d=$('#v_dot'), t=$('#v_beat_t');
+  if(!svc){ b.className='beat'; t.textContent='service : état inconnu'; return; }
+  const on=svc.actif===true; b.className='beat '+(on?'on':'off'); d.className='tdot '+(on?'on':'off');
+  t.textContent=(on?'service actif':'service arrêté')+(svc.dernier_cycle?` · dernier cycle ${ago(svc.dernier_cycle)}`:' · aucun cycle')
+    +(sx?.message?` · ${sx.message}`:'');
+}
+// compteurs d'une ligne pipeline_status : objet, ou texte JSON (base lue directement)
+function vCnt(x){ let c=obj(x).counters; if(typeof c==='string'){ try{c=JSON.parse(c);}catch{c={};} } return obj(c); }
+// Délai au-delà duquel une étape est « en retard » : la marge de daemon.service_state, 3 intervalles et au
+// moins 1 h (une corrélation lance des analyses satellite de 5 à 12 min par mine, puis le cycle suivant attend
+// le quart d'heure). Plus court, une étape passerait en ambre pendant que l'en-tête dit « service actif ».
+const vLateMs=iv=>Math.max(3*(num(iv)>0?iv:900),3600)*1e3;
+const vLate=(t,iv,now=Date.now())=>t!=null&&now-t>vLateMs(iv);
+function vStage(n,name,role,x,live,iv){
+  x=x?obj(x):null;
+  const ran=!!x&&x.last_run!=null, bad=ran&&(x.ok===false||x.ok===0), t=tms(x?.last_run);
+  // service actif mais étape muette au-delà de la marge du service : bloquée, à regarder dans logs/veille.log
+  const late=live&&vLate(t,iv);
+  const cls=!ran?'idle':bad?'err':late?'late':'ok', lbl={idle:'jamais lancée',err:'erreur',late:'en retard',ok:'ok'}[cls];
+  const c=vCnt(x);
+  const kv=Object.entries(c).filter(([,v])=>v!=null&&typeof v!=='object').slice(0,8)
+    .map(([k,v])=>`<span>${esc(k.replace(/_/g,' '))}</span><span>${typeof v==='number'?fmt(v,v%1?2:0):esc(v)}</span>`).join('');
+  return `<div class="stage ${cls}"><h3><span>${n} · ${name}</span><span class="st">● ${lbl}</span></h3>
+    <div class="role">${role}</div><div class="msg" title="${esc(x?.message)}">${esc(x?.message||'')}</div>
+    <div class="cnt">${kv||'<span>compteurs</span><span>—</span>'}</div>
+    <div class="when">${ran?`dernier passage ${esc(ago(x.last_run))}`:'—'}</div></div>`;
+}
+function vStatus(s,er){
+  if(er){ $('#v_pipe').innerHTML=`<p class="meta">Veille ${esc(er)}</p>`; $('#v_tot').innerHTML=''; vBeatSet(null);
+    VEI.empty=false; $('#v_empty').hidden=true; return; }
+  s=obj(s); const by={}; arr(s.stages).map(obj).forEach(x=>{ if(x.stage) by[x.stage]=x; });
+  const svc=obj(s.service), live=svc.actif===true, iv=vCnt(by.service).interval_s;
+  vBeatSet(svc,by.service);
+  $('#v_pipe').classList.toggle('live',live);  // flux animé entre les étapes seulement quand le service tourne
+  $('#v_pipe').innerHTML=STAGES.map(([k,name,role],i)=>(i?'<div class="arrow" aria-hidden="true"></div>':'')+vStage(i+1,name,role,by[k],live,iv)).join('');
+  const t=obj(s.totaux);
+  $('#v_tot').innerHTML=TOT.map(([k,l])=>`<div><b>${fmt(num(t[k]),0)}</b><span>${l}</span></div>`).join('');
+  VEI.empty=!(num(t.docs)>0)&&!(num(t.events)>0);
+  const em=$('#v_empty'); em.hidden=!VEI.empty;
+  em.innerHTML=VEI.empty?`${EMPTY}. <span class="meta">Un cycle à la main : <code>uv run strate veille once</code> · en continu (service launchd) : <code>uv run strate veille install</code>.</span>`:'';
+}
+
+// -- fil d'actualité -------------------------------------------------------------------------
+function vItem(it,fresh){
+  const u=safeUrl(it.url), title=it.title||it.url||'(sans titre)';
+  return `<div class="fi${fresh?' fresh':''}" style="--c:${vcol(it.event_type)}">
+    <div class="side">${badge(it.event_type)}<time title="${esc(it.published_at)}">${esc(ago(it.published_at))}</time></div>
+    <div class="t">${u?`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(title)}</a>`:esc(title)}</div>
+    <div class="m">${mineLink(it.site_id,it.site_name)}${it.lang?`<span title="langue d’origine">${esc(String(it.lang).toUpperCase())}</span>`:''}${it.country?`<span>${esc(it.country)}</span>`:''}${it.domain?`<span>${esc(it.domain)}</span>`:''}${confBar(it.confidence)}${it.match_method?`<span title="méthode de rattachement à la mine">${esc(it.match_method)}</span>`:''}</div></div>`;
+}
+// VEI.seen : ids déjà montrés. Les nouveaux d'une actualisation à l'autre s'allument brièvement (pas au 1er rendu).
+function vFeed(r,er){
+  const box=$('#v_feed');
+  if(er){ $('#v_total').textContent='indisponible'; box.innerHTML=`<p class="meta" style="padding:0 10px">Fil ${esc(er)}</p>`; return; }
+  r=obj(r); const evs=arr(r.events).map(obj), tot=num(r.total)??evs.length;
+  $('#v_total').textContent=evs.length<tot?`${fmt(evs.length,0)} plus récents sur ${fmt(tot,0)}`:`${fmt(tot,0)} ${tot>1?'événements':'événement'}`;
+  if(!evs.length){ box.innerHTML=`<p class="meta" style="padding:0 10px">${VEI.empty?EMPTY:'Aucun événement ne correspond à ces filtres.'}</p>`; return; }
+  const first=VEI.seen==null, seen=VEI.seen||new Set();
+  box.innerHTML=evs.map(it=>vItem(it,!first&&!seen.has(it.id))).join('');
+  evs.forEach(it=>seen.add(it.id)); VEI.seen=seen;
+}
+
+// -- statistiques --------------------------------------------------------------------------
+// destroy() remet le style d'origine du canevas : on le masque APRÈS, sinon la carte garde un grand vide
+function vChart(key,el,cfg,empty=''){
+  VEI.charts[key]?.destroy(); VEI.charts[key]=null;
+  if(cfg&&el) VEI.charts[key]=new Chart(el,cfg);
+  if(el){ el.style.display=cfg?'':'none'; const m=$('#'+el.id+'_e'); if(m) m.textContent=cfg?'':empty; }
+}
+// /api/veille/stats regroupe les langues et pays absents (NULL) sous « inconnu » : aucun filtre de
+// /api/veille/events ne les retrouve (lower(country)=lower('inconnu') ne vaut jamais pour NULL), donc pas d'option.
+const NOVAL=new Set(['','inconnu']);
+function vOptKeys(o,cur){
+  o=obj(o); const ks=Object.keys(o).filter(k=>!NOVAL.has(k.trim().toLowerCase()))
+    .sort((a,b)=>(num(o[b])??0)-(num(o[a])??0));
+  if(cur&&!ks.includes(cur)) ks.unshift(cur);  // le filtre choisi reste sélectionnable même sorti de la période
+  return ks;
+}
+function vOpts(sel,o,all,lab=s=>s){
+  const el=$(sel), cur=el.value; o=obj(o);
+  const ks=vOptKeys(o,cur);
+  el.innerHTML=`<option value="">${all}</option>`+ks.map(k=>`<option value="${esc(k)}">${esc(lab(k))}${Object.hasOwn(o,k)?` (${fmt(num(o[k]),0)})`:''}</option>`).join('');
+  el.value=cur;
+}
+function vDays(a,b){ const out=[];
+  for(let t=Date.parse(a+'T00:00:00Z'),e=Date.parse(b+'T00:00:00Z');t<=e&&out.length<40000;t+=864e5) out.push(new Date(t).toISOString().slice(0,10));
+  return out; }
+// Axe du graphique d'activité. « tout » demande 3650 jours à /api/veille/stats, presque tous à 0 : l'axe part du
+// premier jour non vide (jusqu'au dernier jour reçu), et au-delà de 400 jours les barres deviennent mensuelles
+// pour rester lisibles. tot = {jour: n} (par_jour), cnt = {jour: {type: n}} ; rendus ré-agrégés sur les labels.
+function vSeries(tot,cnt){
+  const ok=k=>/^\d{4}-\d\d-\d\d$/.test(k);
+  const hit=k=>(num(tot[k])??0)>0||Object.values(cnt[k]||{}).some(v=>v>0);
+  const keys=[...new Set([...Object.keys(tot),...Object.keys(cnt)])].filter(ok).sort(), nz=keys.filter(hit);
+  if(!nz.length) return {labels:[],unit:'jour',tot:{},cnt:{}};
+  const days=vDays(nz[0],keys.at(-1)), unit=days.length>400?'mois':'jour', b=k=>unit==='mois'?k.slice(0,7):k;
+  const labels=[...new Set(days.map(b))], T={}, C={};
+  for(const k of keys){ if(k<nz[0]) continue; const m=b(k);
+    if(num(tot[k])!=null) T[m]=(T[m]??0)+tot[k];
+    for(const [t,n] of Object.entries(cnt[k]||{})) (C[m]??={})[t]=(C[m][t]||0)+n; }
+  return {labels,unit,tot:T,cnt:C};
+}
+// Graphique par jour (ou par mois) : total = par_jour (stats) ; découpe par type = comptée sur les événements
+// chargés (au plus 1000). Ce que la découpe ne couvre pas reste un segment gris « non détaillés » : le total reste exact.
+function vStats(st,sp,er){
+  const noData=VEI.empty?EMPTY:'Rien sur la période.';
+  if(er){ vChart('day',$('#v_day'),null,'Statistiques '+er); vChart('lang',$('#v_lang'),null,'Statistiques '+er);
+    $('#v_top').innerHTML=''; return; }
+  st=obj(st);
+  vOpts('#vf_lang',st.par_langue,'toutes',s=>String(s).toUpperCase()); vOpts('#vf_country',st.par_pays,'tous');
+  const tot={}; arr(st.par_jour).map(obj).forEach(x=>{ if(x.jour) tot[day(x.jour)]=num(x.n)??0; });
+  const cnt={}, seenT=new Set();
+  for(const it of arr(obj(sp).events).map(obj)){ const j=day(it.published_at); if(!j) continue;
+    const t=it.event_type||'autre'; seenT.add(t); (cnt[j]??={})[t]=(cnt[j][t]||0)+1; }
+  const S=vSeries(tot,cnt), labels=S.labels;
+  $('#v_day_h').textContent=`Événements par ${S.unit}, par type`;
+  const order=[...Object.keys(VEI.types),...Object.keys(VT_COL)].filter((t,i,a)=>a.indexOf(t)===i);
+  const types=[...order.filter(t=>seenT.has(t)),...[...seenT].filter(t=>!order.includes(t))];
+  const ds=types.map(t=>({label:t,data:labels.map(j=>S.cnt[j]?.[t]||0),backgroundColor:vcol(t),stack:'s'}));
+  const rest=labels.map(j=>{ const s=Object.values(S.cnt[j]||{}).reduce((a,b)=>a+b,0); return Math.max(0,(S.tot[j]??s)-s); });
+  if(rest.some(v=>v>0)) ds.push({label:'non détaillés',data:rest,backgroundColor:'#3a3f47',stack:'s'});
+  const hasDay=labels.length&&ds.some(d=>d.data.some(v=>v>0));
+  vChart('day',$('#v_day'),hasDay?{type:'bar',data:{labels,datasets:ds},options:{animation:false,
+    plugins:{legend:{position:'bottom',labels:{color:'#8b8f98',boxWidth:8,font:{size:10}}}},
+    scales:{x:{...ax(),stacked:true,ticks:{color:'#8b8f98',maxTicksLimit:10,font:{size:10}}},y:{...ax(),stacked:true,beginAtZero:true}}}}:null,noData);
+  const lg=Object.entries(obj(st.par_langue)).map(([k,v])=>[k,num(v)??0]).filter(x=>x[1]>0).sort((a,b)=>b[1]-a[1]).slice(0,12);
+  vChart('lang',$('#v_lang'),lg.length?{type:'bar',data:{labels:lg.map(x=>String(x[0]).toUpperCase()),
+    datasets:[{data:lg.map(x=>x[1]),backgroundColor:'#f2a93b'}]},options:{indexAxis:'y',animation:false,
+    plugins:{legend:{display:false}},scales:{x:{...ax(),beginAtZero:true},y:ax()}}}:null,noData);
+  const top=arr(st.top_mines).map(obj).slice(0,10), mx=Math.max(1,...top.map(x=>num(x.n)??0));
+  $('#v_top').innerHTML=top.length?top.map(x=>`<div class="tm"><div class="tmn">${mineLink(x.site_id,x.site_name)}<span>${fmt(num(x.n),0)}</span></div><i style="width:${Math.round((num(x.n)??0)/mx*100)}%"></i></div>`).join('')
+    :`<p class="meta" style="margin:0">${noData}</p>`;
+}
+
+// -- corrélations ----------------------------------------------------------------------------
+// Méthode (correlate.METHODE, docs/veille.md) : Cochran–Mantel–Haenszel stratifié par mine, lift = rapport de
+// risques de Mantel–Haenszel. Famille principale = décalage 0 seul (types × signaux + volume) : c'est la seule où
+// « lien démontré » a un sens. Les décalages ±1 à ±3 sont exploratoires (leur propre correction, rien de déclaré).
+const vLag=cr=>num(cr.lag_months)??0;
+const vXp=cr=>vLag(cr)!==0||cr.verdict==='exploratoire';
+// trop peu de données : verdict du serveur, ou seuils de correlate (MIN_MINES = 5, MIN_EVENT_MONTHS = 10) pour
+// une ligne exploratoire dont le verdict ne le dirait pas
+const vFew=cr=>/trop peu/i.test(String(cr.verdict??''))||(num(cr.n_mines)??5)<5||(num(cr.n_events)??10)<10;
+const vVol=cr=>cr.event_type==='volume'||(num(cr.lift)==null&&num(cr.rho)!=null);
+// valeur de l'effet et son intervalle : lift (1 = aucun lien) ou ρ (0 = aucun lien)
+const vEffV=cr=>{ const vol=vVol(cr);
+  return vol?{v:num(cr.rho),lo:num(cr.rho_lo),hi:num(cr.rho_hi),nul:0}:{v:num(cr.lift),lo:num(cr.lift_lo),hi:num(cr.lift_hi),nul:1}; };
+const vOut=cr=>{ const e=vEffV(cr); return e.lo!=null&&e.hi!=null&&(e.lo>e.nul||e.hi<e.nul); };
+// « lien démontré » n'est affiché comme tel qu'au décalage 0, si la q-valeur le confirme (< 0,10) et si
+// l'intervalle exclut la valeur nulle, quoi que dise le verdict
+const vDemo=cr=>cr.verdict==='lien démontré'&&num(cr.q_value)!=null&&cr.q_value<0.10&&vLag(cr)===0&&vOut(cr);
+function vEff(cr){  // effet et intervalle, en texte
+  const vol=vVol(cr), e=vEffV(cr);
+  if(e.v==null) return `${vol?'ρ':'lift'} non calculable`;
+  return `${vol?'ρ':'lift ×'} ${fmt(e.v,2)}${e.lo!=null&&e.hi!=null?` (IC 90 % ${fmt(e.lo,2)} – ${fmt(e.hi,2)})`:''}`;
+}
+// verdict lisible ; jamais « lien démontré » hors des conditions de vDemo
+function vVerdict(cr){
+  if(vDemo(cr)) return '★ lien démontré';
+  if(vFew(cr)) return 'trop peu de données';
+  if(vXp(cr)) return 'exploratoire';
+  if(cr.verdict==='lien démontré') return 'non démontré (q ≥ 0,10 ou IC contenant la valeur nulle)';
+  return String(cr.verdict||'non démontré');
+}
+// infobulle d'une case, déjà échappée (pv() rend du HTML) : à insérer telle quelle dans title="…"
+const vTitle=cr=>`${esc(cr.event_type)} × ${esc(sigL(cr.signal))}, décalage ${lagL(vLag(cr))} : ${esc(vEff(cr))} · p ${pv(cr.p_value)} · q ${pv(cr.q_value)}${vXp(cr)?' (famille exploratoire)':''} · ${fmt(num(cr.n_mines),0)} mines, ${fmt(num(cr.n_events),0)} mois-événements · ${esc(vVerdict(cr))}`;
+function vCell(cr,i){
+  if(!cr) return '<td class="na"></td>';
+  const vol=vVol(cr), v=vEffV(cr).v, xp=vXp(cr);
+  if(vFew(cr)) return `<td class="few" data-i="${i}" title="${vTitle(cr)}">·</td>`;
+  // assez de données mais effet absent (ne devrait plus arriver avec la correction de continuité) : pas hachuré
+  if(v==null) return `<td class="nd${xp?' xp':''}" data-i="${i}" title="${vTitle(cr)}">n/d</td>`;
+  // couleur : log2(lift) (×4 et ÷4 aux extrêmes) ou ρ ; ambre = plus d'anomalies, bleu = moins ;
+  // pâle si q ≥ 0,10 ou si le décalage est exploratoire
+  const x=vol?Math.max(-1,Math.min(1,v)):v>0?Math.max(-1,Math.min(1,Math.log2(v)/2)):-1;
+  const q=num(cr.q_value), a=((0.1+0.65*Math.abs(x))*(!xp&&q!=null&&q<0.1?1:0.5)).toFixed(2);
+  const bg=x>=0?`rgba(242,169,59,${a})`:`rgba(95,168,255,${a})`, d=vDemo(cr);
+  const cls=[d?'demo':'',xp?'xp':''].filter(Boolean).join(' ');
+  return `<td${cls?` class="${cls}"`:''} data-i="${i}" style="background:${bg}" title="${vTitle(cr)}">${d?'★ ':''}${vol?fmt(v,2):'×'+fmt(v,v<10?2:0)}</td>`;
+}
+function vCorrDetail(i){
+  const cr=VEI.corr[i], det=$('#v_cdet');
+  if(!cr){ det.innerHTML='<p class="meta" style="margin:0">Cliquez une case pour son détail.</p>'; return; }
+  const l=vLag(cr), s=esc(sigL(cr.signal)), vol=vVol(cr), xp=vXp(cr), e=vEffV(cr);
+  const read=e.v==null?'Effet non calculable sur ces données.'
+    :vol?`Corrélation de rang, mine par mine, entre le volume d’actualité et « ${s} » ${lagP(l)} : ρ = ${fmt(e.v,2)}.`
+    :`Les mois où la mine fait l’actualité (${esc(cr.event_type)}), la probabilité d’une anomalie « ${s} » ${lagP(l)} vaut ×${fmt(e.v,2)} celle des autres mois de la même mine (rapport de risques de Mantel–Haenszel).`;
+  const cls=vDemo(cr)?'l0':vFew(cr)||xp?'':'l1';
+  const verdict=`<span class="lvl ${cls}"${cls?'':' style="color:var(--dim)"'}>${esc(vVerdict(cr))}</span>`
+    +(xp&&!vFew(cr)?' <span class="meta">décalage ≠ 0 : calculé pour explorer, rien n’est déclaré</span>':'');
+  det.innerHTML=`<h3>${vol?'<span class="badge" style="color:var(--text)">volume</span>':badge(cr.event_type)} × ${s} · décalage ${lagL(l)}</h3><p style="margin:4px 0 8px">${verdict}</p>
+    <div class="kv"><div>Effet</div><div>${esc(vEff(cr))}</div><div>${vol?'p (corrélation de rang)':'p (Cochran–Mantel–Haenszel)'}</div><div>${pv(cr.p_value)}</div>
+    <div>q (Benjamini-Hochberg, ${xp?'famille exploratoire':'famille principale'})</div><div>${pv(cr.q_value)}</div><div>Échantillon</div><div>${fmt(num(cr.n_mines),0)} mines · ${fmt(num(cr.n_events),0)} mois-événements</div></div>
+    <p class="meta" style="margin:8px 0 0">${read}</p>`;
+}
+function vCorr(c,er){
+  const box=$('#v_corr'), meta=$('#v_corrmeta'), top=$('#v_ctop'), det=$('#v_cdet');
+  if(er){ box.innerHTML=`<p class="meta">Corrélations ${esc(er)}</p>`; meta.textContent=''; top.innerHTML=''; det.innerHTML=''; VEI.corr=[]; return; }
+  c=obj(c); const rows=arr(c.rows).map(obj).filter(cr=>cr.event_type&&cr.signal&&num(cr.lag_months)!=null); VEI.corr=rows;
+  const demo=rows.filter(vDemo), main=rows.filter(cr=>!vXp(cr));
+  meta.innerHTML=c.run_at?`Dernier calcul ${esc(ago(c.run_at))} · ${fmt(rows.length,0)} combinaisons calculées, dont ${fmt(main.length,0)} au décalage 0 (famille principale, seule à pouvoir conclure) · <b style="color:${demo.length?'var(--green)':'var(--text)'}">${demo.length?`${demo.length} ${demo.length>1?'liens démontrés':'lien démontré'}`:'aucun lien démontré'}</b> (q &lt; 0,10)${c.methode?` · ${esc(c.methode)}`:''}`
+    :'';
+  if(!rows.length){ top.innerHTML=''; det.innerHTML='';
+    box.innerHTML=`<p class="meta">${VEI.empty?EMPTY:'Pas encore d’étude d’événements : il faut au moins 5 mines suivies et analysées et 10 mois-événements (recalcul toutes les 6 h au plus).'}</p>`;
+    return; }
+  const lags=[...new Set(rows.map(cr=>cr.lag_months))].sort((a,b)=>a-b);
+  const tOrd=[...Object.keys(VEI.types),...Object.keys(VT_COL),'volume'], sOrd=Object.keys(LBL);
+  const rk=(o,v)=>{const i=o.indexOf(v);return i<0?o.length:i;};
+  const ck=(...a)=>a.join('|');  // clé de Map (pas du HTML)
+  const idx=new Map(rows.map((cr,i)=>[ck(cr.event_type,cr.signal,cr.lag_months),i]));
+  const pairs=[...new Map(rows.map(cr=>[ck(cr.event_type,cr.signal),[cr.event_type,cr.signal]])).values()]
+    .sort((a,b)=>rk(tOrd,a[0])-rk(tOrd,b[0])||String(a[0]).localeCompare(b[0])||rk(sOrd,a[1])-rk(sOrd,b[1])||String(a[1]).localeCompare(b[1]));
+  box.innerHTML=`<table class="hm"><thead><tr><th class="rl">type × signal \\ décalage</th>${lags.map(l=>l===0?`<th class="main" title="famille principale : seul décalage où un lien peut être déclaré">★ ${lagL(l)}</th>`:`<th title="exploratoire : calculé avec sa propre correction, rien n’est déclaré">${lagL(l)}</th>`).join('')}</tr></thead><tbody>${
+    pairs.map(([t,s])=>`<tr><th class="rl">${t==='volume'?'<span class="badge" style="color:var(--text)">volume</span>':badge(t)} <span class="meta">×</span> ${esc(sigL(s))}</th>${
+      lags.map(l=>{const i=idx.get(ck(t,s,l)); return vCell(i==null?null:rows[i],i);}).join('')}</tr>`).join('')}</tbody></table>`;
+  // tableau des plus nettes : famille principale seulement (les q des décalages exploratoires ne se comparent pas)
+  const best=rows.map((cr,i)=>[cr,i]).filter(([cr])=>!vXp(cr)&&!vFew(cr)&&num(cr.q_value)!=null).sort((a,b)=>a[0].q_value-b[0].q_value).slice(0,10);
+  top.innerHTML=best.length?`<h2>Famille principale (décalage 0) : les combinaisons les plus nettes, q croissante</h2><table><thead><tr><th>Type</th><th>Signal</th><th>Effet (IC 90 %)</th><th class="n">p</th><th class="n">q</th><th class="n">Mines</th><th>Verdict</th></tr></thead><tbody>${
+    best.map(([cr,i])=>`<tr class="row" data-i="${i}"><td>${vVol(cr)?'volume':badge(cr.event_type)}</td><td>${esc(sigL(cr.signal))}</td><td>${esc(vEff(cr))}</td><td class="n">${pv(cr.p_value)}</td><td class="n">${pv(cr.q_value)}</td><td class="n">${fmt(num(cr.n_mines),0)}</td><td>${vDemo(cr)?'<span class="lvl l0">★ lien démontré</span>':'<span class="meta">non démontré</span>'}</td></tr>`).join('')}</tbody></table>`:'';
+  top.querySelectorAll('tr[data-i]').forEach(tr=>tr.onclick=()=>vCorrDetail(+tr.dataset.i));
+  vCorrDetail(demo.length?rows.indexOf(demo[0]):best.length?best[0][1]:-1);
+}
+
+// -- mines suivies -----------------------------------------------------------------------------
+function vTracked(t,er){
+  const rows=arr(t).map(obj), tb=$('#v_tracked tbody');
+  $('#v_ntr').textContent=er?'indisponible':fmt(rows.length,0);
+  if(er){ tb.innerHTML=`<tr><td colspan=6 class="meta">Liste ${esc(er)}</td></tr>`; return; }
+  tb.innerHTML=rows.slice(0,300).map(tk=>{ const st=String(tk.analysis_status??'');
+    const cls=st==='terminé'?'l0':st.startsWith('erreur')?'l2':'l1';
+    return `<tr><td>${mineLink(tk.site_id,tk.site_name)}</td><td class="meta">${esc(tk.reason)}</td><td>${esc(day(tk.since))}</td>
+      <td title="${esc(tk.last_event_at)}">${esc(ago(tk.last_event_at))}</td><td class="n">${fmt(num(tk.events_count),0)}</td>
+      <td>${st?`<span class="lvl ${cls}">${esc(st)}</span>`:'<span class="meta">—</span>'}</td></tr>`; }).join('')
+    ||`<tr><td colspan=6 class="meta">${VEI.empty?EMPTY:'Aucune mine suivie pour l’instant : la veille en ajoute dès qu’une mine fait l’actualité (confiance ≥ 0,5, 30 derniers jours).'}</td></tr>`;
+}
+
+// -- calque carte ------------------------------------------------------------------------------
+// Un point par mine (pas par article) : couleur = type du plus récent, taille = nombre d'articles, pulsation CSS si
+// le plus récent a moins de 48 h. Marqueurs DOM (divIcon) : l'animation CSS ne passe pas dans le rendu canvas.
+async function vLayer(on){
+  VEI.layerOn=on; $('#v_layer').checked=on; $('#v_legend').hidden=!on;
+  if(!on){ VEI.lseq++; if(VEI.layer) map.removeLayer(VEI.layer); $('#v_lmsg').textContent=''; vSchedule(); return; }
+  await vInit(); if(!VEI.layerOn) return;
+  VEI.layer??=L.layerGroup(); if(!map.hasLayer(VEI.layer)) VEI.layer.addTo(map);
+  if(!VEI.hooked){ VEI.hooked=true;
+    map.on('popupopen',e=>e.popup.getElement()?.querySelectorAll('a.mine[data-open]').forEach(a=>a.onclick=ev=>{ev.preventDefault();open(a.dataset.open);})); }
+  await vLayerLoad(); vSchedule();
+}
+async function vLayerLoad(){
+  const my=++VEI.lseq, msg=$('#v_lmsg'); let r;
+  try{ r=await api('/api/veille/events?'+new URLSearchParams({since:sinceISO(30),limit:'1000'})); }
+  catch(e){ console.error(e); if(my===VEI.lseq) msg.textContent='Actualité indisponible : '+errTxt(e); return; }
+  if(my!==VEI.lseq||!VEI.layerOn) return;
+  VEI.layer.clearLayers();
+  const ok=(a,o)=>typeof a==='number'&&typeof o==='number'&&Math.abs(a)<=90&&Math.abs(o)<=180;
+  const groups=new Map(); let n=0;
+  for(const it of arr(obj(r).events).map(obj)){
+    const pos=PTS.get(it.site_id)??(ok(it.lat,it.lon)?[it.lat,it.lon]:null); if(!pos||!ok(pos[0],pos[1])) continue;
+    const k=it.site_id||pos.join(','); if(!groups.has(k)) groups.set(k,{pos,evs:[]}); groups.get(k).evs.push(it); n++;
+  }
+  const now=Date.now(), gs=[...groups.values()].map(g=>{ g.evs.sort((a,b)=>(tms(b.published_at)??0)-(tms(a.published_at)??0)); return g; })
+    .sort((a,b)=>(tms(a.evs[0].published_at)??0)-(tms(b.evs[0].published_at)??0));  // les plus récents dessinés en dernier, au-dessus
+  for(const g of gs){
+    const it=g.evs[0], t=tms(it.published_at), fresh=t!=null&&now-t<48*3600e3, sz=Math.round(8+3*Math.log2(g.evs.length));
+    const icon=L.divIcon({className:'vicon',iconSize:[sz,sz],html:`<i class="vev${fresh?' new':''}" style="--c:${vcol(it.event_type)};width:${sz}px;height:${sz}px"></i>`});
+    const items=g.evs.slice(0,6).map(e2=>{ const u=safeUrl(e2.url), ti=esc(e2.title||e2.domain||'article');
+      return `<li>${badge(e2.event_type)} ${u?`<a href="${esc(u)}" target="_blank" rel="noopener">${ti}</a>`:ti}<br><span class="meta">${esc(day(e2.published_at))}${e2.lang?' · '+esc(String(e2.lang).toUpperCase()):''}${e2.domain?' · '+esc(e2.domain):''}</span></li>`; }).join('');
+    L.marker(g.pos,{icon,keyboard:false,zIndexOffset:fresh?1000:0})
+      .bindPopup(`<div class="vpop">${mineLink(it.site_id,it.site_name)} <span class="meta">· ${g.evs.length} ${g.evs.length>1?'articles':'article'} en 30 j</span><ul>${items}</ul></div>`,{maxWidth:360})
+      .addTo(VEI.layer);
+  }
+  msg.textContent=n?`${fmt(n,0)} ${n>1?'articles':'article'} sur ${fmt(gs.length,0)} ${gs.length>1?'lieux':'lieu'}`:EMPTY+' sur 30 jours.';
+}
+
+// -- fiche d'une mine : section « Actualité » et repères sur les courbes ----------------------
+// /api/site porte une clé « veille » = résumé {events_30j, dernier, events_count} (contrat fixé avec l'API).
+// Absente (serveur sans veille) : pas de section. events_count = 0 : aucun article, rien à demander. Sinon les
+// événements et le volume mensuel viennent de /api/veille/site, demandé après l'affichage de la fiche.
+function veilleOf(s){
+  const v=s?.veille; if(v==null||typeof v!=='object'||Array.isArray(v)) return null;
+  if(num(v.events_count)===0) return {events:[]};
+  return {fetch:true,n30:num(v.events_30j),last:typeof v.dernier==='string'?v.dernier:null};
+}
+function vSiteBlock(vs){
+  if(!vs) return '';
+  const sum=vs.fetch&&(vs.n30!=null||vs.last)?` (${vs.n30!=null?`${fmt(vs.n30,0)} en 30 jours`:''}${vs.n30!=null&&vs.last?', ':''}${vs.last?`dernier ${esc(ago(vs.last))}`:''})`:'';
+  return `<h2>Actualité (veille)</h2><div id="v_site">${vs.fetch?`<p class="meta">Chargement de l’actualité…${sum}</p>`:vSiteHtml(vs)}</div>`;
+}
+function vSiteHtml(v){
+  v=obj(v); const evs=arr(v.events).map(obj), vol=arr(v.volume), tk=v.tracked&&typeof v.tracked==='object'?obj(v.tracked):null;
+  const head=tk?`<p class="meta">Suivie par la veille depuis ${esc(day(tk.since))||'?'}${tk.reason?' — '+esc(tk.reason):''}${tk.analysis_status?' · analyse satellite : '+esc(tk.analysis_status):''}</p>`:'';
+  const row=it=>{ const u=safeUrl(it.url), ti=esc(it.title||it.domain||'article');
+    return `<tr><td class="meta" style="white-space:nowrap">${esc(day(it.published_at))}</td><td>${badge(it.event_type)}</td>
+      <td>${u?`<a class="lk" href="${esc(u)}" target="_blank" rel="noopener">${ti}</a>`:ti}<div class="meta">${it.lang?esc(String(it.lang).toUpperCase())+' · ':''}${it.domain?esc(it.domain)+' · ':''}confiance ${fmt(num(it.confidence),2)}${it.match_method?' · '+esc(it.match_method):''}</div></td></tr>`; };
+  const list=evs.length?`<table class="vsite"><tbody>${evs.slice(0,8).map(row).join('')}</tbody></table>${evs.length>8?`<details><summary class="meta" style="cursor:pointer">Voir les ${Math.min(evs.length,200)-8} autres</summary><table class="vsite"><tbody>${evs.slice(8,200).map(row).join('')}</tbody></table></details>`:''}`
+    :'<p class="meta">Aucun article rattaché à cette mine pour l’instant.</p>';
+  return head+list+(vol.length?'<div class="card" style="margin-top:8px"><h3>Volume d’actualité mensuel (GDELT, articles citant la mine)</h3><canvas id="v_vol" height="110"></canvas></div>':'');
+}
+function vSiteCharts(v){
+  const vol=arr(obj(v).volume).map(obj).filter(x=>x.month), cv=$('#v_vol'); if(!cv||!vol.length) return;
+  charts.push(new Chart(cv,{type:'bar',data:{labels:vol.map(x=>String(x.month).slice(0,7)),datasets:[{data:vol.map(x=>num(x.n_articles)??0),backgroundColor:'#5fa8ff'}]},
+    options:{animation:false,plugins:{legend:{display:false}},scales:{x:{...ax(),ticks:{color:'#8b8f98',maxTicksLimit:8,font:{size:10}}},y:{...ax(),beginAtZero:true}}}}));
+}
+// un repère par mois : couleur du type le plus fréquent ce mois-là (confiance ≥ 0,5, comme l'étude d'événements)
+function vMarks(v){
+  const by={};
+  for(const it of arr(obj(v).events).map(obj)){ if((num(it.confidence)??0)<0.5) continue; const m=String(it.published_at??'').slice(0,7);
+    if(!/^\d{4}-\d\d$/.test(m)) continue; const t=it.event_type||'autre'; (by[m]??={})[t]=(by[m][t]||0)+1; }
+  return Object.entries(by).map(([m,t])=>({m,t,c:vcol(Object.entries(t).sort((a,b)=>b[1]-a[1])[0][0])}));
+}
+// après l'affichage de la fiche : graphique de volume, ou requête de l'actualité si /api/site n'a qu'un résumé
+async function vSiteAfter(vs,id,live){
+  if(!vs) return;
+  if(!vs.fetch){ vSiteCharts(vs); return; }
+  let v; try{ v=obj(await api('/api/veille/site?site='+encodeURIComponent(id))); }
+  catch(e){ console.error(e); const b=$('#v_site'); if(live()&&b?.isConnected) b.innerHTML=`<p class="meta">Actualité indisponible : ${esc(errTxt(e))}</p>`; return; }
+  const b=$('#v_site'); if(!live()||!b?.isConnected) return;
+  b.innerHTML=vSiteHtml(v); vSiteCharts(v);
+  const ms=vMarks(v), note=$('#v_marknote'); if(note) note.textContent=ms.length?MARKNOTE:'';
+  for(const c of charts) if(Array.isArray(c.$vmarks)){ c.$vmarks=ms; c.update?.('none'); }
+}
+// Plugin Chart.js local (pas de chartjs-plugin-annotation pour quelques traits) : trait pointillé + petit triangle
+// en haut, à chaque mois d'événement présent sur l'axe des mois.
+const vMarkPlugin={id:'vmarks',afterDatasetsDraw(c){
+  const ms=c.$vmarks; if(!ms?.length) return;
+  const x=c.scales.x, a=c.chartArea, g=c.ctx, labels=c.data.labels||[]; g.save(); g.lineWidth=1;
+  for(const k of ms){ const i=labels.indexOf(k.m); if(i<0) continue; const px=x.getPixelForValue(i);
+    g.strokeStyle=g.fillStyle=k.c; g.globalAlpha=.75; g.setLineDash([3,3]); g.beginPath(); g.moveTo(px,a.top); g.lineTo(px,a.bottom); g.stroke();
+    g.setLineDash([]); g.globalAlpha=1; g.beginPath(); g.moveTo(px-4,a.top); g.lineTo(px+4,a.top); g.lineTo(px,a.top+6); g.closePath(); g.fill(); }
+  g.restore(); }};
+function vFooter(items){
+  const ti=items?.[0], k=ti?.chart?.$vmarks?.find(m=>m.m===ti.label);
+  return k?'Veille : '+Object.entries(k.t).map(([t,n])=>`${t} ×${n}`).join(', '):'';
+}
+
+$('#v_layer').onchange=e=>vLayer(e.target.checked);
+$('#vf_map').onclick=()=>{ vLayer(true); show('map'); };
+// filtre changé : rien n'est « nouveau », seules les arrivées d'une actualisation automatique s'allument
+const vFilter=()=>{ VEI.seen=null; vLoad(); };
+['#vf_type','#vf_lang','#vf_country','#vf_days'].forEach(id=>$(id).onchange=vFilter);
+$('#vf_conf').oninput=()=>{ $('#vf_conf_o').textContent=fmt(+$('#vf_conf').value,2); clearTimeout(VEI.ct); VEI.ct=setTimeout(vFilter,250); };
+// délégation : liens de mine (fil, top, liste suivie) → fiche sur la carte ; cases de la carte de chaleur → détail
+$('#view-veille').addEventListener('click',e=>{
+  const a=e.target.closest?.('a.mine[data-open]'); if(a){ e.preventDefault(); open(a.dataset.open); return; }
+  const td=e.target.closest?.('#v_corr td[data-i]'); if(td) vCorrDetail(+td.dataset.i);
+});
+// == fin veille ============================================================================
+
+window.addEventListener('hashchange',()=>{const id=decodeURIComponent(location.hash.slice(1)); if(id&&id!==CURRENT) open(id);});
+init().then(jobsPoll).catch(e=>{$('#status').textContent='Erreur de chargement';console.error(e)});
+vBeat();
+</script>
+</body>
+</html>

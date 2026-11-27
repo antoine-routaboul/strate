@@ -1,0 +1,10 @@
+company_id,fy,fp,form,concept,val,unit
+alpha,2019,FY,10-K,PaymentsToAcquirePropertyPlantAndEquipment,-120.0,USD
+alpha,2019,FY,10-K,Revenues,1000.0,USD
+alpha,2019,Q3,10-Q,PaymentsToAcquirePropertyPlantAndEquipment,-90.0,USD
+alpha,2020,FY,10-K,PaymentsToAcquirePropertyPlantAndEquipment,-150.0,USD
+alpha,2020,FY,10-K,RevenueFromContractWithCustomerExcludingAssessedTax,1100.0,USD
+alpha,2020,FY,10-K/A,PaymentsToAcquirePropertyPlantAndEquipment,-155.0,USD
+alpha,2021,FY,10-K,NetIncomeLoss,80.0,USD
+beta,2020,FY,40-F,PaymentsToAcquireProductiveAssets,300.0,CAD
+beta,2020,FY,40-F,Revenues,2500.0,CAD
