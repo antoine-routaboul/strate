@@ -84,6 +84,7 @@ def test_event_fields_from_contract():
 
 def test_correlation_and_tracked_fields_from_contract():
     rows = doc_fields(r'"rows":\[\{([^}]*)\}')
+    rows |= {"verdict_rho"}  # contrat partagé : verdict calculé sur l'IC de φ (rho des lignes de type)
     assert used_fields("cr") <= rows, used_fields("cr") - rows
     tracked = doc_fields(r"/api/veille/tracked` \| `\[\{([^}]*)\}")
     assert used_fields("tk") <= tracked, used_fields("tk") - tracked
@@ -150,8 +151,13 @@ def test_method_note_describes_cmh_and_lag0_family():
     # décalages ±1..±3 exploratoires, couverture limitée aux mois collectés ; plus aucune permutation
     note = re.sub(r"\s+", " ", re.search(r'<p class="meta vnote">(.*?)</p>', page(), re.S).group(1))
     for w in ("Cochran–Mantel–Haenszel", "Mantel–Haenszel", "décalage 0", "exploratoire", "bootstrap",
-              "continuité 0,5", "réellement collectée", "n/d"):
+              "continuité 0,5", "réellement collectée", "n/d", "φ"):
         assert w in note, w
+    # la correction de continuité : même règle que correlate.METHODE (association parfaite), pas « case vide »
+    assert "quand une case est vide" not in note
+    assert "aucune anomalie ne tombe hors des mois d’événement" in note
+    from strate.veille.correlate import METHODE
+    assert "continuité" in METHODE and "hors des mois d'événement" in METHODE
     assert "permutation" not in note.lower() and "permutation" not in veille_js().lower()
     assert "c.methode" in veille_js()  # le texte de correlate.METHODE, servi par l'API, est affiché
 
@@ -254,6 +260,29 @@ def test_heatmap_cells_follow_verdict_rules(tmp_path):
     assert 'class="few"' in res["few"]
     assert 'class="few"' in res["fewxp"]  # sous 5 mines ou 10 mois : hachuré, quel que soit le verdict
     assert res["vxp"] == "exploratoire"
+
+
+@needs_node
+def test_event_rows_show_phi_badge(tmp_path):
+    # contrat : une ligne de type porte aussi rho = φ (mois d'événement × mois d'anomalie) et son IC ;
+    # badge φ à part, verdict_rho tel quel, jamais pris pour une ligne « volume » même quand le lift est nul
+    (res,) = run_js(r"""
+      const base={event_type:'accident',signal:'bare_km2',n_mines:8,n_events:30,p_value:0.2,q_value:0.4};
+      const a={...base,lag_months:0,lift:1.8,lift_lo:1.1,lift_hi:2.9,rho:0.12,rho_lo:0.03,rho_hi:0.2,
+        verdict:'non démontré',verdict_rho:'non démontré (q ≥ 0,10)'};
+      const b={...base,lag_months:2,lift:1.8,lift_lo:1.1,lift_hi:2.9,rho:0.12,rho_lo:0.03,rho_hi:0.2,
+        verdict:'exploratoire'};
+      const c={...base,lag_months:0,lift:null,rho:0.05,rho_lo:-0.02,rho_hi:0.1,verdict:'non démontré'};
+      const old={...base,lag_months:0,lift:2,lift_lo:1.2,lift_hi:3,verdict:'non démontré'};
+      out({a:vBadge(a)+'|'+vPhi(a),b:vPhi(b),c:vBadge(c)+'|'+vPhi(c),cvol:vVol(c),old:vPhi(old),
+        vol:vPhi({...base,event_type:'volume',rho:0.3})});
+    """, tmp_path)
+    assert "lift ×" in res["a"] and "φ" in res["a"] and "non démontré (q ≥ 0,10)" in res["a"]
+    assert "IC 90 % +0,03 à +0,20" in res["a"] and "n = 8 mines (bootstrap)" in res["a"]
+    assert "p-acc" not in res["a"] and "lien positif" not in res["a"]
+    assert ">exploratoire<" in res["b"] and "lien positif" not in res["b"]
+    assert res["cvol"] is False and "lift" in res["c"] and "φ" in res["c"]
+    assert res["old"] == "" and res["vol"] == ""  # serveur ancien sans φ ; volume : ρ déjà dans vBadge
 
 
 @needs_node

@@ -445,7 +445,10 @@ a.mine{color:var(--accent)}
       (type donné) à celle des autres mois de la même mine : <b>lift</b> = rapport de risques de Mantel–Haenszel, 1 = aucun
       lien (ρ = corrélation de rang intra-mine pour le volume d’actualité). Pour chaque mine, seuls comptent les mois où son
       actualité était réellement collectée. Test : <b>Cochran–Mantel–Haenszel</b> stratifié par mine (un tableau 2×2 par
-      mine) ; intervalle à 90 % par bootstrap sur les mines ; correction de continuité 0,5 quand une case est vide.
+      mine) ; intervalle à 90 % par bootstrap sur les mines ; correction de continuité 0,5 sur chaque case quand aucune
+      anomalie ne tombe hors des mois d’événement (association parfaite : le lift reste fini et élevé). Chaque type porte
+      aussi <b>φ</b>, corrélation entre mois d’événement et mois d’anomalie (0/1), avec son IC 90 % par bootstrap sur les
+      mines ; le verdict de la case reste celui du lift.
       Seul le <b>décalage 0</b> (même mois, colonne ★) forme la famille principale : sa <b>q-valeur</b> corrige les
       comparaisons multiples (Benjamini-Hochberg) et « lien démontré » (★) n’y apparaît que si <b>q &lt; 0,10</b> et
       l’intervalle exclut 1. Décalages −3 à +3 (−2 : anomalie 2 mois <i>avant</i> l’article ; +2 : 2 mois <i>après</i>),
@@ -1305,7 +1308,8 @@ const vXp=cr=>vLag(cr)!==0||cr.verdict==='exploratoire';
 // trop peu de données : verdict du serveur, ou seuils de correlate (MIN_MINES = 5, MIN_EVENT_MONTHS = 10) pour
 // une ligne exploratoire dont le verdict ne le dirait pas
 const vFew=cr=>/trop peu/i.test(String(cr.verdict??''))||(num(cr.n_mines)??5)<5||(num(cr.n_events)??10)<10;
-const vVol=cr=>cr.event_type==='volume'||(num(cr.lift)==null&&num(cr.rho)!=null);
+// ligne « volume d'actualité » : seule l'étiquette compte (les lignes de type portent aussi rho = φ, lift parfois nul)
+const vVol=cr=>cr.event_type==='volume';
 // valeur de l'effet et son intervalle : lift (1 = aucun lien) ou ρ (0 = aucun lien)
 const vEffV=cr=>{ const vol=vVol(cr);
   return vol?{v:num(cr.rho),lo:num(cr.rho_lo),hi:num(cr.rho_hi),nul:0}:{v:num(cr.lift),lo:num(cr.lift_lo),hi:num(cr.lift_hi),nul:1}; };
@@ -1330,6 +1334,13 @@ function vVerdict(cr){
 const vBadge=cr=>{ const e=vEffV(cr);
   return corrBadge({type:vVol(cr)?'rho':'lift',v:e.v,lo:e.lo,hi:e.hi,n:num(cr.n_events),nUnit:'mois-événements',
     verdict:vVerdict(cr),state:vDemo(cr)?'demo':vFew(cr)?'few':e.v==null?'na':'nul'}); };
+// φ d'une ligne de type d'événement (mois d'événement × mois d'anomalie, 0/1 ; IC 90 % par bootstrap sur les mines).
+// Verdict : verdict_rho du serveur (calculé sur l'IC de φ) ; sans lui, « trop peu » ou « exploratoire » selon les règles
+// de la ligne, sinon le badge calcule celui de l'IC et le dit. Le verdict de la ligne reste celui du lift.
+const vPhi=cr=>{ if(vVol(cr)||num(cr.rho)==null) return '';
+  const own=cr.verdict_rho!=null&&String(cr.verdict_rho).trim()?String(cr.verdict_rho):null;
+  return corrBadge({type:'phi',v:cr.rho,lo:cr.rho_lo,hi:cr.rho_hi,n:num(cr.n_mines),nUnit:'mines (bootstrap)',
+    verdict:own??(vFew(cr)?'trop peu de données':vXp(cr)?'exploratoire':null),state:vFew(cr)?'few':vXp(cr)?'nul':undefined}); };
 // infobulle d'une case, déjà échappée (pv() rend du HTML) : à insérer telle quelle dans title="…"
 const vTitle=cr=>`${esc(cr.event_type)} × ${esc(sigL(cr.signal))}, décalage ${lagL(vLag(cr))} : ${esc(vEff(cr))} · p ${pv(cr.p_value)} · q ${pv(cr.q_value)}${vXp(cr)?' (famille exploratoire)':''} · ${fmt(num(cr.n_mines),0)} mines, ${fmt(num(cr.n_events),0)} mois-événements · ${esc(vVerdict(cr))}`;
 function vCell(cr,i){
@@ -1354,7 +1365,7 @@ function vCorrDetail(i){
     :vol?`Corrélation de rang, mine par mine, entre le volume d’actualité et « ${s} » ${lagP(l)} : ρ = ${fmt(e.v,2)}.`
     :`Les mois où la mine fait l’actualité (${esc(cr.event_type)}), la probabilité d’une anomalie « ${s} » ${lagP(l)} vaut ×${fmt(e.v,2)} celle des autres mois de la même mine (rapport de risques de Mantel–Haenszel).`;
   det.innerHTML=`<h3>${vol?'<span class="badge">volume</span>':badge(cr.event_type)} × ${s} · décalage ${lagL(l)}</h3>
-    <div style="margin:8px 0 12px">${vBadge(cr)}</div>
+    <div class="cblist" style="margin:8px 0 12px">${vBadge(cr)}${vPhi(cr)}</div>
     ${xp&&!vFew(cr)?'<p class="meta">décalage ≠ 0 : calculé pour explorer, rien n’est déclaré</p>':''}
     <div class="kv" style="margin-top:0"><div>Effet</div><div>${esc(vEff(cr))}</div><div>${vol?'p (corrélation de rang)':'p (Cochran–Mantel–Haenszel)'}</div><div>${pv(cr.p_value)}</div>
     <div>q (Benjamini-Hochberg, ${xp?'famille exploratoire':'famille principale'})</div><div>${pv(cr.q_value)}</div><div>Échantillon</div><div>${fmt(num(cr.n_mines),0)} mines · ${fmt(num(cr.n_events),0)} mois-événements</div></div>
@@ -1383,7 +1394,7 @@ function vCorr(c,er){
   // tableau des plus nettes : famille principale seulement (les q des décalages exploratoires ne se comparent pas)
   const best=rows.map((cr,i)=>[cr,i]).filter(([cr])=>!vXp(cr)&&!vFew(cr)&&num(cr.q_value)!=null).sort((a,b)=>a[0].q_value-b[0].q_value).slice(0,10);
   top.innerHTML=best.length?`<h2>Famille principale (décalage 0) : les combinaisons les plus nettes, q croissante</h2><div class="tablebox"><table><thead><tr><th>Type</th><th>Signal</th><th>Effet, IC 90 %, n, verdict</th><th class="n">p</th><th class="n">q</th><th class="n">Mines</th></tr></thead><tbody>${
-    best.map(([cr,i])=>`<tr class="row" data-i="${i}"><td>${vVol(cr)?'volume':badge(cr.event_type)}</td><td>${esc(sigL(cr.signal))}</td><td>${vBadge(cr)}</td><td class="n">${pv(cr.p_value)}</td><td class="n">${pv(cr.q_value)}</td><td class="n">${fmt(num(cr.n_mines),0)}</td></tr>`).join('')}</tbody></table></div>`:'';
+    best.map(([cr,i])=>`<tr class="row" data-i="${i}"><td>${vVol(cr)?'volume':badge(cr.event_type)}</td><td>${esc(sigL(cr.signal))}</td><td><div class="cblist">${vBadge(cr)}${vPhi(cr)}</div></td><td class="n">${pv(cr.p_value)}</td><td class="n">${pv(cr.q_value)}</td><td class="n">${fmt(num(cr.n_mines),0)}</td></tr>`).join('')}</tbody></table></div>`:'';
   top.querySelectorAll('tr[data-i]').forEach(tr=>tr.onclick=()=>vCorrDetail(+tr.dataset.i));
   vCorrDetail(demo.length?rows.indexOf(demo[0]):best.length?best[0][1]:-1);
 }
