@@ -562,3 +562,28 @@ def test_stop_requested_and_plist_timeout_documented():
     pl = daemon.plist_dict("/opt/homebrew/bin/uv")
     assert pl["ExitTimeOut"] == 60
     assert "tuée" in daemon.plist_dict.__doc__ and "stop_requested" in daemon.__doc__
+
+
+def test_reserved_counter_names_never_fail_a_stage(db, monkeypatch):
+    """Une étape qui rend « message » ou « ok » parmi ses compteurs reste réussie (compteur renommé)."""
+    calls: list = []
+    _install_stages(monkeypatch, calls, **{
+        "strate.veille.collect": {"writes_status": False, "counters": {"message": "rien de neuf", "n": 1}},
+        "strate.veille.normalize": {"writes_status": False, "counters": {"ok": 3, "stage": "x"}},
+    })
+    res = daemon.run_cycle()
+    assert res["collecte"]["ok"] is True and res["collecte"]["message_etape"] == "rien de neuf"
+    assert res["normalisation"]["ok"] is True and res["normalisation"]["ok_etape"] == 3
+    st = _status(db)
+    assert st["collecte"]["ok"] == 1 and st["normalisation"]["ok"] == 1
+    assert json.loads(st["normalisation"]["counters"])["stage_etape"] == "x"
+    assert daemon._counters({"ok": 1, "ok_etape": 2}) == {"ok_etape": 1, "ok_etape_etape": 2}
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf"), True, "900", None])
+def test_interval_must_be_finite_positive(db, bad):
+    with pytest.raises(ValueError):
+        daemon.next_boundary(1000.0, bad)
+    with pytest.raises(ValueError):
+        daemon.run_forever(interval_s=bad, max_cycles=1)
+    assert not db.exists()

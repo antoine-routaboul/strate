@@ -97,12 +97,33 @@ def _jsonable(d) -> dict:
         return {"resultat": str(d)}
 
 
+# noms pris par set_status et par le résumé du cycle : un compteur d'étape du même nom est renommé
+_RESERVED = frozenset({"con", "stage", "ok", "message", "erreur", "duree_s"})
+
+
+def _counters(res: dict) -> dict:
+    """Compteurs d'une étape sans collision : « ok » → « ok_etape » (sinon set_status lèverait TypeError
+    et une étape réussie serait notée en erreur, ou le résumé masquerait son vrai résultat)."""
+    out = {}
+    for k, v in res.items():
+        k = str(k)
+        while k in _RESERVED or k in out:
+            k += "_etape"
+        out[k] = v
+    return out
+
+
+def _valid_interval(v) -> bool:
+    """Nombre fini et positif (pas un booléen, pas NaN ni l'infini : la boucle ne repartirait jamais)."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v > 0
+
+
 def next_boundary(now: float, interval_s: int = INTERVAL_S, offset_s: int = 0) -> float:
     """Prochain multiple de l'intervalle (heure UTC) strictement après `now` : 12:00, 12:15, 12:30…
 
     Un cycle plus long que l'intervalle saute au quart d'heure suivant au lieu de s'empiler."""
-    if not interval_s or interval_s <= 0:
-        raise ValueError(f"intervalle invalide : {interval_s!r} s (il faut un nombre positif)")
+    if not _valid_interval(interval_s):
+        raise ValueError(f"intervalle invalide : {interval_s!r} s (il faut un nombre fini et positif)")
     k = (now - offset_s) // interval_s + 1
     return k * interval_s + offset_s
 
@@ -132,15 +153,35 @@ def _heartbeat(con: sqlite3.Connection, message: str, ok: bool = True, **counter
         log.warning("battement du service non écrit : %s", e)
 
 
+@contextlib.contextmanager
+def _watch_status(stage: str):
+    """Note si l'étape appelle elle-même store.set_status : la ligne seule ne suffit pas (deux cycles dans
+    la même seconde qui écrivent le même échec laissent une ligne identique)."""
+    wrote: list[bool] = []
+    orig = store.set_status
+
+    def rec(con, st, *a, **kw):
+        if st == stage:
+            wrote.append(True)
+        return orig(con, st, *a, **kw)
+
+    store.set_status = rec
+    try:
+        yield wrote
+    finally:
+        store.set_status = orig
+
+
 def _run_stage(con: sqlite3.Connection, stage: str, module: str, kwargs: dict) -> dict:
     """Lance une étape ; toute erreur (import, réseau, données) est notée et n'arrête pas la chaîne."""
     t0 = time.time()
     before = _status_row(con, stage)
     try:
         mod = importlib.import_module(module)  # import tardif : un module absent ne casse que son étape
-        res = _jsonable(mod.run_once(con, **kwargs))
+        with _watch_status(stage) as wrote:
+            res = _counters(_jsonable(mod.run_once(con, **kwargs)))
         after = _status_row(con, stage)
-        if after == before:  # l'étape n'a pas écrit son statut : on le fait pour elle
+        if not wrote and after == before:  # l'étape n'a pas écrit son statut : on le fait pour elle
             store.set_status(con, stage, True, "terminé", **res)
             ok, msg = True, "terminé"
         else:  # l'étape a écrit son statut (elle peut avoir noté elle-même un échec) : c'est lui qui fait foi
@@ -249,7 +290,7 @@ def run_forever(interval_s: int = INTERVAL_S, db_path: Path | None = None,
                 offset_s: int = 0) -> int:
     """Boucle du service. Rend le nombre de cycles faits (max_cycles : pour les essais)."""
     global _signals
-    if not isinstance(interval_s, (int, float)) or interval_s < MIN_INTERVAL_S:
+    if not _valid_interval(interval_s) or interval_s < MIN_INTERVAL_S:
         raise ValueError(f"intervalle invalide : {interval_s!r} s (au moins {MIN_INTERVAL_S} s)")
     _stop.clear()
     _signals = 0
