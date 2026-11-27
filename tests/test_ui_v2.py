@@ -205,6 +205,7 @@ def test_pages_read_only_contract_fields():
     summary = {"domaine", "x", "y", "coefficient", "type", "lo", "hi", "n", "verdict", "source"}
     # contrat partagé de cette révision (producteurs : companies, forecast, api), lu défensivement par la page
     corr |= {"verdict_r", "verdict_rho", "q_value", "q_r", "q_rho", "lag", "rho_lo", "rho_hi"}
+    companies |= {"devise_capex", "devise_ca"}  # devise propre à chaque montant (companies.table)
     summary |= {"unite_n", "n_bootstrap_unit"}
     backtest |= {"skill_lo", "skill_hi", "note", "r_niveau", "rho_niveau"}
     prev |= {"horizon", "mesure"}
@@ -372,6 +373,22 @@ const done=()=>fetches.forEach(f=>f.done=true);
     // B (5 Md CAD) et D (3 Md AUD) ne passent jamais devant les USD ; montant inconnu en dernier
     return (byMines==='DEACB'&&byCapex==='CADBE'&&up==='ACDBE'&&h.includes('à l’intérieur de chaque devise')
       &&h.includes('USD, AUD, CAD'))||JSON.stringify({byMines,byCapex,up});
+  });
+  await check('directory_amount_currency_per_column',async()=>{
+    // CAPEX et CA dans deux devises : chaque montant porte la sienne, le tri du CA se fait dans la
+    // devise du CA ; un serveur sans devise_capex / devise_ca garde « devise »
+    done(); P.PG.co=null; P.PG.coSort={k:'ca_dernier',desc:true}; P.show('societes','annuaire');
+    const co=(id,dc,dr,cap,ca)=>({id,nom:id,devise:dc||dr,devise_capex:dc,devise_ca:dr,capex_dernier:cap,
+      ca_dernier:ca,n_mines:1,tickers:[]});
+    take('/api/companies?limit=5000').ok({total:4,rows:[co('A','USD','CAD',1e9,9e9),co('B','USD','USD',2e9,2e9),
+      co('C','CAD','USD',3e9,1e9),{id:'D',nom:'D',devise:'EUR',capex_dernier:5e8,ca_dernier:4e9,n_mines:1}]});
+    await flush(); const order=h=>[...h.matchAll(/data-href="#\/societe\/(\w)"/g)].map(m=>m[1]).join('');
+    const h=$el('#co_list').innerHTML, rowA=h.split('data-href="#/societe/A"')[1].split('</tr>')[0];
+    const cells=[...rowA.matchAll(/<td class="n">([\s\S]*?)<\/td>/g)].map(m=>m[1]);
+    // A : CAPEX en USD, CA 9 Md en CAD ; tri du CA : USD (B, C) avant CAD (A) et EUR (D), 1 société chacune
+    return (order(h)==='BCAD'&&cells[1].includes('USD')&&!cells[1].includes('CAD')&&cells[3].includes('CAD')
+      &&cells[3].includes('9,00 Md')&&h.includes('USD, CAD, EUR')&&clean(h))
+      ||JSON.stringify({o:order(h),cells});
   });
   await check('company_sheet_with_badges',async()=>{
     done(); P.show('societes','fiche','rio');
@@ -587,6 +604,7 @@ EMPTY_ALL = r"""
 
 CHECKS = ["badge", "badge_never_upgrades_server_verdict", "routes", "one_view_at_a_time",
           "directory_empty_message", "directory_escapes_names", "directory_sorts_amounts_within_currency",
+          "directory_amount_currency_per_column",
           "company_sheet_with_badges", "company_sheet_uses_retained_fact",
           "company_head_never_gets_raw_tickers", "company_corr_verdicts_per_coefficient",
           "capex_page_empty", "backtest_page", "backtest_empty", "forecast_without_series",
