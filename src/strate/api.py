@@ -999,9 +999,12 @@ CO_ROW = {"id": (), "nom": ("name",), "pays": ("country",), "tickers": (), "cik"
           "capex_dernier": ("capex",), "capex_annee": ("year",), "effectifs": ("employees",),
           "effectifs_annee": ("employees_year",), "ca_dernier": ("revenue",), "devise": ("currency",),
           "investissements_12m": ()}
+# verdict = verdict_rho (ancien format, calculé sur l'IC de ρ) ; verdict_r porte sur l'IC de r ; q_value :
+# Benjamini-Hochberg sur la famille de tests du même calcul ; n_societes = unité du bootstrap.
 CO_CORR = {"x": (), "y": (), "decalage": ("lag",), "r": ("pearson_r",), "r_lo": ("pearson_lo",),
            "r_hi": ("pearson_hi",), "rho": ("spearman_rho", "spearman"), "rho_lo": ("spearman_lo",),
-           "rho_hi": ("spearman_hi",), "n_societes": ("n_companies",), "n_points": ("n",), "verdict": ()}
+           "rho_hi": ("spearman_hi",), "n_societes": ("n_companies",), "n_points": ("n",), "q_value": (),
+           "verdict_r": (), "verdict_rho": ("verdict",), "verdict": ("verdict_rho",)}
 
 
 def _companies_rows() -> tuple[list[dict], str | None]:
@@ -1172,7 +1175,7 @@ def _companies_corr() -> tuple[list[dict], str | None, str, list[dict]]:
         return [], MSG_SOCIETES, methode, []
     if isinstance(res, dict) and isinstance(res.get("methode"), str) and res["methode"]:
         methode = res["methode"]
-    raw = _rows(res)
+    raw = [r for r in _rows(res) if r.get("portee") in (None, "ensemble")]  # table globale seulement
     rows = [_shape(r, CO_CORR) for r in raw]
     return rows, None if rows else MSG_SOCIETES, methode, raw
 

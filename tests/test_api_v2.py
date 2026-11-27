@@ -706,6 +706,22 @@ def test_companies_correlations(client, monkeypatch):
     )
 
 
+def test_companies_correlations_contract_columns(client, monkeypatch):
+    """Un verdict par coefficient, la q-valeur BH et n sociétés ; lignes par société exclues de la table."""
+    rows = [
+        {**CORR[0], "portee": "ensemble", "q_value": 0.04, "verdict_r": "lien positif démontré",
+         "verdict_rho": "non démontré : q ≥ 0,10", "verdict": "non démontré : q ≥ 0,10"},
+        {**CORR[0], "portee": "societe", "company_id": "bhp", "verdict": "x"},
+        {**CORR[1], "verdict": "non démontré (ρ)"},  # ancien format : verdict = verdict de ρ
+    ]
+    fake(monkeypatch, "companies", correlations=lambda: {"rows": rows, "methode": "m"})
+    a, b = client.get("/api/companies/correlations").json()["rows"]
+    assert (a["q_value"], a["verdict_r"], a["verdict_rho"], a["n_societes"]) == (
+        0.04, "lien positif démontré", "non démontré : q ≥ 0,10", 14)
+    assert (b["verdict_r"], b["verdict_rho"], b["verdict"], b["q_value"]) == (
+        None, "non démontré (ρ)", "non démontré (ρ)", None)
+
+
 def test_companies_correlations_empty(client, monkeypatch):
     fake(monkeypatch, "companies", correlations=lambda: [])
     d = client.get("/api/companies/correlations").json()
