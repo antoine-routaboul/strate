@@ -310,6 +310,30 @@ def test_dying_with_a_person_is_still_an_accident(title, lang):
     assert N.classify(title, [], lang)[0] == "accident", title
 
 
+@pytest.mark.parametrize("title,lang", [
+    # particules figurées, même avec une personne à côté
+    ("Workers' strike dies down at Kibali", "en"), ("Strike by 3,000 workers dies down", "en"),
+    ("Rally in gold miners dies out", "en"), ("Gold miners die-hard rally", "en"),
+    # une année ou une durée n'est pas un effectif
+    ("Kibali deal dies after 3 years", "en"), ("Kibali deal dies after three years", "en"),
+    ("Mining stocks die in 2024", "en"), ("Hopes for Kibali deal die in 2025", "en"),
+    ("Muere el acuerdo tras 3 años", "es"), ("Muere el proyecto en 2024", "es"),
+    # possessif, ou personne après le verbe en anglais
+    ("Miners' hopes die as talks fail", "en"), ("Union deal dies, 2,000 miners walk out", "en"),
+])
+def test_figurative_dying_near_a_person_or_number_is_not_an_accident(title, lang):
+    assert N.classify(title, [], lang)[0] != "accident", title
+
+
+@pytest.mark.parametrize("title,lang", [
+    ("Security guard dies at mine", "en"), ("Villager dies near Kibali mine", "en"),
+    ("Gold panner dies", "en"), ("Miner's son dies", "en"), ("Dying miner rescued", "en"),
+    ("Muoiono due operai", "it"), ("Bei Unfall stirbt ein Arbeiter", "de"),
+])
+def test_dying_with_other_people_is_an_accident(title, lang):
+    assert N.classify(title, [], lang)[0] == "accident", title
+
+
 def test_classify_themes_and_false_friends():
     assert N.classify("Mine news", ["STRIKE", "PROTEST"], "en")[0] == "social"
     typ, s, _ = N.classify("Mine news", ["LEGISLATION"], "en")

@@ -1129,49 +1129,90 @@ _FALSE_SENSE = {"strike": {"earthquake", "quake", "lightning", "drone", "missile
 
 # Verbes « mourir » qui meurent aussi au figuré : « Mine strike dies down », « Gold rally dies »,
 # « Muere el acuerdo », « Projekt stirbt ». Ils ne comptent que si le titre nomme une personne (mineur,
-# ouvrier, homme…) ou un nombre (« 3 die »). Repli : « muoiono », « murieron », « умер » restent libres,
-# leur sujet est presque toujours humain.
+# ouvrier, homme…) ou un effectif (« 3 die », « Two die ») à deux mots au plus du verbe. Repli :
+# « muoiono », « murieron », « умер » restent libres, leur sujet est presque toujours humain.
 _PERSON: dict[str, frozenset[str]] = {lang: frozenset(txt.split()) for lang, txt in {
     "en": "worker workers miner miners man men woman women people person persons employee employees "
           "contractor contractors boy boys girl girls child children teen teenager driver operator "
-          "operators digger diggers labourer labourers laborer laborers artisanal one two three four five "
-          "six seven eight nine ten dozen dozens several",
+          "operators digger diggers labourer labourers laborer laborers artisanal guard guards villager "
+          "villagers resident residents panner panners engineer engineers technician technicians "
+          "geologist geologists officer officers soldier soldiers student students son sons daughter "
+          "daughters father mother husband wife",
     "fr": "mineur mineurs ouvrier ouvriers travailleur travailleurs homme hommes femme femmes personne "
           "personnes employe employes salarie salaries enfant enfants jeune jeunes orpailleur orpailleurs "
-          "sous-traitant deux trois quatre cinq six sept huit neuf dix plusieurs",
+          "sous-traitant gardien gardiens vigile vigiles villageois habitant habitants",
     "es": "minero mineros trabajador trabajadores obrero obreros operario operarios persona personas "
-          "hombre hombres mujer mujeres joven jovenes nino nina empleado empleados dos tres cuatro cinco "
-          "seis siete ocho nueve diez varios",
+          "hombre hombres mujer mujeres joven jovenes nino nina empleado empleados guardia vigilante "
+          "poblador pobladores comunero comuneros",
     "pt": "mineiro mineiros trabalhador trabalhadores operario operarios pessoa pessoas homem homens "
-          "mulher jovem crianca funcionario funcionarios garimpeiro garimpeiros dois duas tres quatro "
-          "cinco seis sete oito nove dez",
+          "mulher jovem crianca funcionario funcionarios garimpeiro garimpeiros vigilante morador "
+          "moradores",
     "de": "bergmann bergleute kumpel arbeiter mann frau menschen person personen mitarbeiter kind "
-          "jugendlicher zwei drei vier funf sechs sieben acht neun zehn",
+          "jugendlicher anwohner",
     "it": "minatore minatori operaio operai lavoratore lavoratori uomo donna persona persone giovane "
-          "dipendente dipendenti due tre quattro cinque sei sette otto nove dieci",
+          "dipendente dipendenti guardia abitante abitanti",
 }.items()}
+# Effectifs : comptent comme une personne (« 3 die », « Muoiono due operai »), sauf une année
+# (« in 2024 ») ou une durée, une quantité (« after 3 years », « tras tres años », « 2 km »).
+_COUNT: dict[str, frozenset[str]] = {lang: frozenset(txt.split()) for lang, txt in {
+    "en": "one two three four five six seven eight nine ten dozen dozens several",
+    "fr": "deux trois quatre cinq six sept huit neuf dix plusieurs",
+    "es": "dos tres cuatro cinco seis siete ocho nueve diez varios",
+    "pt": "dois duas tres quatro cinco seis sete oito nove dez",
+    "de": "zwei drei vier funf sechs sieben acht neun zehn",
+    "it": "due tre quattro cinque sei sette otto nove dieci",
+}.items()}
+_UNIT = frozenset("""
+year years month months week weeks day days hour hours decade decades percent pct cent km mile miles
+tonne tonnes ton tons oz moz mt koz ans an mois semaine semaines jour jours heure heures pour
+ano anos mes meses semana semanas dia dias hora horas por ciento jahr jahre jahren monat monate
+woche wochen tag tage tagen stunde stunden prozent anno anni mese mesi settimana settimane giorno
+giorni ora ore
+""".split())
 _NEEDS_PERSON: dict[str, frozenset[str]] = {
     "en": frozenset({"die", "dies", "dying"}), "fr": frozenset({"meurt", "meurent"}),
     "es": frozenset({"muere", "murio"}), "pt": frozenset({"morre"}),
     "de": frozenset({"stirbt", "sterben"}), "it": frozenset({"muore", "decedut"}),
 }
+# Anglais : « dies down », « die out », « dies off », « die-hard » (replié « die hard ») sont toujours
+# figurés, même avec une personne à côté (« Workers' strike dies down », « Gold miners die-hard rally »).
+_EN_FIGURATIVE_NEXT = frozenset({"down", "out", "off", "away", "back", "hard"})
+# Possessif anglais (« miners' », « miner's ») : la personne qualifie le sujet, elle ne l'est pas
+# (« Miners' hopes die as talks fail »). Repéré sur le titre brut, le repli retire les apostrophes.
+_EN_POSSESSIVE = re.compile(r"[^\W_]+['’ʼ]s?(?![^\W_])")
 
 
 _PERSON_WINDOW = 2  # « Muere el acuerdo minero » : « minero » y est un adjectif, trois mots plus loin
 
 
-def _is_person(lang: str, t: str) -> bool:
+def _is_person(lang: str, toks: list[str], j: int) -> bool:
+    t = toks[j]
     # composés allemands : « Bergarbeiter », « Grubenmann »
-    return t.isdigit() or t in _PERSON.get(lang, frozenset()) or (
-        lang == "de" and t.endswith(("arbeiter", "leute", "mann")))
+    if t in _PERSON.get(lang, frozenset()) or (lang == "de" and t.endswith(("arbeiter", "leute", "mann"))):
+        return True
+    if not (t.isdigit() or t in _COUNT.get(lang, frozenset())):
+        return False
+    if t.isdigit() and len(t) == 4 and t[:2] in ("19", "20"):
+        return False                                   # une année : « Mining stocks die in 2024 »
+    return j + 1 >= len(toks) or toks[j + 1] not in _UNIT
 
 
-def _verb_with_person(lang: str, mode: str, kw: str, toks: list[str]) -> bool:
-    """Le verbe figure-t-il à deux mots au plus d'une personne ou d'un nombre ?"""
+def _verb_with_person(lang: str, mode: str, kw: str, toks: list[str], possessive: frozenset[str]) -> bool:
+    """Le verbe figure-t-il à deux mots au plus d'une personne ou d'un effectif ?
+
+    Anglais, ordre sujet-verbe : la personne doit précéder « die »/« dies » (« Deal dies, 2,000 miners
+    walk out » n'est pas un accident) ; « dying » peut aussi la suivre (« dying miner »). Les autres
+    langues placent souvent le sujet après le verbe (« Muere un trabajador ») : les deux côtés comptent.
+    """
     for i, t in enumerate(toks):
         hit = t == kw if mode == "exact" else t.startswith(kw) if mode == "prefix" else kw in t
-        near = range(max(0, i - _PERSON_WINDOW), min(len(toks), i + _PERSON_WINDOW + 1))
-        if hit and any(_is_person(lang, toks[j]) for j in near if j != i):
+        if not hit:
+            continue
+        if lang == "en" and i + 1 < len(toks) and toks[i + 1] in _EN_FIGURATIVE_NEXT:
+            continue
+        after = _PERSON_WINDOW if lang != "en" or t == "dying" else 0
+        near = range(max(0, i - _PERSON_WINDOW), min(len(toks), i + after + 1))
+        if any(j != i and toks[j] not in possessive and _is_person(lang, toks, j) for j in near):
             return True
     return False
 
@@ -1210,10 +1251,12 @@ def classify(title: str, themes: list[str], lang: str | None) -> tuple[str, floa
     cjk_text = _cjk_fold(title)
     hits: dict[str, set[str]] = {}
     needs = _NEEDS_PERSON.get(lang or "", frozenset())
+    possessive = frozenset(words(m.group(0))[0] for m in _EN_POSSESSIVE.finditer(title)) \
+        if lang == "en" and needs else frozenset()
     for typ, mode, kw in _KW.get(lang or "", ()):
         if kw in _FALSE_SENSE and tokset & _FALSE_SENSE[kw]:
             continue
-        if kw in needs and not _verb_with_person(lang or "", mode, kw, toks):
+        if kw in needs and not _verb_with_person(lang or "", mode, kw, toks, possessive):
             continue
         if _kw_hit(mode, kw, toks, tokset, joined, cjk_text):
             hits.setdefault(typ, set()).add(kw)

@@ -105,9 +105,12 @@ chaîne : elle est notée et retentée au cycle suivant.
   acquisition, adquisición, aquisição, Übernahme, поглощение, 收购 ; production, output, expansion,
   shutdown, suspend… ; tailings, relaves, rejeitos…). Un type par événement (le plus fort).
   Les verbes « mourir » qui meurent aussi au figuré (die, dies, meurt, muere, murió, morre, stirbt,
-  muore…) ne comptent qu'avec une personne ou un nombre à deux mots au plus (« Two workers die »,
-  « 3 die ») : « strike dies down », « deal dies », « Muere el acuerdo minero » ne sont pas des
-  accidents. Arabe « توفي » en mot entier (pas « توفير », fournir). Choix : un titre sans sujet
+  muore…) ne comptent qu'avec une personne ou un effectif à deux mots au plus (« Two workers die »,
+  « 3 die », « Security guard dies ») : « strike dies down », « deal dies », « Muere el acuerdo
+  minero » ne sont pas des accidents. Une année ou une durée n'est pas un effectif (« Mining stocks
+  die in 2024 », « Deal dies after 3 years »). En anglais, la personne doit précéder le verbe et ne
+  pas être au possessif (« Miners' hopes die »), et « dies down / out / off », « die-hard » restent
+  figurés même avec une personne à côté (« Workers' strike dies down »). Arabe « توفي » en mot entier (pas « توفير », fournir). Choix : un titre sans sujet
   humain (« Muere en la mina ») est perdu, comme « öldü » turc ou « mati » indonésien.
 - `confidence` = force du rattachement × force du classement (0–1), détail dans `evidence` (JSON).
 
