@@ -1,7 +1,9 @@
-"""Couche sociétés : univers, identifiants, comptes SEC, effectifs, segments, ratios, corrélations.
+"""Sociétés (docs/previsions-societes.md § 2) : entités, identifiants, faits SEC/Wikidata, investissements
+annoncés, corrélations, mise à jour bornée et reprenable, lecture pour l'API.
 
-Aucun accès réseau : la SEC et Wikidata sont remplacées par un faux client qui sert les fichiers de
-tests/fixtures/companies/ (un extrait réel de companyfacts Newmont, le reste synthétique).
+Aucun accès réseau : SEC et Wikidata sont remplacées par un faux client. Les fichiers
+tests/fixtures/sec_*.json sont des extraits réels (companyfacts Newmont us-gaap et BHP ifrs-full,
+company_tickers_exchange).
 """
 
 import json
@@ -15,518 +17,834 @@ import pytest
 from strate import companies as C
 from strate import entities
 
-FIX = Path(__file__).parent / "fixtures" / "companies"
+FIX = Path(__file__).parent / "fixtures"
 
 
-def fx(name: str) -> str:
-    return (FIX / name).read_text("utf-8")
+def fixture(name: str) -> dict:
+    return json.loads((FIX / name).read_text("utf-8"))
 
 
 @pytest.fixture(autouse=True)
 def isolated(tmp_path, monkeypatch):
-    """Sorties dans un dossier temporaire ; ni vraie veille, ni contact SEC de la machine."""
+    """Sorties dans un dossier temporaire ; ni vraie veille, ni User-Agent de la machine."""
     out = tmp_path / "companies"
     monkeypatch.setattr(C, "OUT", out)
     monkeypatch.setattr(C, "STATUS", out / "status.json")
     monkeypatch.setattr(C, "STATE", out / "state.json")
-    monkeypatch.setattr(C, "CONFIG", tmp_path / "config.local.toml")
-    monkeypatch.setattr(C, "_veille_db", lambda: tmp_path / "veille.db")
+    monkeypatch.setattr(C, "TICKERS_CACHE", out / "sec_tickers.json")
+    monkeypatch.setattr(C, "_veille_db", lambda: tmp_path / "absente.db")
     monkeypatch.delenv("STRATE_SEC_UA", raising=False)
     return tmp_path
 
 
 def fake_catalog() -> pd.DataFrame:
     rows = [
-        dict(id="icmm1", name="Boddington", aliases=None, owner=None, operator="Newmont Mining Corporation",
-             icmm="ICMM1", jasansky="J1"),
-        dict(id="icmm2", name="Tanami", aliases="Tanami Operations", owner="Newmont Corporation",
-             operator=None,
-             icmm="ICMM2", jasansky="J2"),
-        dict(id="icmm3", name="Goldstrike", aliases=None, owner="Barrick Gold Corporation;Newmont",
-             operator="Barrick Mining Corporation", icmm="ICMM3", jasansky=None),
-        dict(id="icmm4", name="Omai", aliases="Omai;Omai Gold Mines Ltd.;National Lead Co. Mine", owner=None,
-             operator=None, icmm="ICMM4", jasansky=None),
-        dict(id="icmm5", name="Peñasquito", aliases="Penasquito", owner=None, operator="Q123456",
-             icmm="ICMM5", jasansky=None),
-        dict(id="wd1", name="Ahafo", aliases=None, owner=None, operator="New Gold Inc.", icmm=None,
-             jasansky=None),
+        dict(
+            id="icmm1",
+            name="Boddington",
+            owner=None,
+            operator="Newmont Mining Corporation",
+            jasansky="J1",
+            commodities="gold",
+        ),
+        dict(
+            id="icmm2",
+            name="Tanami",
+            owner="Newmont Corporation",
+            operator="Newmont",
+            jasansky="J2",
+            commodities="gold",
+        ),
+        dict(
+            id="icmm3",
+            name="Escondida",
+            owner="BHP Group; Rio Tinto Group",
+            operator="BHP Group",
+            jasansky="J3",
+            commodities="copper",
+        ),
+        dict(
+            id="icmm4", name="Penasquito", owner=None, operator="Q123456", jasansky=None, commodities="gold"
+        ),
+        dict(
+            id="icmm5", name="Ahafo", owner=None, operator="New Gold Inc.", jasansky=None, commodities="gold"
+        ),
+        dict(
+            id="icmm6",
+            name="Cerro",
+            owner="Corporación Minera X SA",
+            operator=None,
+            jasansky=None,
+            commodities="silver",
+        ),
     ]
     return pd.DataFrame(rows).set_index("id", drop=False)
 
 
 class FakeHttp:
-    """Sert des réponses selon l'URL ; compte les appels ; Wikidata selon le texte de la requête."""
+    """Répond selon l'URL ou le texte SPARQL ; lève sur toute URL inconnue (aucun vrai réseau)."""
 
-    def __init__(self, routes: dict[str, object] | None = None, sparql_rows=None):
+    def __init__(self, routes: dict[str, object] | None = None, sparql=None):
         self.routes = routes or {}
         self.calls: list[str] = []
-        self.sparql_rows = sparql_rows or {}
+        self.sparql_calls: list[str] = []
+        self.sparql_fn = sparql or (lambda q: [])
         self.requests = 0
+        self.sparql_requests = 0
 
-    def _find(self, url):
+    def get_json(self, url):
         self.calls.append(url)
         self.requests += 1
         for k, v in self.routes.items():
             if k in url:
+                if isinstance(v, Exception):
+                    raise v
                 return v
-        return None
-
-    def get_json(self, url):
-        v = self._find(url)
-        return json.loads(v) if isinstance(v, str) else v
-
-    def get_text(self, url):
-        v = self._find(url)
-        return v if isinstance(v, str) else None
+        raise AssertionError(f"URL inattendue : {url}")
 
     def sparql(self, q):
-        if "P1128" in q and "p:P1128" in q:
-            return self.sparql_rows.get("employees", [])
-        return self.sparql_rows.get("lookup", [])
+        self.sparql_calls.append(q)
+        self.sparql_requests += 1
+        return self.sparql_fn(q)
 
 
-def _b(**kw):
-    out = {}
-    for k, v in kw.items():
-        out[k] = {"value": f"http://www.wikidata.org/entity/{v}" if k == "item" else v}
-    return out
+def _b(**kw) -> dict:
+    return {k: {"value": f"http://www.wikidata.org/entity/{v}" if k == "item" else v} for k, v in kw.items()}
 
 
-# -- noms ----------------------------------------------------------------------------------------------------
-def test_norm_key_merges_legal_forms_but_keeps_distinctive_words():
-    k = C.norm_key
-    assert k("Newmont Mining Corporation") == k("Newmont") == k("NEWMONT Corp /DE/") == "newmont"
-    assert k("Barrick Gold Corporation") == "barrick"
-    assert k("New Gold Inc.") == "new gold"  # « new » seul serait générique
-    assert k("Mineral Resources Limited") == "mineral resources"
-    assert k("KG Mining (Bald Mountain), Inc") == "kg mining"  # parenthèse retirée, « kg » trop court
-    assert k("Vale S.A.") == "vale" and k("BHP Group") == "bhp"
-    assert k("Q123456") is None and k(None) is None
-    assert C.id_base("Royal Gold Inc") == "royal_gold"
+# -- noms et entités ------------------------------------------------------------------------------------
+def test_norm_key_merges_legal_forms_and_keeps_distinctive_words():
+    assert C.norm_key("Newmont Mining Corporation") == C.norm_key("Newmont") == "newmont"
+    assert C.norm_key("NEWMONT Corp /DE/") == "newmont"
+    assert C.norm_key("The Barrick Gold Corp.") == "barrick"
+    assert C.norm_key("New Gold Inc.") == "new gold"  # « new » seul ne distingue rien
+    assert C.norm_key("Q123456") is None and C.norm_key(None) is None
+    assert "Newmont Corporation" in C.name_variants(
+        "Newmont Mining Corporation"
+    ) or "Newmont Mining Corporation" in C.name_variants("Newmont Mining Corporation")
 
 
-def test_company_alias_only_when_name_ends_with_legal_form():
-    assert C._company_alias("Omai Gold Mines Ltd.")
-    assert C._company_alias("Pato Consolidated Dredging Co.")
-    assert not C._company_alias("National Lead Co. Mine")
-    assert not C._company_alias("Omai")
+def test_build_entities_dedupes_links_and_shares():
+    graph = entities.load()
+    co, lk = C.build_entities(fake_catalog(), graph, twins={"boddington": "icmm1"})
+    ids = set(co["id"])
+    assert {"newmont", "bhp"} <= ids
+    # « Newmont Mining Corporation », « Newmont Corporation » et « Newmont » : une seule société
+    assert not any(i.startswith("newmont_") for i in ids)
+    nm = co.set_index("id").loc["newmont"]
+    assert nm["suivie"] and nm["cik"] == "0001164727" and "NYSE:NEM" in nm["tickers"]
+    # la jumelle du catalogue de Boddington est rattachée à la mine de la liste suivie (pas comptée deux fois)
+    m = lk[lk["company_id"] == "newmont"].set_index("site_id")
+    assert "boddington" in m.index and "icmm1" not in m.index
+    assert m.at["boddington", "part"] == pytest.approx(1.0)
+    assert m.at["icmm2", "role"] == "propriétaire + exploitant" and np.isnan(m.at["icmm2", "part"])
+    # liste « ; » éclatée, QID non résolu gardé comme identifiant
+    assert set(lk.loc[lk["site_id"] == "icmm3", "company_id"]) >= {"bhp", "rio_tinto"}
+    q = co[co["qid"] == "Q123456"]
+    assert len(q) == 1 and q.iloc[0]["n_mines"] == 1
+    assert int(nm["n_mines"]) == lk[lk["company_id"] == "newmont"]["site_id"].nunique()
 
 
-def test_name_variants_cover_wikidata_spellings():
-    v = C.name_variants("Newmont Mining Corporation")
-    assert "Newmont Mining Corporation" in v and "Newmont Mining" in v and "Newmont Mining Inc." in v
+def test_merge_by_qid_folds_entities_and_links():
+    co = pd.DataFrame(
+        [
+            dict(
+                id="barrick_mining",
+                nom="Barrick Mining",
+                cle="barrick mining",
+                alias="Barrick Mining",
+                tickers="NYSE:B",
+                cik="0000756894",
+                cik_source="graine",
+                qid="Q1",
+                pays=None,
+                sources="graine SEC",
+                suivie=False,
+                n_mines=1,
+            ),
+            dict(
+                id="barrick",
+                nom="Barrick",
+                cle="barrick",
+                alias="Barrick",
+                tickers="",
+                cik=None,
+                cik_source=None,
+                qid="Q1",
+                pays="Canada",
+                sources="catalogue",
+                suivie=False,
+                n_mines=2,
+            ),
+        ],
+        columns=C.COMPANY_COLS,
+    )
+    lk = pd.DataFrame(
+        [
+            dict(
+                company_id="barrick_mining", site_id="s1", nom="A", role="propriétaire", part=0.6, source="x"
+            ),
+            dict(company_id="barrick", site_id="s1", nom="A", role="exploitant", part=np.nan, source="x"),
+            dict(company_id="barrick", site_id="s2", nom="B", role="exploitant", part=np.nan, source="x"),
+        ],
+        columns=C.LINK_COLS,
+    )
+    co2, lk2 = C.merge_by_qid(co, lk)
+    assert list(co2["id"]) == ["barrick_mining"]
+    r = co2.iloc[0]
+    assert r["pays"] == "Canada" and "Barrick" in r["alias"] and r["n_mines"] == 2
+    assert sorted(lk2["site_id"]) == ["s1", "s2"]
+    assert lk2.set_index("site_id").at["s1", "part"] == pytest.approx(0.6)
 
 
-# -- univers -------------------------------------------------------------------------------------------------
-def test_universe_dedupes_links_mines_and_keeps_watchlist_ids():
-    uni = C.build_universe(fake_catalog(), entities.load(), veille_sites=["icmm5"])
-    by = uni.set_index("id")
-    # Newmont : identifiant de la liste suivie, trois écritures fusionnées, CIK de la graine
-    nm = by.loc["newmont"]
-    assert nm["watchlist"] and nm["cik"] == "0001164727" and "graine SEC" in nm["sources"]
-    sites = {m["site"]: m["roles"] for m in C.mines_of(nm)}
-    assert sites["icmm1"] == ["exploitant"] and sites["icmm2"] == ["propriétaire"]
-    assert "icmm3" in sites and "boddington" in sites  # liste suivie (sites.toml)
-    # Barrick Gold et Barrick Mining : une seule société grâce aux alias de la graine
-    bar = [i for i in uni["id"] if "barrick" in i]
-    assert len(bar) == 1 and by.loc[bar[0], "cik"] == "0000756894"
-    # alias ICMM société gardé, alias « … Co. Mine » ignoré, QID non résolu ignoré
-    assert any(uni["name"] == "Omai Gold Mines Ltd.")
-    assert not any(uni["name"].str.contains("National Lead"))
-    assert not any(uni["name"] == "Q123456")
-    # cotations jumelles : un seul CIK principal, l'autre en complément
-    assert by.loc["bhp", "cik"] == "0000811809" and by.loc["bhp", "cik_alt"] == "0001171264"
-    assert len(set(uni["id"])) == len(uni)
+# -- identifiants ---------------------------------------------------------------------------------------
+def test_parse_sec_tickers_both_formats_and_ambiguous_names():
+    rows = C.parse_sec_tickers(fixture("sec_tickers_exchange.json"))
+    nem = next(r for r in rows if r["ticker"] == "NEM")
+    assert nem == dict(cik="0001164727", nom="NEWMONT Corp /DE/", ticker="NEM", bourse="NYSE")
+    old = C.parse_sec_tickers({"0": {"cik_str": 2809, "ticker": "AEM", "title": "AGNICO EAGLE MINES LTD"}})
+    assert old == [dict(cik="0000002809", nom="AGNICO EAGLE MINES LTD", ticker="AEM", bourse=None)]
+    extra = [
+        dict(cik="0000000001", nom="Newmont Inc", ticker="NMX", bourse="OTC"),
+        dict(cik="0000716643", nom="REGIS CORP", ticker="RGS", bourse="NASDAQ"),
+    ]
+    by_t, by_k = C.ticker_index(rows + extra)
+    assert by_t["BHP"]["cik"] == "0000811809"
+    assert "newmont" not in by_k  # deux CIK pour le même nom : correspondance par nom refusée
+    assert by_k["agnico eagle mines"]["cik"] == "0000002809"
+    assert C.strict_key("Regis Resources") not in by_k  # clé stricte : pas de « Regis Corp »
 
 
-def test_assign_ids_priority_seed_then_tickers_then_wikidata():
-    uni = pd.DataFrame([
-        dict(id="a", name="Alpha Mining", key="alpha", aliases="Alpha Mining", tickers="NYSE:ALP", cik=None,
-             cik_source=None, qid=None),
-        dict(id="b", name="Beta Corp", key="beta", aliases="Beta Corp", tickers="", cik=None, cik_source=None,
-             qid=None),
-        dict(id="c", name="Gamma", key="gamma", aliases="Gamma", tickers="", cik="0000000003",
-             cik_source="graine", qid=None),
-    ])
-    wd = {"Beta Corp": dict(qid="Q2", cik="0000000002"), "Gamma": dict(qid="Q3", cik="0000009999"),
-          "Alpha Mining": dict(qid="Q1", cik="0000008888")}
-    tick = {"T:ALP": dict(cik="0000000001", title="ALPHA MINING")}
-    out = C.assign_ids(uni, wd, tick).set_index("id")
-    assert out.loc["a", "cik"] == "0000000001" and "ticker" in out.loc["a", "cik_source"]
-    assert out.loc["b", "cik"] == "0000000002" and "P5531" in out.loc["b", "cik_source"]
-    assert out.loc["c", "cik"] == "0000000003"  # la graine vérifiée n'est jamais écrasée
-    assert out.loc["c", "qid"] == "Q3"
+def test_assign_ids_priority_seed_ticker_name_wikidata():
+    co = pd.DataFrame(
+        [
+            dict(
+                id="a",
+                nom="Agnico Eagle Mines Limited",
+                cle=C.norm_key("Agnico Eagle Mines Limited"),
+                alias="",
+                tickers="",
+                cik=None,
+                cik_source=None,
+                qid=None,
+                pays=None,
+                sources="",
+                suivie=False,
+                n_mines=1,
+            ),
+            dict(
+                id="t",
+                nom="Teck",
+                cle="teck",
+                alias="",
+                tickers="TSX:TECK.B;NYSE:TECK",
+                cik=None,
+                cik_source=None,
+                qid=None,
+                pays=None,
+                sources="",
+                suivie=False,
+                n_mines=1,
+            ),
+            dict(
+                id="s",
+                nom="Seeded",
+                cle="seeded",
+                alias="",
+                tickers="NYSE:BHP",
+                cik="0000000042",
+                cik_source="graine",
+                qid=None,
+                pays=None,
+                sources="",
+                suivie=True,
+                n_mines=1,
+            ),
+            dict(
+                id="w",
+                nom="Regis Resources",
+                cle="regis",
+                alias="",
+                tickers="ASX:RRL",
+                cik=None,
+                cik_source=None,
+                qid=None,
+                pays=None,
+                sources="",
+                suivie=False,
+                n_mines=1,
+            ),
+            dict(
+                id="q",
+                nom="Q99",
+                cle=None,
+                alias="",
+                tickers="",
+                cik=None,
+                cik_source=None,
+                qid="Q99",
+                pays=None,
+                sources="",
+                suivie=False,
+                n_mines=1,
+            ),
+        ],
+        columns=C.COMPANY_COLS,
+    )
+    wd = {
+        "Regis Resources": dict(qid="Q109627116", cik=None, pays="Australia", label=None),
+        "Q99": dict(qid="Q99", cik="0000000099", pays="Peru", label="Minera Q"),
+    }
+    out = C.assign_ids(co, wd, C.parse_sec_tickers(fixture("sec_tickers_exchange.json"))).set_index("id")
+    assert out.at["a", "cik"] == "0000002809" and "nom" in out.at["a", "cik_source"]
+    assert out.at["t", "cik"] == "0000886986" and "ticker TECK" in out.at["t", "cik_source"]
+    assert out.at["s", "cik"] == "0000000042"  # la graine n'est jamais écrasée
+    assert out.at["w", "qid"] == "Q109627116" and out.at["w", "pays"] == "Australia"
+    assert pd.isna(out.at["w", "cik"])  # ASX : pas de ticker américain, pas de CIK inventé
+    assert out.at["q", "nom"] == "Minera Q" and out.at["q", "cik"] == "0000000099"
+    assert "Wikidata P5531" in out.at["q", "cik_source"]
 
 
-def test_wikidata_lookup_prefers_item_with_cik_and_employees_need_date():
-    http = FakeHttp(sparql_rows={
-        "lookup": [_b(name="Acme", item="Q900"), _b(name="Acme", item="Q901", cik="1234")],
-        "employees": [_b(item="Q901", n="5000", date="2023-12-31T00:00:00Z"), _b(item="Q901", n="7000")],
-    })
-    wd = C.wikidata_lookup(http, ["Acme"])
-    assert wd["Acme"] == dict(qid="Q901", cik="0000001234")
-    e = C.wikidata_employees(http, ["Q901"])
-    assert e.to_dict("records") == [dict(qid="Q901", year=2023, employees=5000.0,
-                                         source_url="https://www.wikidata.org/wiki/Q901#P1128")]
+def test_wikidata_lookup_keeps_company_with_cik_then_oldest_qid():
+    def sparql(q):
+        assert "wdt:P5531|wdt:P1128" in q  # seuls les éléments « société »
+        return [
+            _b(name="BHP", item="Q900"),
+            _b(name="BHP", item="Q625713", cik="0001171264", iso="AU"),
+            _b(name="Regis Resources", item="Q20"),
+            _b(name="Regis Resources", item="Q10", iso="AU"),
+        ]
+
+    got = C.wikidata_lookup(FakeHttp(sparql=sparql), ["BHP", "Regis Resources"])
+    assert {k: got["BHP"][k] for k in ("qid", "cik", "pays")} == dict(
+        qid="Q625713", cik="0001171264", pays="Australia"
+    )
+    assert got["Regis Resources"]["qid"] == "Q10" and got["Regis Resources"]["pays"] == "Australia"
 
 
-# -- comptes annuels -----------------------------------------------------------------------------------------
-def test_parse_facts_annual_only_latest_filing_and_concept_fallback():
-    f = json.loads(fx("newmont_companyfacts.json"))
-    d = C.parse_facts(f, "newmont", "0001164727")
-    w = d.pivot_table(index="year", columns="metric", values="value")
-    assert 2026 not in w.index  # 2026 n'existe qu'en 10-Q (trimestres) : jamais pris pour un exercice
-    assert w.loc[2025, "capex"] == 3.035e9 and w.loc[2025, "revenue"] == 22.669e9
-    # retraitement : 2016 publié en 2019 et en 2020 → le dépôt le plus récent gagne
-    r16 = d[(d["metric"] == "revenue") & (d["year"] == 2016)].iloc[0]
-    rev = f["facts"]["us-gaap"]["RevenueFromContractWithCustomerExcludingAssessedTax"]["units"]["USD"]
-    allv = [x for x in rev
-            if x["end"] == "2016-12-31" and x["form"] == "10-K"]
-    assert r16["filed"] == max(x["filed"] for x in allv)
-    # immobilisations : concept principal, puis « avec droits d'utilisation » pour les années manquantes
-    ppe = d[d["metric"] == "ppe_net"].set_index("year")
-    assert ppe["concept"].nunique() == 2 and ppe.index.is_unique
-    assert (d["value"][d["metric"] == "capex"] > 0).all()
-    assert d["source_url"].str.match(r"https://www\.sec\.gov/Archives/edgar/data/1164727/\d{18}/").all()
-    assert set(d["unit"]) == {"USD"}
+# -- faits SEC ------------------------------------------------------------------------------------------
+def test_parse_companyfacts_newmont_us_gaap():
+    df = C.parse_companyfacts(fixture("sec_newmont_companyfacts.json"), "newmont", "0001164727")
+    assert set(df["indicateur"]) >= {"capex", "chiffre_affaires", "exploration", "actifs_miniers"}
+    capex = df[df["indicateur"] == "capex"].set_index("annee")
+    assert list(capex.index) == [2016, 2017, 2018, 2019]
+    assert capex.at[2018, "valeur"] == pytest.approx(1_032_000_000)
+    assert capex.at[2018, "concept"] == "us-gaap:PaymentsToAcquireProductiveAssets"
+    assert set(capex["formulaire"]) <= {"10-K", "10-K/A"} and set(capex["devise"]) == {"USD"}
+    assert capex.at[2018, "source"].startswith("https://www.sec.gov/Archives/edgar/data/1164727/")
+    assert set(df["origine"]) == {"sec"} and (df["unite"] == "monnaie").all()
+    ca = df[df["indicateur"] == "chiffre_affaires"].set_index("annee")
+    assert ca.at[2019, "valeur"] == pytest.approx(9_740_000_000)  # même valeur que Wikidata P2139
+    assert ca.at[2017, "valeur"] == pytest.approx(7_379_000_000)  # chiffre retraité du dépôt le plus récent
+    assert ca["concept"].isin(C.CONCEPTS["chiffre_affaires"]).all()
+    assets = df[df["indicateur"] == "actifs_miniers"]
+    assert (assets["fin_exercice"].str[5:] == "12-31").all()  # bilans aux seules clôtures annuelles
 
 
-def test_parse_facts_ifrs_and_instant_only_at_fiscal_close():
-    facts = {"facts": {"ifrs-full": {
-        "Revenue": {"units": {"CAD": [
-            dict(start="2023-01-01", end="2023-12-31", val=100, accn="A1", form="40-F", filed="2024-03-01"),
-            dict(start="2024-01-01", end="2024-12-31", val=120, accn="A2", form="40-F", filed="2025-03-01"),
-            dict(start="2024-01-01", end="2024-12-31", val=121, accn="A3", form="6-K", filed="2025-04-01")]}},
-        "PropertyPlantAndEquipment": {"units": {"CAD": [
-            dict(end="2024-12-31", val=500, accn="A2", form="40-F", filed="2025-03-01"),
-            dict(end="2024-06-30", val=480, accn="A2", form="40-F", filed="2025-03-01")]}}}}}
-    d = C.parse_facts(facts, "x", "0000000001")
-    rev = d[d["metric"] == "revenue"].set_index("year")["value"]
-    assert rev.to_dict() == {2023: 100.0, 2024: 120.0}  # le 6-K n'est pas un rapport annuel
-    ppe = d[d["metric"] == "ppe_net"]
-    assert ppe["value"].tolist() == [500.0] and set(d["unit"]) == {"CAD"}
+def test_parse_companyfacts_bhp_ifrs_june_year_end_and_employees():
+    df = C.parse_companyfacts(fixture("sec_bhp_companyfacts.json"), "bhp", "0000811809")
+    capex = df[df["indicateur"] == "capex"].set_index("annee")
+    assert capex.at[2018, "valeur"] == pytest.approx(4_979_000_000)  # exercice clos le 30 juin, pas le 6-K
+    assert capex.at[2018, "fin_exercice"] == "2018-06-30"
+    assert capex.at[2018, "concept"].startswith("ifrs-full:PurchaseOfPropertyPlantAndEquipment")
+    assert set(capex["formulaire"]) == {"20-F"}
+    emp = df[df["indicateur"] == "effectifs"]
+    assert len(emp) and (emp["unite"] == "personnes").all() and emp["devise"].isna().all()
+    assert emp["valeur"].between(10_000, 200_000).all()
 
 
-def test_merge_alt_fills_missing_years_same_currency_only():
-    main = pd.DataFrame([dict(metric="capex", year=2024, unit="USD", value=1.0)]).reindex(columns=C.FIN_COLS)
-    alt = pd.DataFrame([dict(metric="capex", year=2024, unit="USD", value=9.0),
-                        dict(metric="capex", year=2020, unit="USD", value=2.0),
-                        dict(metric="capex", year=2019, unit="ZAR", value=30.0)]).reindex(columns=C.FIN_COLS)
-    out = C.merge_alt(main, alt)
-    assert out.set_index("year")["value"].to_dict() == {2020: 2.0, 2024: 1.0}
+def _fact(end, val, filed, form="10-K", start=None, accn=None):
+    x = dict(end=end, val=val, filed=filed, form=form, accn=accn or f"0000000000-{filed[:4]}-{end[:4]}")
+    if start:
+        x["start"] = start
+    return x
 
 
-def test_dei_employees_latest_annual_filing():
-    facts = {"facts": {"dei": {"EntityNumberOfEmployees": {"units": {"pure": [
-        dict(end="2024-12-31", val=900, accn="0000000001-25-000001", form="10-K", filed="2025-02-01"),
-        dict(end="2024-12-31", val=950, accn="0000000001-25-000009", form="10-K/A", filed="2025-05-01"),
-        dict(end="2025-06-30", val=1000, accn="0000000001-25-000010", form="10-Q", filed="2025-08-01")]}}}}}
-    rows = C.dei_employees(facts, "x", "0000000001")
-    assert [(r["year"], r["employees"]) for r in rows] == [(2024, 950.0)]
+def test_parse_companyfacts_rules_restatement_quarter_currency_and_dei():
+    facts = {
+        "facts": {
+            "us-gaap": {
+                "PaymentsToAcquirePropertyPlantAndEquipment": {
+                    "units": {
+                        "USD": [
+                            _fact("2020-12-31", -100, "2021-02-01", start="2020-01-01", accn="a-2020"),
+                            _fact(
+                                "2020-12-31", -120, "2022-02-01", start="2020-01-01", accn="a-2021"
+                            ),  # retraité
+                            _fact("2021-12-31", 130, "2022-02-01", start="2021-01-01", accn="a-2021"),
+                            _fact("2021-06-30", 60, "2021-08-01", form="10-Q", start="2021-01-01"),
+                            _fact(
+                                "2021-09-30", 90, "2022-02-01", start="2021-07-01", accn="a-2021"
+                            ),  # trimestre dans un 10-K
+                        ]
+                    }
+                },
+                "PaymentsToAcquireProductiveAssets": {
+                    "units": {
+                        "USD": [_fact("2019-12-31", 80, "2020-02-01", start="2019-01-01", accn="a-2019")]
+                    }
+                },
+                "PaymentsToAcquireMiningAssets": {
+                    "units": {
+                        "CAD": [_fact("2018-12-31", 70, "2019-02-01", start="2018-01-01", accn="a-2018")]
+                    }
+                },
+                "PropertyPlantAndEquipmentNet": {
+                    "units": {
+                        "USD": [
+                            _fact("2021-12-31", 1000, "2022-02-01", accn="a-2021"),
+                            _fact("2021-09-30", 990, "2022-02-01", accn="a-2021"),
+                        ]
+                    }
+                },  # bilan trimestriel repris
+            },
+            "dei": {
+                "EntityNumberOfEmployees": {
+                    "units": {"employee": [_fact("2022-02-15", 3200, "2022-02-20", accn="a-2021")]}
+                }
+            },  # page de garde après la clôture
+        }
+    }
+    df = C.parse_companyfacts(facts, "x", "0000000001")
+    cap = df[df["indicateur"] == "capex"].set_index("annee")
+    assert cap.at[2020, "valeur"] == 120 and cap.at[2021, "valeur"] == 130  # signe retiré, dernier dépôt
+    assert cap.at[2019, "concept"] == "us-gaap:PaymentsToAcquireProductiveAssets"  # bouche le trou
+    assert 2018 not in cap.index  # autre devise : jamais mélangée
+    ppe = df[df["indicateur"] == "actifs_miniers"]
+    assert list(ppe["valeur"]) == [1000]
+    emp = df[df["indicateur"] == "effectifs"].iloc[0]
+    assert emp["annee"] == 2021 and emp["valeur"] == 3200 and emp["unite"] == "personnes"
 
 
-# -- effectifs dans le texte ---------------------------------------------------------------------------------
-def test_extract_employees_english_french_and_rejections():
-    n, snip = C.extract_employees(C.html_to_text(fx("annual_report_en.htm")))
-    assert n == 22_200 and "December 31, 2025" in snip  # « In 2024 employees » n'est pas un effectif
-    n, _ = C.extract_employees(C.html_to_text(fx("aif_fr.htm")), lang="fr")
-    assert n == 3_400
-    assert C.extract_employees("the workforce was approximately 31,000 employees and contractors.") is None
-    assert C.extract_employees("We had 3 employees.") is None  # hors plage
-    assert C.extract_employees("No headcount disclosed here.") is None
+# -- faits Wikidata -------------------------------------------------------------------------------------
+def test_wikidata_facts_dated_with_currency_and_best_facts():
+    def sparql(q):
+        assert "pq:P585" in q
+        return [
+            _b(item="Q1", prop="P2139", amount="9740000000", date="2019-01-01T00:00:00Z", code="USD"),
+            _b(item="Q1", prop="P2139", amount="12000000000", date="2019-06-01T00:00:00Z", code="USD"),
+            _b(item="Q1", prop="P2139", amount="15000000000", date="2020-01-01T00:00:00Z", code="AUD"),
+            _b(item="Q1", prop="P2139", amount="1", date="2021-01-01T00:00:00Z"),  # sans devise
+            _b(item="Q1", prop="P1128", amount="+14300", date="+2020-01-01T00:00:00Z"),
+            _b(item="Q2", prop="P1128", amount="500", date="2020-01-01T00:00:00Z"),  # société inconnue
+        ]
+
+    wf = C.wikidata_facts(FakeHttp(sparql=sparql), {"Q1": "regis"})
+    ca = wf[wf["indicateur"] == "chiffre_affaires"]
+    assert list(ca["annee"]) == [2019] and ca.iloc[0]["valeur"] == 12e9  # même année : la plus récente
+    assert set(ca["devise"]) == {"USD"}  # une seule devise par série
+    emp = wf[wf["indicateur"] == "effectifs"].iloc[0]
+    assert emp["valeur"] == 14300 and emp["source"] == "https://www.wikidata.org/wiki/Q1#P1128"
+    sec = pd.DataFrame(
+        [
+            dict(
+                company_id="regis",
+                indicateur="chiffre_affaires",
+                annee=2018,
+                valeur=1.0,
+                unite="monnaie",
+                devise="USD",
+                source="s",
+                formulaire="10-K",
+                concept="c",
+                fin_exercice="2018-12-31",
+                depose=None,
+                accn=None,
+                cik=None,
+                origine="sec",
+            )
+        ]
+    )
+    best = C.best_facts(pd.concat([sec, wf], ignore_index=True))
+    assert set(best.loc[best["indicateur"] == "chiffre_affaires", "origine"]) == {"sec"}
+    assert set(best.loc[best["indicateur"] == "effectifs", "origine"]) == {"wikidata"}
 
 
-def test_validate_employees_rejects_outlier_against_nearest_year():
-    assert C.validate_employees(22_000, 2025, {2024: 21_000})[0]
-    ok, why = C.validate_employees(220, 2025, {2024: 21_000, 2019: 50})
-    assert not ok and "écart" in why
-    assert C.validate_employees(5_000, 2025, {})[0]
-    assert not C.validate_employees(2_000_000, 2025, {})[0]
+# -- investissements annoncés ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "title,domain,montant,devise,cat",
+    [
+        ("Newmont to invest $1.2 billion in Boddington expansion", None, 1.2e9, "USD", "expansion"),
+        ("Agnico Eagle invests C$100 million in exploration at Detour Lake", None, 1e8, "CAD", "exploration"),
+        ("Rio Tinto buys Arcadium Lithium in $6.7 billion deal", None, 6.7e9, "USD", "rachat/fusion"),
+        (
+            "Vale investirá R$ 2,5 bilhões em nova usina de pelotização",
+            None,
+            2.5e9,
+            "BRL",
+            "usine/traitement",
+        ),
+        ("Codelco invertirá 1.500 millones de dólares en un acueducto", None, 1.5e9, "USD", "infrastructure"),
+        ("Orano va investir 1,7 milliard d'euros dans une usine", None, 1.7e9, "EUR", "usine/traitement"),
+        ("Rio Tinto investiert 2 Milliarden Euro in Solarpark", None, 2e9, "EUR", "décarbonation/énergie"),
+        ("Northern Star approves $1.5bn KCGM mill expansion", "abc.net.au", 1.5e9, "AUD", "usine/traitement"),
+        ("Teck to spend $500m on new railway link", "globeandmail.ca", 5e8, "CAD", "infrastructure"),
+        ("BHP commits US$4.9bn to Jansen potash", None, 4.9e9, "USD", "autre"),
+    ],
+)
+def test_extract_investment_multilingual(title, domain, montant, devise, cat):
+    got = C.extract_investment(title, domain)
+    assert got is not None
+    assert got["montant"] == pytest.approx(montant) and got["devise"] == devise and got["categorie"] == cat
 
 
-def test_annual_text_url_uses_primary_or_aif_exhibit():
-    http = FakeHttp({"-index.htm": fx("filing_index_40f.htm")})
-    f40 = dict(form="40-F", accn="0001104659-26-000001", primary="tm40f.htm")
-    assert C.annual_text_url(http, "0000002809", f40).endswith("/aif.htm")
-    f10 = dict(form="10-K", accn="0001164727-26-000010", primary="nem-20251231.htm")
-    assert C.annual_text_url(http, "0001164727", f10) == (
-        "https://www.sec.gov/Archives/edgar/data/1164727/000116472726000010/nem-20251231.htm")
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Newmont reports revenue of $4.6 billion for the quarter",  # résultat, pas investissement
+        "Gold price hits $2,400 an ounce as miners expand",  # prix unitaire
+        "Barrick fined $10 million over spill",  # pas de verbe d'investissement
+        "Mine expansion plan approved",  # pas de montant
+        "Company plans 2025 expansion investment",  # une année n'est pas un montant
+        "Miner to invest $50,000 in community garden",  # sous le seuil
+        "",
+    ],
+)
+def test_extract_investment_rejections(title):
+    assert C.extract_investment(title) is None
 
 
-def test_annual_filings_sorted_and_filtered():
-    sub = {"filings": {"recent": {"form": ["10-Q", "10-K", "8-K", "10-K"],
-                                  "accessionNumber": ["a", "b", "c", "d"],
-                                  "filingDate": ["2026-05-01", "2026-02-19", "2026-01-01", "2025-02-20"],
-                                  "reportDate": ["", "2025-12-31", "", "2024-12-31"],
-                                  "primaryDocument": ["q.htm", "k25.htm", "e.htm", "k24.htm"]}}}
-    fs = C.annual_filings(sub)
-    assert [f["accn"] for f in fs] == ["b", "d"] and fs[0]["report"] == "2025-12-31"
+def test_parse_number_locales():
+    assert C.parse_number("1,200") == 1200 and C.parse_number("1,5") == 1.5
+    assert C.parse_number("1.500") == 1500 and C.parse_number("2.75") == 2.75
+    assert C.parse_number("1 200") == 1200 and C.parse_number("1.234,5") == 1234.5
 
 
-# -- segments ------------------------------------------------------------------------------------------------
-def test_parse_segment_capex_keeps_annual_single_segment_facts():
-    xs = C.parse_segment_capex(fx("segments_instance.xml"))
-    got = {(x["label"], x["year"], x["concept"]): x["value"] for x in xs}
-    assert got[("Boddington", 2025, "us-gaap:PaymentsToAcquireProductiveAssets")] == 310e6
-    assert got[("Boddington", 2024, "us-gaap:PaymentsToAcquireProductiveAssets")] == 250e6
-    assert got[("Tanami", 2025, "us-gaap:PaymentsToAcquireProductiveAssets")] == 420e6  # axe neutre toléré
-    assert ("Boddington", 2025, "extension:SustainingCapitalExpenditures") in got
-    labels = {x["label"] for x in xs}
-    assert "Penasquito" not in labels  # segment × pays : deux dimensions, ambigu
-    assert all(x["value"] != 80e6 for x in xs)  # trimestre ignoré
-    assert all(x["value"] != 3035e6 for x in xs)  # total sans dimension ignoré
-    assert not any(x["concept"].endswith("Revenues") for x in xs)
+def test_match_companies_longest_and_no_common_words():
+    co = pd.DataFrame(
+        dict(
+            id=["rio", "tinto_x", "gold", "nem"],
+            nom=["Rio Tinto", "Tinto", "Gold Corp", "Newmont"],
+            alias=["Rio Tinto Group", "", "", "Newmont Mining"],
+        )
+    )
+    idx = C.name_index(co)
+    assert "gold" not in idx  # mot courant seul : jamais une société
+    assert C.match_companies("Rio Tinto and Newmont Mining strike gold deal", idx) == ["rio", "nem"]
 
 
-def test_mine_matcher_company_mines_then_unique_catalogue_name():
-    cat = fake_catalog()
-    m = C.MineMatcher(cat, entities.load())
-    assert m.match("Tanami", ["icmm2", "icmm1"]) == ("icmm2", "Tanami", "mine de la société")
-    assert m.match("Goldstrike", []) == ("icmm3", "Goldstrike", "catalogue (nom unique)")
-    assert m.match("Africa", ["icmm1"]) == (None, None, None)
-    assert m.match("Corporate And Other", ["icmm1"]) == (None, None, None)
-    assert m.match("Australia", []) == (None, None, None)
-    assert m.match("Boddington", ["boddington", "icmm1"]) == (None, None, None)  # deux fiches : ambigu
-
-
-def test_announced_investments_from_veille(isolated):
-    db = isolated / "veille.db"
+def _veille(tmp_path) -> Path:
+    db = tmp_path / "veille.db"
     con = sqlite3.connect(db)
-    con.execute("CREATE TABLE events (site_id TEXT, site_name TEXT, event_type TEXT, published_at TEXT, "
-                "title TEXT, url TEXT)")
-    con.executemany("INSERT INTO events VALUES (?,?,?,?,?,?)", [
-        ("icmm1", "Boddington", "operations", "2026-03-01T00:00:00Z", "Newmont approves $1bn expansion",
-         "u1"),
-        ("icmm1", "Boddington", "finance", "2026-04-01T00:00:00Z", "Inversión de US$ 300 millones", "u2"),
-        ("icmm1", "Boddington", "accident", "2026-05-01T00:00:00Z", "Expansion halted after accident", "u3"),
-        ("icmm1", "Boddington", "operations", "2026-06-01T00:00:00Z", "Quarterly gold output falls", "u4"),
-        ("icmm9", "Autre", "operations", "2026-06-01T00:00:00Z", "Big investment", "u5")])
+    con.executescript("""
+        CREATE TABLE raw_docs (id TEXT, published_at TEXT, fetched_at TEXT, url TEXT, domain TEXT, lang TEXT,
+                               title TEXT, organizations TEXT, hint_site TEXT, status TEXT);
+        CREATE TABLE events (doc_id TEXT, site_id TEXT);""")
+    con.executemany(
+        "INSERT INTO raw_docs VALUES (?,?,?,?,?,?,?,?,?,?)",
+        [
+            (
+                "d1",
+                "2026-10-01T00:00:00Z",
+                None,
+                "https://x/1",
+                "mining.com",
+                "en",
+                "Newmont to invest $1.2 billion in mine expansion",
+                None,
+                None,
+                "done",
+            ),
+            (
+                "d2",
+                "2026-09-01T00:00:00Z",
+                None,
+                "https://x/2",
+                "abc.net.au",
+                "en",
+                "Owner approves $300m processing plant at the mine",
+                "",
+                None,
+                "done",
+            ),
+            (
+                "d3",
+                "2026-08-01T00:00:00Z",
+                None,
+                "https://x/3",
+                "x.com",
+                "en",
+                "BHP to buy stake for $2bn",
+                "bhp group",
+                None,
+                "rejected",
+            ),
+            (
+                "d4",
+                "2026-07-01T00:00:00Z",
+                None,
+                "https://x/4",
+                "x.com",
+                "en",
+                "Gold rallies again",
+                None,
+                None,
+                "new",
+            ),
+        ],
+    )
+    con.executemany("INSERT INTO events VALUES (?,?)", [("d1", "boddington"), ("d2", "boddington")])
     con.commit()
     con.close()
-    rows = C.announced_investments("newmont", ["icmm1"])
-    assert sorted(r["source_url"] for r in rows) == ["u1", "u2"]
-    assert all(r["kind"] == "annonce_veille" and np.isnan(r["value"]) for r in rows)
+    return db
 
 
-# -- ratios et statistiques ----------------------------------------------------------------------------------
-def test_ratios_growth_only_consecutive_years_same_concept():
-    w = pd.DataFrame([
-        dict(company_id="a", year=2020, capex=100.0, revenue=1000.0, da=50.0, ppe_net=1.0, employees=10.0,
-             capex_concept="c1", ppe_net_concept="p1"),
-        dict(company_id="a", year=2021, capex=150.0, revenue=1000.0, da=50.0, ppe_net=1.0, employees=10.0,
-             capex_concept="c1", ppe_net_concept="p1"),
-        dict(company_id="a", year=2023, capex=300.0, revenue=1000.0, da=50.0, ppe_net=1.0, employees=10.0,
-             capex_concept="c1", ppe_net_concept="p1"),
-        dict(company_id="a", year=2024, capex=330.0, revenue=0.0, da=50.0, ppe_net=1.0, employees=np.nan,
-             capex_concept="c2", ppe_net_concept="p1"),
-    ])
-    r = C.ratios(w).set_index("year")
-    assert r.loc[2021, "capex_growth"] == pytest.approx(0.5)
-    assert np.isnan(r.loc[2023, "capex_growth"])  # année manquante
-    assert np.isnan(r.loc[2024, "capex_growth"])  # concept changé : croissance non comparable
-    assert r.loc[2020, "capex_revenue"] == pytest.approx(0.1) and np.isnan(r.loc[2024, "capex_revenue"])
-    assert r.loc[2020, "capex_per_employee"] == 10 and r.loc[2020, "capex_da"] == 2
+def test_investments_from_veille_attach_by_name_and_mine(tmp_path):
+    co, lk = C.build_entities(fake_catalog(), entities.load(), twins={})
+    inv = C.investments(co, lk, _veille(tmp_path))
+    assert list(inv["doc_id"]) == ["d1", "d2"]  # rejeté et sans montant : écartés
+    a = inv.set_index("doc_id")
+    assert a.at["d1", "company_id"] == "newmont" and a.at["d1", "rattachement"] == "nom+mine"
+    assert a.at["d1", "site_id"] == "boddington" and a.at["d1", "categorie"] == "expansion"
+    assert a.at["d2", "company_id"] == "newmont" and a.at["d2", "rattachement"] == "mine"
+    assert a.at["d2", "devise"] == "AUD" and bool(a.at["d2", "devise_deduite"])
 
 
-def _panel(signal: float, k: int = 12, years: int = 6, seed: int = 0) -> pd.DataFrame:
+# -- corrélations ---------------------------------------------------------------------------------------
+def _panel(signal: float, k: int = 10, years: int = 8, seed: int = 1) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
     rows = []
     for c in range(k):
-        for y in range(years):
-            x = rng.normal()
-            rows.append(dict(company_id=f"c{c}", year=2015 + y, x=x, y=signal * x + rng.normal()))
+        x = rng.normal(size=years)
+        y = signal * x + rng.normal(scale=0.5, size=years)
+        rows += [dict(company_id=f"c{c}", annee=2010 + t, x=x[t], y=y[t]) for t in range(years)]
     return pd.DataFrame(rows)
 
 
-def test_corr_stats_coefficients_interval_and_verdict():
-    s = C.corr_stats(_panel(2.0), "x", "y", n_boot=300)
-    assert s["n"] == 72 and s["n_companies"] == 12
-    assert s["pearson_r"] > 0.7 and s["pearson_lo"] <= s["pearson_r"] <= s["pearson_hi"]
-    assert s["spearman_lo"] > 0 and s["verdict"].startswith("lien positif démontré")
-    s = C.corr_stats(_panel(0.0, seed=3), "x", "y", n_boot=300)
-    assert s["spearman_lo"] < 0 < s["spearman_hi"] and s["verdict"].startswith("non démontré")
-    s = C.corr_stats(_panel(2.0, k=2, years=3), "x", "y", n_boot=100)
-    assert s["verdict"].startswith("trop peu de données")
+def test_corr_stats_coefficients_interval_n_and_verdict():
+    s = C.corr_stats(_panel(1.0), n_boot=300)
+    assert s["r"] > 0.6 and 0 < s["rho_lo"] < s["rho"] < s["rho_hi"] and s["r_lo"] < s["r"] < s["r_hi"]
+    assert s["n_points"] == 80 and s["n_societes"] == 10
+    assert C.verdict(s, 8, 3).startswith("lien positif démontré")
+    z = C.corr_stats(_panel(0.0, seed=3), n_boot=300)
+    assert z["rho_lo"] < 0 < z["rho_hi"] and C.verdict(z, 8, 3).startswith("non démontré")
+    tiny = C.corr_stats(_panel(1.0, k=1, years=4), n_boot=100)
+    assert C.verdict(tiny, 8, 3).startswith("trop peu de données")
 
 
-def test_company_satellite_same_mines_both_years():
-    uni = pd.DataFrame([dict(id="a", mines_json=json.dumps([dict(site="m1", roles=[], share=None),
-                                                             dict(site="m2", roles=[], share=0.5)]))])
-    def reader(site):
-        rows = []
-        for y, b in ({"m1": {2021: 10.0, 2022: 11.0}, "m2": {2022: 4.0}}[site]).items():
-            for mo in (1, 2, 3, 4):
-                rows.append(dict(date=pd.Timestamp(y, mo, 1), signal="bare_km2", value=b, quality=0.9))
-                rows.append(dict(date=pd.Timestamp(y, mo, 1), signal="new_bare_km2", value=0.5, quality=0.9))
-            rows.append(dict(date=pd.Timestamp(y, 5, 1), signal="bare_km2", value=999.0, quality=0.1))
-        return pd.DataFrame(rows)
-    s = C.company_satellite(uni, {"m1", "m2"}, reader=reader)
-    assert len(s) == 1 and s.iloc[0]["year"] == 2022 and s.iloc[0]["n_mines"] == 1  # m2 n'a pas 2021
-    assert s.iloc[0]["sat_growth"] == pytest.approx(np.log(11 / 10))
-    assert s.iloc[0]["new_share"] == pytest.approx(0.05)
+def test_correlate_capex_production_lag_weighted_by_share():
+    years = list(range(2008, 2020))
+    rng = np.random.default_rng(0)
+    facts, prod, links, cat = [], [], [], []
+    for c in range(6):
+        capex = np.exp(np.cumsum(rng.normal(0, 0.3, len(years))) + 20)
+        g = np.diff(np.log(capex))
+        # la production suit le CAPEX avec un an de retard
+        p_growth = np.r_[0.0, 0.0, g[:-1]] * 0.9 + rng.normal(0, 0.03, len(years))
+        tonnes = np.exp(np.cumsum(p_growth) + 15)
+        for y, v in zip(years, capex, strict=True):
+            facts.append(
+                dict(
+                    company_id=f"c{c}",
+                    indicateur="capex",
+                    annee=y,
+                    valeur=v,
+                    unite="monnaie",
+                    devise="USD",
+                    source="s",
+                    formulaire="10-K",
+                    concept="us-gaap:X",
+                    fin_exercice=f"{y}-12-31",
+                    depose=None,
+                    accn=None,
+                    cik=None,
+                    origine="sec",
+                )
+            )
+        for site, part, scale in ((f"m{c}", 1.0, 1.0), (f"n{c}", 0.01, -1.0)):
+            links.append(
+                dict(company_id=f"c{c}", site_id=site, nom=site, role="propriétaire", part=part, source="x")
+            )
+            cat.append(dict(id=site, jasansky=f"J{site}", commodities="gold"))
+            vals = tonnes if scale > 0 else tonnes[::-1]  # mine minoritaire en sens inverse : poids 1 %
+            prod += [
+                dict(facility_id=f"J{site}", year=y, serie="minerai extrait", value_tonnes=v, source_id="j")
+                for y, v in zip(years, vals, strict=True)
+            ]
+    facts, links = pd.DataFrame(facts, columns=C.FACT_COLS), pd.DataFrame(links, columns=C.LINK_COLS)
+    cat = pd.DataFrame(cat).set_index("id", drop=False)
+    out = C.correlate(
+        facts, links, cat=cat, prod=pd.DataFrame(prod), twins={}, reader=lambda s: pd.DataFrame(), n_boot=200
+    )
+    assert set(out.columns) == set(C.CORR_COLS)
+    ens = out[out["portee"] == "ensemble"].set_index(["x", "y", "decalage"])
+    assert len(ens) == len(C.PAIRS)
+    lag1 = ens.loc[("CAPEX", "production (mines détenues)", 1)]
+    lag0 = ens.loc[("CAPEX", "production (mines détenues)", 0)]
+    assert lag1["rho"] > 0.7 and lag1["rho_lo"] > 0 and lag1["verdict"].startswith("lien positif")
+    assert abs(lag0["rho"]) < lag1["rho"]
+    assert lag1["n_societes"] == 6 and lag1["n_points"] == 6 * 10
+    sat = ens.loc[("CAPEX", "emprise satellite (surface nue)", 0)]
+    assert sat["n_points"] == 0 and sat["verdict"].startswith("trop peu")
+    per = out[(out["portee"] == "societe") & (out["decalage"] == 1) & (out["y"].str.startswith("production"))]
+    assert len(per) == 6 and per["r"].notna().all()
 
 
-def test_company_production_mean_log_growth():
-    uni = pd.DataFrame([dict(id="a", mines_json=json.dumps([dict(site="m1", roles=[], share=None)]))])
-    cat = pd.DataFrame([dict(id="m1", jasansky="F1")]).set_index("id", drop=False)
-    ore = [dict(facility_id="F1", year=y, serie="minerai extrait", value_tonnes=v, source_id="s")
-           for y, v in ((2015, 100.0), (2016, 110.0), (2018, 121.0))]
-    metal = [dict(facility_id="F1", year=2016, serie="or (métal)", value_tonnes=5.0, source_id="s")]
-    prod = pd.DataFrame(ore + metal)
-    p = C.company_production(uni, cat, prod).set_index("year")
-    assert list(p.index) == [2016] and p.loc[2016, "prod_growth"] == pytest.approx(np.log(1.1))
+def test_mine_footprint_growth_needs_three_clear_months():
+    d = pd.DataFrame(
+        dict(
+            date=pd.to_datetime(
+                [
+                    "2021-01-01",
+                    "2021-02-01",
+                    "2021-03-01",
+                    "2022-01-01",
+                    "2022-02-01",
+                    "2022-03-01",
+                    "2023-01-01",
+                ]
+            ),
+            signal="bare_km2",
+            value=[10, 10, 10, 20, 20, 20, 40],
+            quality=1.0,
+        )
+    )
+    g = C.mine_footprint_growth(["s"], reader=lambda s: d)
+    assert list(g["annee"]) == [2022] and g.iloc[0]["g"] == pytest.approx(np.log(2))
 
 
-def test_forecast_backtest_never_uses_the_future():
-    rows = []
-    for y in range(2010, 2020):
-        ocf = 100.0 * (1.1 ** (y - 2010))
-        capex = 0.5 * ocf if y < 2017 else 5.0 * ocf  # rupture APRÈS 2016
-        rows.append(dict(company_id="a", year=y, capex=capex, ocf=ocf, unit="USD"))
-    w = pd.DataFrame(rows)
-    bt = C.forecast_backtest(w)
-    bt = bt[bt["model"] == "cash_flow"].set_index("year")  # un modèle par ligne : ratio CAPEX/flux
-    # 2016 : prévision faite fin 2015 → ratio passé 0,5×1,1 → aucun indice de la rupture de 2017
-    assert bt.loc[2016, "pred"] == pytest.approx(0.55 * w.set_index("year").loc[2015, "ocf"])
-    assert bt.loc[2017, "pred"] < bt.loc[2017, "actual"] / 5
-    fc = C.forecast_next(w, "cash_flow", np.zeros(30))
-    assert fc.iloc[0]["year"] == 2020 and fc.iloc[0]["lo90"] == pytest.approx(fc.iloc[0]["value"])
+# -- réseau ---------------------------------------------------------------------------------------------
+def test_sec_user_agent_env_or_generic(monkeypatch):
+    assert C.sec_user_agent() == "Strate/0.1 open-source research tool"
+    monkeypatch.setenv("STRATE_SEC_UA", "Labo X recherche")
+    assert C.sec_user_agent() == "Labo X recherche"
 
 
-# -- accès SEC -----------------------------------------------------------------------------------------------
-def test_sec_user_agent_from_env_or_config_never_default_contact(isolated, monkeypatch):
-    assert C.sec_user_agent() == (C.GENERIC_UA, False)
-    (isolated / "config.local.toml").write_text('[sec]\nuser_agent = "Lab research-desk"\n', "utf-8")
-    assert C.sec_user_agent() == ("Lab research-desk", True)
-    monkeypatch.setenv("STRATE_SEC_UA", "Env agent")
-    assert C.sec_user_agent() == ("Env agent", True)
-
-
-def test_http_respects_retry_after_and_rate(monkeypatch):
+def test_http_rate_limit_and_retry_after(monkeypatch):
     sleeps = []
     monkeypatch.setattr(C.time, "sleep", lambda s: sleeps.append(s))
 
     class R:
-        def __init__(self, code, headers=None, body=None):
-            self.status_code, self.headers, self._b = code, headers or {}, body
+        def __init__(self, code, headers=None, data=None):
+            self.status_code, self.headers, self._d = code, headers or {}, data
 
         def json(self):
-            return self._b
+            return self._d
 
-    seq = [R(429, {"retry-after": "7"}), R(200, body={"ok": 1})]
-    h = C.Http("test agent", min_interval=0.0)
-    h.c = type("Fake", (), {"get": lambda self, url, **kw: seq.pop(0)})()
-    assert h.get_json("https://data.sec.gov/x") == {"ok": 1}
-    assert 7.0 in sleeps and h.requests == 2
+    answers = [R(429, {"retry-after": "3"}), R(200, data={"ok": 1}), R(404)]
 
+    class Client:
+        def get(self, url):
+            return answers.pop(0)
 
-# -- de bout en bout -----------------------------------------------------------------------------------------
-def _routes(with_archives: bool) -> dict:
-    r = {"companyfacts/CIK0001164727": fx("newmont_companyfacts.json")}
-    if with_archives:
-        sub = {"filings": {"recent": {"form": ["10-K"], "accessionNumber": ["0001164727-26-000010"],
-                                      "filingDate": ["2026-02-19"], "reportDate": ["2025-12-31"],
-                                      "primaryDocument": ["nem-20251231.htm"]}}}
-        r.update({
-            "submissions/CIK0001164727": sub,
-            "000116472726000010/index.json": {"directory": {"item": [{"name": "nem-20251231_htm.xml"},
-                                                                     {"name": "nem-20251231_lab.xml"}]}},
-            "nem-20251231_htm.xml": fx("segments_instance.xml"),
-            "nem-20251231.htm": fx("annual_report_en.htm"),
-            "company_tickers.json": {"0": {"cik_str": 1164727, "ticker": "NEM", "title": "NEWMONT Corp"}},
-        })
-    return r
+    h = C.Http(ua="test")
+    h.c = Client()
+    assert h.min_interval >= 0.1  # ≤ 10 requêtes/s
+    assert h.get_json("u") == {"ok": 1}
+    assert 3.0 in sleeps and h.requests == 2
+    assert h.get_json("u") is None
 
 
-def _only_newmont(uni_fn):
-    def f(*a, **k):
-        u = uni_fn(*a, **k)
-        keep = u["id"].eq("newmont") | u["cik"].isna()
-        return u[keep].reset_index(drop=True)
-    return f
+# -- mise à jour de bout en bout ------------------------------------------------------------------------
+def _routes():
+    return {
+        "company_tickers_exchange.json": fixture("sec_tickers_exchange.json"),
+        "CIK0001164727.json": fixture("sec_newmont_companyfacts.json"),
+        "CIK0000811809.json": fixture("sec_bhp_companyfacts.json"),
+        "companyfacts/CIK": None,
+    }  # toute autre société : pas de companyfacts
 
 
-def test_update_without_contact_reads_financials_only_and_resumes(monkeypatch):
-    monkeypatch.setattr(C, "build_universe", _only_newmont(C.build_universe))
-    http = FakeHttp(_routes(False), sparql_rows={"lookup": [_b(name="Newmont", item="Q1785405",
-                                                                cik="0001164727")]})
-    st = C.update(http=http, cat=fake_catalog())
-    assert st["sec_contact"] is False and "pas de contact SEC" in st["message"]
-    assert st["n_with_financials"] == 1 and st["n_segment_rows"] == 0
-    assert not any("www.sec.gov" in u for u in http.calls)  # archives jamais appelées sans contact
-    fin = C.load("financials")
-    assert set(fin["company_id"]) == {"newmont"} and fin["year"].max() == 2025
-    n = len(http.calls)
-    C.update(http=http, cat=fake_catalog())  # relancé tout de suite : rien n'est retéléchargé
-    assert len(http.calls) == n
-    for t in ("companies", "financials", "employees", "segments"):
-        assert C._path(t).exists()
-    assert "Lab" not in json.dumps(C.status())
+def _sparql(q):
+    if "pq:P585" in q:
+        return [_b(item="Q106238955", prop="P1128", amount="4000", date="2021-01-01T00:00:00Z")]
+    if "Northern Star Resources" in q:
+        return [_b(name="Northern Star Resources", item="Q106238955", iso="AU")]
+    return []
 
 
-def test_update_with_contact_reads_text_and_segments(monkeypatch):
-    monkeypatch.setenv("STRATE_SEC_UA", "Lab research-desk")
-    monkeypatch.setattr(C, "build_universe", _only_newmont(C.build_universe))
-    st = C.update(http=FakeHttp(_routes(True)), cat=fake_catalog(), wikidata=False)
-    assert st["sec_contact"] is True and "Lab research-desk" not in json.dumps(st)
-    emp = C.load("employees")
-    row = emp[emp["source_kind"] == "rapport_annuel"].iloc[0]
-    assert row["employees"] == 22_200 and row["year"] == 2025 and bool(row["accepted"])
-    seg = C.load("segments")
-    seg = seg[seg["kind"] == "xbrl_segment"]
-    tan = seg[seg["label"] == "Tanami"].iloc[0]
-    assert tan["site_id"] == "icmm2" and tan["match"] == "mine de la société"
-    assert seg[seg["label"] == "Africa"]["site_id"].isna().all()
+def test_refresh_bounded_resumable_and_api_shapes(monkeypatch, tmp_path):
+    from strate import api
 
+    cat = fake_catalog()
+    http = FakeHttp(_routes(), _sparql)
+    kw = dict(
+        http=http,
+        cat=cat,
+        twins={},
+        veille_db=_veille(tmp_path),
+        prod=pd.DataFrame(),
+        reader=lambda s: pd.DataFrame(),
+        n_boot=50,
+    )
+    st = C.refresh(max_companies=2, **kw)
+    first = [u for u in http.calls if "companyfacts" in u]
+    assert len(first) == 2 and st["sec_lues_ce_lancement"] == 2 and st["sec_restantes"] > 0
+    assert st["requetes_sec"] == 3  # tickers + 2 companyfacts
+    st2 = C.refresh(max_companies=500, **kw)
+    second = [u for u in http.calls if "companyfacts" in u][2:]
+    assert not set(first) & set(second)  # reprise : rien n'est relu
+    assert st2["sec_restantes"] == 0 and st2["message"] == "à jour"
+    assert sum("company_tickers" in u for u in http.calls) == 1  # table SEC gardée en cache
+    assert sum("pq:P585" in q for q in http.sparql_calls) == 1  # Wikidata : une fois par mois
+    C.refresh(max_companies=500, **kw)
+    assert len([u for u in http.calls if "companyfacts" in u]) == len(first) + len(second)
 
-def test_update_limit_and_failure_isolated(monkeypatch):
-    calls = []
-
-    class Boom(FakeHttp):
-        def get_json(self, url):
-            calls.append(url)
-            raise RuntimeError("réseau coupé")
-
-    st = C.update(limit=2, http=Boom(), cat=fake_catalog(), wikidata=False)
-    assert st["processed_this_run"] == 2 and st["ok_this_run"] == 0 and len(st["errors"]) == 2
-    state = json.loads(C.STATE.read_text("utf-8"))
-    assert sum(not v["ok"] for v in state["companies"].values()) == 2
-
-
-def test_report_and_api_shapes(monkeypatch):
-    monkeypatch.setattr(C, "build_universe", _only_newmont(C.build_universe))
-    C.update(http=FakeHttp(_routes(False)), cat=fake_catalog(), wikidata=False)
-
-    def reader(site):
-        if site not in ("icmm1", "icmm2"):
-            return pd.DataFrame()
-        rows = []
-        for y in range(2020, 2026):
-            for mo in range(1, 7):
-                rows.append(dict(date=pd.Timestamp(y, mo, 1), signal="bare_km2",
-                                 value=10 + y - 2020 + mo / 10, quality=0.95))
-                rows.append(dict(date=pd.Timestamp(y, mo, 1), signal="new_bare_km2", value=0.3, quality=0.95))
-        return pd.DataFrame(rows)
-
-    rep = C.report(cat=fake_catalog(), prod=pd.DataFrame(), analysed={"icmm1", "icmm2"}, reader=reader,
-                   n_boot=50)
-    corr = C.correlations()
-    tests = {c["test"] for c in corr}
-    assert {"capex_vs_satellite", "capex_vs_new_bare", "capex_vs_production", "capex_forecast"} <= tests
-    for c in corr:
-        assert set(C.CORR_COLS) <= set(c) and c["verdict"]
-    sat = [c for c in corr if c["test"] == "capex_vs_satellite" and c["lag"] == 0][0]
-    assert sat["n"] >= 1 and sat["verdict"].startswith("trop peu")  # une seule société : jamais « démontré »
-    assert rep["n_correlations"] == len(corr)
-    d = C.dossier("newmont")
-    json.dumps(d, allow_nan=False)
-    y25 = [y for y in d["financials"] if y["year"] == 2025][0]
-    assert y25["capex"] == 3.035e9 and y25["sources"]["capex"]["url"].startswith("https://www.sec.gov/")
-    assert "capex_revenue" in y25 and y25["currency"] == "USD"
-    assert d["company"]["cik"] == "0001164727" and d["mines"]
     t = C.table()
-    json.dumps(t, allow_nan=False)
-    nm = [x for x in t if x["id"] == "newmont"][0]
-    assert nm["year"] == 2025 and nm["capex"] == 3.035e9
-    assert C.dossier("inconnue") is None
-    json.dumps(C.status(), allow_nan=False)
+    assert list(t.columns) == C.TABLE_COLS
+    nem = t.set_index("id").loc["newmont"]
+    assert nem["capex_dernier"] == pytest.approx(1_463_000_000) and nem["capex_annee"] == 2019
+    assert nem["devise"] == "USD" and nem["investissements_12m"] >= 1 and nem["cik"] == "0001164727"
+    ns = t.set_index("id").loc["northern_star"]
+    assert ns["pays"] == "Australia" and ns["effectifs"] == 4000 and ns["effectifs_annee"] == 2021
+
+    d = C.company("newmont")
+    assert set(d) == {"profil", "mines", "faits", "investissements", "correlations"}
+    assert d["profil"]["cik"] == "0001164727" and any(m["site_id"] == "boddington" for m in d["mines"])
+    f = d["faits"][0]
+    assert {"indicateur", "annee", "valeur", "unite", "devise", "source", "formulaire"} <= set(f)
+    assert d["investissements"][0]["montant"] == pytest.approx(1.2e9)
+    assert C.company("inconnue") is None
+    json.dumps(d, allow_nan=False)  # JSON strict
+
+    c = C.correlations()
+    assert c["methode"] and len(c["rows"]) == len(C.PAIRS)
+    assert {
+        "x",
+        "y",
+        "decalage",
+        "r",
+        "r_lo",
+        "r_hi",
+        "rho",
+        "rho_lo",
+        "rho_hi",
+        "n_societes",
+        "n_points",
+        "verdict",
+    } <= set(c["rows"][0])
+
+    # les routes de l'API lisent ces champs tels quels
+    monkeypatch.setattr(api, "_mod", lambda name: C if name == "companies" else None)
+    rows = api.companies_api(q="newmont", pays=None, limit=10)["rows"]
+    assert rows[0]["capex_dernier"] == pytest.approx(1_463_000_000) and rows[0]["tickers"]
+    payload = api.company_api("newmont")
+    assert payload["faits"] and payload["investissements"][0]["categorie"] == "expansion"
+    assert api.companies_correlations()["rows"][0]["n_points"] is not None
+
+
+def test_refresh_failure_of_one_company_is_isolated(tmp_path):
+    routes = _routes()
+    routes["CIK0001164727.json"] = RuntimeError("panne")
+    http = FakeHttp(routes, _sparql)
+    st = C.refresh(
+        max_companies=500,
+        http=http,
+        cat=fake_catalog(),
+        twins={},
+        veille_db=tmp_path / "no.db",
+        prod=pd.DataFrame(),
+        reader=lambda s: pd.DataFrame(),
+        n_boot=20,
+        wikidata=False,
+    )
+    assert any(e.startswith("newmont") for e in st["erreurs"])
+    state = json.loads(C.STATE.read_text("utf-8"))
+    assert state["sec"]["newmont"]["ok"] is False and state["sec"]["bhp"]["ok"] is True
+    assert "bhp" in set(C.load("facts")["company_id"])
+
+
+def test_readers_empty_before_first_refresh():
+    assert C.table().empty and list(C.table().columns) == C.TABLE_COLS
+    assert C.company("newmont") is None
+    assert C.correlations()["rows"] == []

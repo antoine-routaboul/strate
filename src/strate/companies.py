@@ -1,25 +1,22 @@
-"""Couche sociétés : qui exploite les mines, combien elles investissent, où, et est-ce visible du ciel.
+"""Sociétés minières : qui détient quelles mines, ce qu'elles déclarent, ce qu'elles annoncent (spec § 2).
 
-Chaîne (règles explicites, aucun modèle de langage) :
+Règles explicites seulement, aucun modèle de langage :
 
-    univers (liste suivie + propriétaires/exploitants du catalogue + veille)
-      └─▶ identifiants (CIK : graine vérifiée, SEC company_tickers, Wikidata P5531)
-            └─▶ comptes annuels SEC companyfacts (us-gaap / ifrs-full) + effectifs
-                  └─▶ CAPEX par segment (instance XBRL) + investissements annoncés (veille)
-                        └─▶ ratios, corrélations (r, ρ, n, IC 90 % bootstrap par société, verdict), prévision
+    entités    liste suivie (sites.toml) + propriétaires/exploitants du catalogue (Wikidata P127/P137, ICMM)
+               dédoublonnées par nom normalisé puis par QID ; identifiants QID, CIK SEC, tickers
+    faits      SEC companyfacts (us-gaap, ifrs-full, dei) + Wikidata P1128/P2139 datés (P585)
+    annonces   titres de la veille (raw_docs) : montant + devise + verbe d'investissement → catégorie
+    liens      corrélations r, ρ, IC 90 % bootstrap, n — par société et sur l'ensemble des sociétés
 
-Accès SEC : data.sec.gov (companyfacts, submissions) répond avec un User-Agent générique ; les archives
-www.sec.gov (rapports annuels, instances XBRL, company_tickers.json) exigent un contact déclaré, lu
-UNIQUEMENT dans STRATE_SEC_UA ou config.local.toml ([sec] user_agent). Sans contact, effectifs par le
-texte et CAPEX par segment sont sautés, et le statut le dit. Débit : 8 requêtes/s au plus, 429 respecté.
+SEC : ≤ 8 requêtes/s (limite officielle 10), User-Agent lu dans STRATE_SEC_UA, sinon générique (jamais
+d'adresse personnelle). Mise à jour bornée (`max_companies`) et reprenable (state.json).
 
-Sorties (data/companies/, non versionné) : companies, financials, employees, segments, correlations
-(.parquet) + status.json ; state.json garde l'avancement pour reprendre une mise à jour interrompue.
+Sorties (data/companies/) : companies, mines, facts, investments, correlations (.parquet), sec_tickers.json,
+state.json, status.json.
 """
 
 from __future__ import annotations
 
-import html
 import json
 import logging
 import math
@@ -28,11 +25,8 @@ import re
 import sqlite3
 import threading
 import time
-import tomllib
-import xml.etree.ElementTree as ET
-from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -45,24 +39,35 @@ from strate.core import DATA_DIR
 log = logging.getLogger(__name__)
 
 OUT = DATA_DIR / "companies"
-TABLES = ("companies", "financials", "employees", "segments", "correlations")
-STATUS = OUT / "status.json"
 STATE = OUT / "state.json"
-CONFIG = Path(__file__).resolve().parents[2] / "config.local.toml"
+STATUS = OUT / "status.json"
+TICKERS_CACHE = OUT / "sec_tickers.json"
 
-GENERIC_UA = "Strate open-source research tool"
-SEC_MIN_INTERVAL = 1 / 8  # fair access SEC : 8 requêtes/s au plus (limite officielle : 10)
-REFRESH_DAYS = 7  # une société relue il y a moins d'une semaine n'est pas retéléchargée
-WIKIDATA_REFRESH_DAYS = 30
-FIRST_YEAR = 2005
+DEFAULT_UA = "Strate/0.1 open-source research tool"
+SEC_MIN_INTERVAL = 1 / 8  # ≤ 10 requêtes/s exigé par la SEC : marge de sécurité
+SEC_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+SEC_TICKERS_URLS = ("https://www.sec.gov/files/company_tickers_exchange.json",
+                    "https://www.sec.gov/files/company_tickers.json")
+REFRESH_DAYS = 14  # comptes annuels : relire une société au plus toutes les deux semaines
+RETRY_DAYS = 1
+WIKIDATA_DAYS = 30
+TICKERS_DAYS = 7
+MAX_COMPANIES = 50
+FIRST_YEAR = 2000
 ANNUAL_FORMS = {"10-K", "10-K405", "10-KT", "20-F", "40-F"}
-TEXT_FILINGS = 3  # rapports annuels lus pour les effectifs (les plus récents)
-SEGMENT_FILINGS = 2  # instances XBRL lues pour le CAPEX par segment
+US_EXCHANGES = {"NYSE", "NASDAQ", "NYSEAMERICAN", "AMEX", "NYSEARCA", "NYSEMKT", "OTC", "CBOE"}
+
+METHODE_CORRELATIONS = (
+    "Variations annuelles en log (année t vs t−1, exercices consécutifs, même concept comptable et même "
+    "devise). Production : moyenne, pondérée par la part détenue (1 si inconnue), des variations de la série "
+    "principale de chaque mine (Jasansky et al. 2023). Emprise : surface nue Sentinel-2 (médiane des mois "
+    "clairs) sur les mêmes mines les deux années. Décalage k : CAPEX(t) ↔ y(t+k). r de Pearson, ρ de "
+    "Spearman ; IC 90 % par bootstrap sur les sociétés (ensemble) ou sur les années (une société) ; "
+    "n sociétés, n points. « Démontré » seulement si l'IC 90 % de ρ exclut 0.")
 
 # -- graine de CIK vérifiés ---------------------------------------------------------------------------
-# Grands miniers déposant à la SEC. Chaque CIK a été vérifié une fois sur data.sec.gov/submissions
-# (nom déclaré et dernier rapport annuel). Écartés faute de CIK confirmé : B2Gold, Fortuna, Centrus.
-SEED_SOURCE = "CIK vérifié sur https://data.sec.gov/submissions/ le 2026-11-27"
+# Grands miniers déposant à la SEC, CIK contrôlés sur data.sec.gov/submissions et company_tickers_exchange.
+# Ils passent avant toute correspondance automatique (cotations jumelles : BHP Ltd / BHP plc).
 SEED: list[dict] = [
     dict(name="Newmont", cik="0001164727", tickers=["NYSE:NEM"],
          aliases=["Newmont Mining", "Newmont Goldcorp", "Newmont Corporation"]),
@@ -72,15 +77,12 @@ SEED: list[dict] = [
     dict(name="Agnico Eagle Mines", cik="0000002809", tickers=["NYSE:AEM"], aliases=["Agnico Eagle"]),
     dict(name="Kinross Gold", cik="0000701818", tickers=["NYSE:KGC"], aliases=[]),
     dict(name="BHP Group", cik="0000811809", tickers=["NYSE:BHP"],
-         aliases=["BHP", "BHP Billiton", "BHP Billiton Limited"]),
-    dict(name="BHP Group Plc", cik="0001171264", tickers=[], aliases=["BHP Billiton plc"]),
+         aliases=["BHP", "BHP Billiton", "BHP Billiton Limited", "BHP Group Ltd"]),
     dict(name="Rio Tinto plc", cik="0000863064", tickers=["NYSE:RIO"],
          aliases=["Rio Tinto", "Rio Tinto Group"]),
-    dict(name="Rio Tinto Limited", cik="0000887028", tickers=[], aliases=[]),
     dict(name="Vale", cik="0000917851", tickers=["NYSE:VALE"], aliases=["Vale S.A.", "CVRD"]),
     dict(name="Teck Resources", cik="0000886986", tickers=["NYSE:TECK"], aliases=["Teck Cominco", "Teck"]),
-    dict(name="Southern Copper", cik="0001001838", tickers=["NYSE:SCCO"],
-         aliases=["Southern Copper Corporation"]),
+    dict(name="Southern Copper", cik="0001001838", tickers=["NYSE:SCCO"], aliases=[]),
     dict(name="Hecla Mining", cik="0000719413", tickers=["NYSE:HL"], aliases=[]),
     dict(name="Coeur Mining", cik="0000215466", tickers=["NYSE:CDE"], aliases=["Coeur d'Alene Mines"]),
     dict(name="Royal Gold", cik="0000085535", tickers=["NASDAQ:RGLD"], aliases=[]),
@@ -88,71 +90,34 @@ SEED: list[dict] = [
     dict(name="Franco-Nevada", cik="0001456346", tickers=["NYSE:FNV"], aliases=[]),
     dict(name="Cameco", cik="0001009001", tickers=["NYSE:CCJ"], aliases=[]),
     dict(name="Peabody Energy", cik="0001064728", tickers=["NYSE:BTU"], aliases=["Peabody"]),
-    dict(name="Arch Resources", cik="0001037676", tickers=[], aliases=["Arch Coal"]),
-    dict(name="Core Natural Resources", cik="0001710366", tickers=["NYSE:CNR"], aliases=["CONSOL Energy"]),
     dict(name="Alcoa", cik="0001675149", tickers=["NYSE:AA"], aliases=[]),
     dict(name="Albemarle", cik="0000915913", tickers=["NYSE:ALB"], aliases=[]),
     dict(name="MP Materials", cik="0001801368", tickers=["NYSE:MP"], aliases=[]),
     dict(name="Gold Fields", cik="0001172724", tickers=["NYSE:GFI"], aliases=[]),
     dict(name="AngloGold Ashanti", cik="0001973832", tickers=["NYSE:AU"], aliases=["AngloGold Ashanti plc"]),
-    dict(name="AngloGold Ashanti (Pty)", cik="0001067428", tickers=[], aliases=[]),
     dict(name="Harmony Gold", cik="0001023514", tickers=["NYSE:HMY"], aliases=["Harmony Gold Mining"]),
     dict(name="Sibanye-Stillwater", cik="0001786909", tickers=["NYSE:SBSW"], aliases=["Sibanye Gold"]),
-    dict(name="First Majestic Silver", cik="0001308648", tickers=["NYSE:AG"], aliases=[]),
     dict(name="Pan American Silver", cik="0000771992", tickers=["NASDAQ:PAAS"], aliases=[]),
-    dict(name="Equinox Gold", cik="0001756607", tickers=["NYSE:EQX"], aliases=[]),
-    dict(name="IAMGOLD", cik="0001203464", tickers=["NYSE:IAG"], aliases=[]),
-    dict(name="New Gold", cik="0000800166", tickers=[], aliases=[]),
-    dict(name="Eldorado Gold", cik="0000918608", tickers=["NYSE:EGO"], aliases=[]),
-    dict(name="SSR Mining", cik="0000921638", tickers=["NASDAQ:SSRM"], aliases=["Silver Standard Resources"]),
     dict(name="Hudbay Minerals", cik="0001322422", tickers=["NYSE:HBM"], aliases=["Hudbay"]),
-    dict(name="Taseko Mines", cik="0000878518", tickers=["NYSE:TGB"], aliases=["Trekor Metals"]),
     dict(name="Cleveland-Cliffs", cik="0000764065", tickers=["NYSE:CLF"],
          aliases=["Cliffs Natural Resources"]),
-    dict(name="Warrior Met Coal", cik="0001691303", tickers=["NYSE:HCC"], aliases=[]),
-    dict(name="Alpha Metallurgical Resources", cik="0001704715", tickers=["NYSE:AMR"],
-         aliases=["Contura Energy"]),
-    dict(name="Energy Fuels", cik="0001385849", tickers=["NYSE:UUUU"], aliases=[]),
-    dict(name="Uranium Energy", cik="0001334933", tickers=["NYSE:UEC"], aliases=[]),
     dict(name="Buenaventura", cik="0001013131", tickers=["NYSE:BVN"],
          aliases=["Compañía de Minas Buenaventura"]),
-    dict(name="Nexa Resources", cik="0001713930", tickers=["NYSE:NEXA"], aliases=["Votorantim Metais"]),
-    dict(name="Endeavour Silver", cik="0001277866", tickers=["NYSE:EXK"], aliases=[]),
-    dict(name="OR Royalties", cik="0001627272", tickers=["NYSE:OR"], aliases=["Osisko Gold Royalties"]),
-    dict(name="Alamos Gold", cik="0001178819", tickers=["NYSE:AGI"], aliases=[]),
-    dict(name="Lithium Americas", cik="0001966983", tickers=["NYSE:LAC"], aliases=[]),
-    dict(name="Sigma Lithium", cik="0001848309", tickers=["NASDAQ:SGML"], aliases=[]),
-    dict(name="Compass Minerals", cik="0001227654", tickers=["NYSE:CMP"], aliases=[]),
-    dict(name="Mosaic", cik="0001285785", tickers=["NYSE:MOS"], aliases=["The Mosaic Company"]),
-    dict(name="Intrepid Potash", cik="0001421461", tickers=["NYSE:IPI"], aliases=[]),
-    dict(name="McEwen", cik="0000314203", tickers=["NYSE:MUX"], aliases=["McEwen Mining"]),
-    dict(name="Seabridge Gold", cik="0001231346", tickers=["NYSE:SA"], aliases=[]),
-    dict(name="NovaGold Resources", cik="0001173420", tickers=["NYSE:NG"], aliases=[]),
-    dict(name="Gatos Silver", cik="0001517006", tickers=[], aliases=[]),
-    dict(name="Denison Mines", cik="0001063259", tickers=["NYSE:DNN"], aliases=[]),
-    dict(name="NexGen Energy", cik="0001698535", tickers=["NYSE:NXE"], aliases=[]),
-    dict(name="Ur-Energy", cik="0001375205", tickers=["NYSE:URG"], aliases=[]),
-    dict(name="Piedmont Lithium", cik="0001728205", tickers=[], aliases=[]),
 ]
 
 # -- noms de sociétés -----------------------------------------------------------------------------------
 # Retirés EN FIN de nom : « Newmont Mining Corporation » et « Newmont » donnent la même clé. Les formes
-# juridiques partent toujours (sauf le premier mot) ; les mots de remplissage seulement si le reste garde
-# un mot distinctif (« New Gold » ne doit pas devenir « new », ni « Mineral Resources » « mineral »).
+# juridiques partent toujours (sauf le premier mot) ; les mots de remplissage seulement s'il reste un mot
+# distinctif (« New Gold » ne devient pas « new », ni « Mineral Resources » « mineral »).
 _LEGAL = {
     "inc", "incorporated", "ltd", "limited", "corp", "corporation", "co", "company", "plc", "sa", "sab", "cv",
     "de", "ag", "nv", "bv", "llc", "lp", "pty", "pt", "tbk", "gmbh", "spa", "sarl", "sas", "ab", "asa", "oy",
     "oyj", "jsc", "pjsc", "ojsc", "oao", "ao", "zao", "ooo", "sl", "srl", "kk", "bhd", "berhad", "nl", "fi",
-    "cie", "cia",
+    "cie", "cia", "the",
 }
 _FILLER = {"group", "holdings", "holding", "mining", "mines", "minerals", "resources", "energy", "gold",
            "silver", "copper", "coal", "metals", "international", "compania"}
-_REGION_WORDS = {
-    "africa", "african", "america", "americas", "american", "australia", "australian", "asia", "pacific",
-    "europe", "european", "corporate", "other", "others", "total", "eliminations", "elimination",
-    "unallocated", "reconciling", "consolidated", "segments", "segment", "region", "international",
-    "royalties", "royalty", "streams", "stream", "exploration", "projects", "global", "oceania", "latin",
-}
+_QID = re.compile(r"\s*(Q\d+)\s*")
 
 
 def _split_words(s: str) -> list[str]:
@@ -165,7 +130,7 @@ def norm_key(name) -> str | None:
     """Clé de dédoublonnage d'un nom de société (formes juridiques et remplissage final retirés)."""
     from strate import catalog
 
-    if not isinstance(name, str) or re.fullmatch(r"\s*Q\d+\s*", name):  # QID Wikidata non résolu
+    if not isinstance(name, str) or _QID.fullmatch(name):
         return None
     w = _split_words(name)
     if w and w[0] == "the":
@@ -181,219 +146,211 @@ def norm_key(name) -> str | None:
     return " ".join(w) or None
 
 
+def slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", s).strip("_")[:60]
+
+
 def id_base(name: str) -> str:
     """Identifiant lisible : le nom sans forme juridique finale (« Royal Gold Inc » → royal_gold)."""
     w = _split_words(name)
     while len(w) > 1 and w[-1] in _LEGAL:
         w = w[:-1]
-    return slug(" ".join(w))
-
-
-def slug(key: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "_", key).strip("_")[:60]
-
-
-_LEGAL_END = re.compile(r"\b(inc|ltd|corp|co|company|plc|llc|limited|corporation|pty|s\.?a|gmbh|ag)\.?\s*$",
-                        re.I)
-
-
-def _company_alias(alias: str) -> bool:
-    """Alias ICMM qui est un nom de société : il SE TERMINE par une forme juridique
-    (« Omai Gold Mines Ltd. »), pas « National Lead Co. Mine » (une mine qui cite une société)."""
-    return bool(alias) and bool(_LEGAL_END.search(alias.strip(" ,;")))
+    return slug(" ".join(w)) or "societe"
 
 
 def _split_list(v) -> list[str]:
+    if isinstance(v, (list, tuple, np.ndarray)):
+        return [str(x) for x in v if isinstance(x, str) and x]
     if not isinstance(v, str):
         return []
     return [x.strip() for x in v.split(";") if x.strip()]
 
 
-# -- univers ----------------------------------------------------------------------------------------------
-def _veille_sites() -> list[str]:
-    """Mines suivies par la veille (si sa base existe), lues en lecture seule."""
-    rows = _veille_query("SELECT site_id FROM tracked")
-    return [r[0] for r in rows]
-
-
-def _veille_db() -> Path:
-    try:
-        from strate.veille import store
-        return Path(store.DB_PATH)
-    except Exception:  # module en cours de modification ailleurs : chemin par défaut
-        return DATA_DIR / "veille" / "veille.db"
-
-
-def _veille_query(sql: str, params: Iterable = ()) -> list[tuple]:
-    p = _veille_db()
-    if not p.exists():
-        return []
-    try:
-        con = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=10)
-        try:
-            return con.execute(sql, tuple(params)).fetchall()
-        finally:
-            con.close()
-    except sqlite3.Error as e:
-        log.warning("veille illisible (%s)", e)
-        return []
-
-
-def build_universe(cat: pd.DataFrame | None = None, graph=None, veille_sites: list[str] | None = None
-                   ) -> pd.DataFrame:
-    """Toutes les sociétés connues, dédoublonnées par clé de nom, avec leurs mines.
-
-    Ordre d'autorité : liste suivie (identifiants fixes, utilisés par l'API), graine SEC (alias de
-    changement de nom : « Barrick Gold » = « Barrick Mining »), catalogue, veille.
-    """
-    from strate import catalog
-
-    graph = graph or entities.load()
-    if cat is None:
-        cat = catalog.load()
-    if veille_sites is None:
-        veille_sites = _veille_sites()
-    comp: dict[str, dict] = {}
-    by_key: dict[str, str] = {}
-
-    def new(cid: str, name: str) -> dict:
-        return comp.setdefault(cid, dict(id=cid, name=name, aliases=set(), tickers=[], cik=None, cik_alt=[],
-                                         cik_source=None, qid=None, sources=set(), mines={},
-                                         watchlist=False))
-
-    def register(cid: str, name: str) -> None:
-        k = norm_key(name)
-        if k and k not in by_key:
-            by_key[k] = cid
-        comp[cid]["aliases"].add(name)
-
-    def find(name: str) -> str | None:
-        k = norm_key(name)
-        return by_key.get(k) if k else None
-
-    def link(cid: str, site: str, role: str, share: float | None = None) -> None:
-        m = comp[cid]["mines"].setdefault(site, dict(site=site, roles=[], share=None))
-        if role not in m["roles"]:
-            m["roles"].append(role)
-        if share is not None:
-            m["share"] = share
-
-    for c in graph.companies.values():
-        e = new(c.id, c.name)
-        e.update(watchlist=True, tickers=list(c.tickers))
-        e["sources"].add("liste suivie")
-        register(c.id, c.name)
-    for s in graph.sites.values():
-        for o in s.owners:
-            link(o.company, s.id, "liste suivie", o.share)
-
-    taken = set(comp)
-    for sd in SEED:
-        names = [sd["name"], *sd["aliases"]]
-        cid = next((x for x in map(find, names) if x), None)
-        if cid is None:
-            cid = _unique(id_base(sd["name"]), taken)
-            new(cid, sd["name"])
-        e = comp[cid]
-        e["sources"].add("graine SEC")
-        if e["cik"] is None:
-            e["cik"], e["cik_source"] = sd["cik"], SEED_SOURCE
-        elif sd["cik"] != e["cik"]:  # cotation jumelle ou ancienne entité : historique complémentaire
-            e["cik_alt"].append(sd["cik"])
-        e["tickers"] = list(dict.fromkeys([*e["tickers"], *sd["tickers"]]))
-        for n in names:
-            register(cid, n)
-
-    def add_named(name: str, site: str, role: str) -> None:
-        cid = find(name)
-        if cid is None:
-            k = norm_key(name)
-            if not k:
-                return
-            cid = _unique(id_base(name), taken)
-            new(cid, name)
-            register(cid, name)
-        comp[cid]["aliases"].add(name)
-        comp[cid]["sources"].add({"propriétaire": "catalogue", "exploitant": "catalogue"}.get(role, role))
-        link(cid, site, role)
-
-    if not cat.empty:
-        sub = cat[cat["owner"].notna() | cat["operator"].notna()]
-        for sid, own, opr in zip(sub.index, sub["owner"], sub["operator"], strict=True):
-            for n in _split_list(own):
-                add_named(n, sid, "propriétaire")
-            for n in _split_list(opr):
-                add_named(n, sid, "exploitant")
-        if "icmm" in cat:
-            ali = cat[cat["icmm"].notna() & cat["aliases"].notna()]
-            for sid, v in zip(ali.index, ali["aliases"], strict=True):
-                for n in _split_list(v):
-                    if _company_alias(n):
-                        add_named(n, sid, "alias ICMM")
-        for sid in veille_sites:
-            if sid in cat.index:
-                r = cat.loc[sid]
-                for n in [*_split_list(r.get("owner")), *_split_list(r.get("operator"))]:
-                    add_named(n, sid, "veille")
-
-    rows = []
-    for e in comp.values():
-        names = Counter(a for a in e["aliases"])
-        mines = sorted(e["mines"].values(), key=lambda m: m["site"])
-        rows.append(dict(
-            id=e["id"], name=e["name"] or names.most_common(1)[0][0], key=norm_key(e["name"]),
-            aliases=";".join(sorted(e["aliases"])), tickers=";".join(e["tickers"]), cik=e["cik"],
-            cik_alt=";".join(e["cik_alt"]) or None, cik_source=e["cik_source"], qid=e["qid"],
-            sources=";".join(sorted(e["sources"])),
-            watchlist=e["watchlist"], n_mines=len(mines), mines_json=json.dumps(mines, ensure_ascii=False)))
-    df = pd.DataFrame(rows)
-    df = df.sort_values(["watchlist", "n_mines", "id"], ascending=[False, False, True])
-    return df.reset_index(drop=True)
-
-
 def _unique(base: str, taken: set[str]) -> str:
-    out, k = base or "societe", 2
+    out, k = base, 2
     while out in taken:
         out, k = f"{base}_{k}", k + 1
     taken.add(out)
     return out
 
 
-def mines_of(row) -> list[dict]:
+# -- entités ----------------------------------------------------------------------------------------------
+COMPANY_COLS = ["id", "nom", "cle", "alias", "tickers", "cik", "cik_source", "qid", "pays", "sources",
+                "suivie", "n_mines"]
+LINK_COLS = ["company_id", "site_id", "nom", "role", "part", "source"]
+
+
+def _twins() -> dict[str, str]:
+    """Mine de la liste suivie → sa jumelle du catalogue (évite de compter deux fois la même mine)."""
     try:
-        return json.loads(row["mines_json"]) if isinstance(row["mines_json"], str) else []
-    except ValueError:
-        return []
+        from strate import screener
+        return screener.twins()
+    except Exception as e:  # catalogue absent ou module en cours de modification
+        log.warning("jumelles indisponibles (%s)", e)
+        return {}
+
+
+def build_entities(cat: pd.DataFrame | None = None, graph=None, twins: dict[str, str] | None = None
+                   ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(sociétés, liens société ↔ mine). Ordre d'autorité : liste suivie (identifiants fixes, parts
+    connues), graine SEC (alias de changement de nom), propriétaires/exploitants du catalogue."""
+    from strate import catalog
+
+    graph = graph or entities.load()
+    if cat is None:
+        cat = catalog.load()
+    if twins is None:
+        twins = _twins()
+    canon = {c: w for w, c in twins.items()}  # ligne du catalogue → mine de la liste suivie
+    comp: dict[str, dict] = {}
+    by_key: dict[str, str] = {}
+    by_qid: dict[str, str] = {}
+    taken: set[str] = set()
+    links: dict[tuple[str, str], dict] = {}
+
+    def new(cid: str, name: str, **kw) -> dict:
+        taken.add(cid)
+        return comp.setdefault(cid, dict(id=cid, nom=name, alias=set(), tickers=[], cik=None, cik_source=None,
+                                         qid=None, pays=None, sources=set(), suivie=False) | kw)
+
+    def register(cid: str, name: str) -> None:
+        k = norm_key(name)
+        if k and k not in by_key:
+            by_key[k] = cid
+        comp[cid]["alias"].add(name)
+
+    def find(name: str) -> str | None:
+        k = norm_key(name)
+        return by_key.get(k) if k else None
+
+    def link(cid: str, site: str, role: str, part: float | None, source: str) -> None:
+        site_name = None
+        if site in graph.sites:
+            site_name = graph.sites[site].name
+        elif not cat.empty and site in cat.index:
+            site_name = cat.at[site, "name"] if isinstance(cat.at[site, "name"], str) else None
+        cur = links.get((cid, site))
+        if cur is None:
+            links[(cid, site)] = dict(company_id=cid, site_id=site, nom=site_name, role=role,
+                                      part=np.nan if part is None else float(part), source=source)
+        else:
+            if role not in cur["role"].split(" + "):
+                cur["role"] += f" + {role}"
+            if part is not None and not np.isfinite(cur["part"]):
+                cur["part"] = float(part)
+
+    for c in graph.companies.values():
+        e = new(c.id, c.name, suivie=True, tickers=list(c.tickers))
+        e["sources"].add("liste suivie")
+        register(c.id, c.name)
+    for s in graph.sites.values():
+        for o in s.owners:
+            link(o.company, s.id, "propriétaire", o.share, "sites.toml")
+
+    for sd in SEED:
+        names = [sd["name"], *sd["aliases"]]
+        cid = next((x for x in map(find, names) if x), None) or _unique(id_base(sd["name"]), taken)
+        e = comp.get(cid) or new(cid, sd["name"])
+        e["sources"].add("graine SEC")
+        e["cik"], e["cik_source"] = e["cik"] or sd["cik"], e["cik_source"] or "graine vérifiée (SEC)"
+        e["tickers"] = list(dict.fromkeys([*e["tickers"], *sd["tickers"]]))
+        for n in names:
+            register(cid, n)
+
+    def named(raw: str, site: str, role: str) -> None:
+        q = _QID.fullmatch(raw)
+        if q:  # libellé Wikidata non résolu : l'entité est connue par son QID
+            cid = by_qid.get(q.group(1))
+            if cid is None:
+                cid = _unique(q.group(1).lower(), taken)
+                new(cid, q.group(1), qid=q.group(1))
+                by_qid[q.group(1)] = cid
+        else:
+            cid = find(raw)
+            if cid is None:
+                if not norm_key(raw):
+                    return
+                cid = _unique(id_base(raw), taken)
+                new(cid, raw)
+            register(cid, raw)
+        comp[cid]["sources"].add("catalogue")
+        link(cid, canon.get(site, site), role, None, "catalogue (Wikidata P127/P137, ICMM)")
+
+    if not cat.empty:
+        sub = cat[cat["owner"].notna() | cat["operator"].notna()]
+        for sid, own, opr in zip(sub.index, sub["owner"], sub["operator"], strict=True):
+            for n in _split_list(own):
+                named(n, sid, "propriétaire")
+            for n in _split_list(opr):
+                named(n, sid, "exploitant")
+
+    lk = pd.DataFrame(list(links.values()), columns=LINK_COLS)
+    n_mines = lk.groupby("company_id")["site_id"].nunique() if len(lk) else pd.Series(dtype=int)
+    rows = [dict(id=e["id"], nom=e["nom"], cle=norm_key(e["nom"]), alias=";".join(sorted(e["alias"])),
+                 tickers=";".join(e["tickers"]), cik=e["cik"], cik_source=e["cik_source"], qid=e["qid"],
+                 pays=e["pays"], sources=";".join(sorted(e["sources"])), suivie=e["suivie"],
+                 n_mines=int(n_mines.get(e["id"], 0))) for e in comp.values()]
+    co = pd.DataFrame(rows, columns=COMPANY_COLS)
+    return _sorted(co), lk
+
+
+def _sorted(co: pd.DataFrame) -> pd.DataFrame:
+    if co.empty:
+        return co
+    co = co.assign(_c=co["cik"].notna())
+    co = co.sort_values(["suivie", "_c", "n_mines", "id"], ascending=[False, False, False, True])
+    return co.drop(columns="_c").reset_index(drop=True)
+
+
+def merge_by_qid(co: pd.DataFrame, lk: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Deux entités au même QID n'en font qu'une (« Barrick » du catalogue et « Barrick Mining ») : on garde
+    la plus autoritaire (liste suivie, CIK, nombre de mines) et on lui rattache alias, tickers et mines."""
+    if co.empty or co["qid"].notna().sum() == 0:
+        return co, lk
+    co = _sorted(co).copy()
+    remap: dict[str, str] = {}
+    for _, g in co[co["qid"].notna()].groupby("qid"):
+        if len(g) < 2:
+            continue
+        keep = g.index[0]
+        for i in g.index[1:]:
+            remap[co.at[i, "id"]] = co.at[keep, "id"]
+            for col in ("alias", "tickers", "sources"):
+                co.at[keep, col] = ";".join(dict.fromkeys(
+                    [*_split_list(co.at[keep, col]), *_split_list(co.at[i, col])]))
+            for col in ("cik", "cik_source", "pays"):
+                if not isinstance(co.at[keep, col], str) and isinstance(co.at[i, col], str):
+                    co.at[keep, col] = co.at[i, col]
+    if not remap:
+        return co, lk
+    co = co[~co["id"].isin(remap)].copy()
+    lk = lk.assign(company_id=lk["company_id"].replace(remap))
+    lk = lk.sort_values("part", na_position="last").drop_duplicates(["company_id", "site_id"])
+    co["n_mines"] = co["id"].map(lk.groupby("company_id")["site_id"].nunique()).fillna(0).astype(int)
+    return _sorted(co), lk.reset_index(drop=True)
 
 
 # -- accès réseau ------------------------------------------------------------------------------------------
-def sec_user_agent() -> tuple[str, bool]:
-    """(User-Agent, contact déclaré ?). Jamais écrit dans les journaux ni le statut."""
-    ua = os.environ.get("STRATE_SEC_UA", "").strip()
-    if not ua and CONFIG.exists():
-        try:
-            ua = str(tomllib.loads(CONFIG.read_text("utf-8")).get("sec", {}).get("user_agent", "")).strip()
-        except (OSError, tomllib.TOMLDecodeError) as e:
-            log.warning("config.local.toml illisible (%s)", e)
-    return (ua, True) if ua else (GENERIC_UA, False)
+def sec_user_agent() -> str:
+    """STRATE_SEC_UA si défini (contact choisi par l'utilisateur), sinon un en-tête générique."""
+    return os.environ.get("STRATE_SEC_UA", "").strip() or DEFAULT_UA
 
 
 class Http:
-    """Client HTTP à débit limité (SEC fair access) avec respect de 429/Retry-After.
+    """Client HTTP à débit limité (≤ 8 requêtes/s) qui respecte 429/Retry-After.
 
-    Les tests passent un faux client qui expose les mêmes méthodes get_json/get_text.
-    """
+    Les tests passent un faux client qui expose get_json et sparql."""
 
     def __init__(self, ua: str | None = None, min_interval: float = SEC_MIN_INTERVAL):
         import httpx
 
-        ua = ua or sec_user_agent()[0]
-        self.c = httpx.Client(headers={"User-Agent": ua, "Accept-Encoding": "gzip, deflate"}, timeout=60,
-                              follow_redirects=True)
+        headers = {"User-Agent": ua or sec_user_agent(), "Accept-Encoding": "gzip, deflate"}
+        self.c = httpx.Client(headers=headers, timeout=60, follow_redirects=True)
         self.min_interval, self._last, self._lock = min_interval, 0.0, threading.Lock()
         self.requests = 0
+        self.sparql_requests = 0
 
-    def _get(self, url: str, **kw):
+    def _get(self, url: str):
         import httpx
 
         for attempt in range(5):
@@ -404,7 +361,7 @@ class Http:
                 self._last = time.monotonic()
             self.requests += 1
             try:
-                r = self.c.get(url, **kw)
+                r = self.c.get(url)
             except httpx.TransportError as e:
                 log.warning("%s : %s, nouvel essai", url, type(e).__name__)
                 time.sleep(2 * (attempt + 1))
@@ -425,49 +382,69 @@ class Http:
         except ValueError:
             return None
 
-    def get_text(self, url: str) -> str | None:
-        r = self._get(url)
-        return r.text if r is not None and r.status_code == 200 else None
-
-    def status(self, url: str) -> int | None:
-        r = self._get(url)
-        return None if r is None else r.status_code
-
     def sparql(self, query: str) -> list[dict]:
         from strate import catalog
 
-        self.sparql_requests = getattr(self, "sparql_requests", 0) + 1
+        self.sparql_requests += 1
         return catalog._sparql(self.c, query)
 
 
 # -- identifiants ----------------------------------------------------------------------------------------
-def _sparql_str(s: str) -> str:
-    return json.dumps(s, ensure_ascii=False)
-
-
-def wikidata_lookup(http, names: list[str], qids: list[str] = (), batch: int = 600) -> dict[str, dict]:
-    """Nom exact (libellé ou alias anglais) → {qid, cik, label}. Seuls les éléments « société » comptent :
-    ils ont un CIK, un effectif, une place de cotation, un ISIN ou un LEI (sinon « Escondida » la mine
-    ou « Vale » la rivière répondraient)."""
-    out: dict[str, dict] = {}
-    names = sorted({n for n in names if n and len(n) < 120})
-    for i in range(0, len(names), batch):
-        # libellés anglais ET « mul » (langue par défaut que Wikidata généralise pour les noms propres)
-        vals = " ".join(f"{_sparql_str(n)}@{lang}" for n in names[i:i + batch] for lang in ("en", "mul"))
-        q = f"""SELECT ?name ?item ?cik WHERE {{ VALUES ?name {{ {vals} }}
-          ?item rdfs:label|skos:altLabel ?name .
-          FILTER EXISTS {{ ?item wdt:P5531|wdt:P1128|wdt:P414|wdt:P946|wdt:P1278 [] }}
-          OPTIONAL {{ ?item wdt:P5531 ?cik }} }}"""
-        for b in http.sparql(q):
-            _keep_best(out, b["name"]["value"], b)
-    if qids:
-        vals = " ".join(f"wd:{q}" for q in sorted(set(qids)))
-        q = f"""SELECT ?item ?cik ?name WHERE {{ VALUES ?item {{ {vals} }}
-          OPTIONAL {{ ?item wdt:P5531 ?cik }}
-          OPTIONAL {{ ?item rdfs:label ?name FILTER(LANG(?name)="en") }} }}"""
-        for b in http.sparql(q):
-            _keep_best(out, b["item"]["value"].rsplit("/", 1)[-1], b)
+def parse_sec_tickers(js) -> list[dict]:
+    """company_tickers_exchange.json ({fields, data}) ou company_tickers.json ({"0": {cik_str…}})."""
+    out = []
+    if isinstance(js, dict) and "fields" in js and "data" in js:
+        f = {k: i for i, k in enumerate(js["fields"])}
+        for r in js["data"]:
+            ex = str(r[f["exchange"]] or "").upper() if "exchange" in f else None
+            out.append(dict(cik=str(r[f["cik"]]).zfill(10), nom=r[f["name"]],
+                            ticker=str(r[f["ticker"]]).upper(), bourse=ex))
+    elif isinstance(js, dict):
+        for v in js.values():
+            if isinstance(v, dict) and "cik_str" in v:
+                out.append(dict(cik=str(v["cik_str"]).zfill(10), nom=v.get("title"),
+                                ticker=str(v.get("ticker", "")).upper(), bourse=None))
     return out
+
+
+def sec_tickers(http, force: bool = False) -> list[dict]:
+    """Table ticker ↔ CIK de la SEC, gardée TICKERS_DAYS jours dans data/companies/sec_tickers.json."""
+    cached = _read_json(TICKERS_CACHE)
+    if cached.get("rows") and not force and _age_days(cached.get("at")) < TICKERS_DAYS:
+        return cached["rows"]
+    for url in SEC_TICKERS_URLS:
+        rows = parse_sec_tickers(http.get_json(url))
+        if rows:
+            _write_json(TICKERS_CACHE, dict(at=_now(), url=url, rows=rows))
+            return rows
+    return cached.get("rows", [])
+
+
+def strict_key(name) -> str | None:
+    """Clé stricte (formes juridiques seules retirées, jamais « Resources », « Mining »…) : pour relier un
+    nom au registre SEC, « Regis Resources » ne doit pas devenir « Regis Corp » (salons de coiffure)."""
+    if not isinstance(name, str) or _QID.fullmatch(name):
+        return None
+    w = _split_words(re.sub(r"(\s*/[A-Za-z]{2,5}/)+\s*$", "", name))  # « NEWMONT Corp /DE/ »
+    if w and w[0] == "the":
+        w = w[1:]
+    while len(w) > 1 and w[-1] in _LEGAL:
+        w = w[:-1]
+    return " ".join(w) or None
+
+
+def ticker_index(rows: list[dict]) -> tuple[dict[str, dict], dict[str, dict]]:
+    """(ticker → ligne, clé stricte de nom → ligne) ; un nom porté par plusieurs CIK n'est pas utilisé."""
+    by_t, by_k, dup = {}, {}, set()
+    for r in rows:
+        by_t.setdefault(r["ticker"], r)
+        k = strict_key(r.get("nom"))
+        if not k:
+            continue
+        if k in by_k and by_k[k]["cik"] != r["cik"]:
+            dup.add(k)
+        by_k.setdefault(k, r)
+    return by_t, {k: v for k, v in by_k.items() if k not in dup}
 
 
 _SUFFIXES = ("", " Corporation", " Corp.", " Inc.", " Limited", " Ltd", " plc", " Group", " S.A.", " AG")
@@ -476,552 +453,789 @@ _LEGAL_TAIL = re.compile(r"[\s,]+(inc|incorporated|ltd|limited|corp|corporation|
 
 
 def name_variants(name: str) -> list[str]:
-    """Écritures probables d'un nom sur Wikidata : la recherche y est exacte, or l'élément s'appelle
-    souvent « Newmont Corporation » quand le catalogue écrit « Newmont Mining Corporation » ou « Newmont »."""
+    """Écritures probables sur Wikidata (recherche exacte) : « Newmont Mining Corporation », « Newmont »…"""
     base = name.strip()
-    while True:
-        b = _LEGAL_TAIL.sub("", base).strip(" ,")
-        if b == base or not b:
-            break
+    while (b := _LEGAL_TAIL.sub("", base).strip(" ,")) and b != base:
         base = b
     return list(dict.fromkeys([name.strip(), *(base + s for s in _SUFFIXES)]))
+
+
+def _qid_of(uri: str) -> str:
+    return uri.rsplit("/", 1)[-1]
 
 
 def _qnum(q: str) -> int:
     return int(q[1:]) if q[1:].isdigit() else 10**12
 
 
+def wikidata_lookup(http, names: Iterable[str] = (), qids: Iterable[str] = (), batch: int = 300
+                    ) -> dict[str, dict]:
+    """Nom exact (libellé ou alias en/mul) ou QID → {qid, cik, pays, label}. Seuls comptent les éléments
+    « société » : CIK, effectif, place de cotation, ISIN ou LEI (sinon la mine ou la rivière répondraient)."""
+    out: dict[str, dict] = {}
+    names = sorted({n for n in names if n and len(n) < 120})
+    tail = """OPTIONAL { ?item wdt:P5531 ?cik } OPTIONAL { ?item wdt:P17 ?pays . ?pays wdt:P297 ?iso }"""
+    for i in range(0, len(names), batch):
+        vals = " ".join(f"{json.dumps(n, ensure_ascii=False)}@{lang}" for n in names[i:i + batch]
+                        for lang in ("en", "mul"))
+        q = (f"SELECT ?name ?item ?cik ?iso WHERE {{ VALUES ?name {{ {vals} }} "
+             f"?item rdfs:label|skos:altLabel ?name . "
+             f"FILTER EXISTS {{ ?item wdt:P5531|wdt:P1128|wdt:P414|wdt:P946|wdt:P1278 [] }} {tail} }}")
+        for b in http.sparql(q):
+            _keep_best(out, b["name"]["value"], b)
+    qids = sorted({q for q in qids if q})
+    for i in range(0, len(qids), batch):
+        vals = " ".join(f"wd:{q}" for q in qids[i:i + batch])
+        q = (f"SELECT ?item ?cik ?iso ?name WHERE {{ VALUES ?item {{ {vals} }} {tail} "
+             f'OPTIONAL {{ ?item rdfs:label ?name FILTER(LANG(?name)="en") }} }}')
+        for b in http.sparql(q):
+            _keep_best(out, _qid_of(b["item"]["value"]), b)
+    return out
+
+
 def _keep_best(out: dict, key: str, b: dict) -> None:
     """Plusieurs éléments pour un nom : celui qui a un CIK, puis le plus ancien (QID le plus petit)."""
-    qid = b["item"]["value"].rsplit("/", 1)[-1]
+    qid = _qid_of(b["item"]["value"])
     cik = b.get("cik", {}).get("value")
-    cand = dict(qid=qid, cik=cik.zfill(10) if cik and cik.isdigit() else None)
+    iso = b.get("iso", {}).get("value")
+    cand = dict(qid=qid, cik=cik.zfill(10) if cik and cik.isdigit() else None,
+                pays=entities.norm_country(iso) if iso else None, label=b.get("name", {}).get("value"))
     cur = out.get(key)
     if cur is None or (cand["cik"] and not cur["cik"]) or (
             bool(cand["cik"]) == bool(cur["cik"]) and _qnum(qid) < _qnum(cur["qid"])):
         out[key] = cand
+    elif cur["qid"] == qid and not cur["pays"]:
+        cur["pays"] = cand["pays"]
 
 
-def wikidata_employees(http, qids: list[str], batch: int = 300) -> pd.DataFrame:
-    """Effectifs Wikidata (P1128) datés (qualificatif P585) : une source sans contact SEC requis."""
-    rows = []
-    qids = sorted(set(q for q in qids if q))
-    for i in range(0, len(qids), batch):
-        vals = " ".join(f"wd:{q}" for q in qids[i:i + batch])
-        q = f"""SELECT ?item ?n ?date WHERE {{ VALUES ?item {{ {vals} }}
-          ?item p:P1128 ?st . ?st ps:P1128 ?n . OPTIONAL {{ ?st pq:P585 ?date }} }}"""
-        for b in http.sparql(q):
-            d = b.get("date", {}).get("value")
-            try:
-                n = float(b["n"]["value"])
-            except (KeyError, ValueError):
-                continue
-            if not d:
-                continue  # effectif sans date : inutilisable pour une série annuelle
-            qid = b["item"]["value"].rsplit("/", 1)[-1]
-            rows.append(dict(qid=qid, year=int(d[:4]), employees=n,
-                             source_url=f"https://www.wikidata.org/wiki/{qid}#P1128"))
-    return pd.DataFrame(rows, columns=["qid", "year", "employees", "source_url"])
-
-
-def sec_tickers(http) -> dict[str, dict]:
-    """company_tickers.json (contact SEC requis) : ticker et clé de nom → CIK."""
-    js = http.get_json("https://www.sec.gov/files/company_tickers.json")
-    if not js:
-        return {}
-    out = {}
-    for v in js.values():
-        cik = str(v.get("cik_str", "")).zfill(10)
-        out[f"T:{str(v.get('ticker', '')).upper()}"] = dict(cik=cik, title=v.get("title"))
-        k = norm_key(v.get("title"))
-        if k:
-            out.setdefault(f"K:{k}", dict(cik=cik, title=v.get("title")))
-    return out
-
-
-_US_EXCH = ("NYSE", "NASDAQ", "NYSEAMERICAN", "AMEX", "NYSEARCA", "OTC")
-
-
-def assign_ids(uni: pd.DataFrame, wd: dict[str, dict], tick: dict[str, dict]) -> pd.DataFrame:
-    """Complète CIK et QID : graine vérifiée > company_tickers SEC > Wikidata."""
-    uni = uni.copy()
-    for i, r in uni.iterrows():
-        names = [v for n in [r["name"], *_split_list(r["aliases"])] for v in name_variants(n)]
-        hit = next((wd[n] for n in names if n in wd), None)
-        if hit and not isinstance(r["qid"], str):
-            uni.at[i, "qid"] = hit["qid"]
+def assign_ids(co: pd.DataFrame, wd: dict[str, dict], tickers: list[dict]) -> pd.DataFrame:
+    """QID, pays et CIK : graine vérifiée > ticker US exact (SEC) > nom normalisé (SEC) > Wikidata P5531."""
+    co = co.copy()
+    by_t, by_k = ticker_index(tickers)
+    for i, r in co.iterrows():
+        hit = wd.get(r["qid"]) if isinstance(r["qid"], str) else None
+        if hit is None:
+            names = [v for n in [r["nom"], *_split_list(r["alias"])] for v in name_variants(n)]
+            hit = next((wd[n] for n in names if n in wd), None)
+        if hit:
+            if not isinstance(r["qid"], str):
+                co.at[i, "qid"] = hit["qid"]
+            if not isinstance(r["pays"], str) and hit.get("pays"):
+                co.at[i, "pays"] = hit["pays"]
+            if _QID.fullmatch(str(r["nom"])) and hit.get("label"):
+                co.at[i, "nom"], co.at[i, "cle"] = hit["label"], norm_key(hit["label"])
         if isinstance(r["cik"], str) and r["cik"]:
             continue
+        found = None
         for t in _split_list(r["tickers"]):
             ex, _, sym = t.partition(":")
-            if ex.upper() in _US_EXCH and f"T:{sym.upper()}" in tick:
-                uni.at[i, "cik"] = tick[f"T:{sym.upper()}"]["cik"]
-                uni.at[i, "cik_source"] = f"SEC company_tickers.json (ticker {sym.upper()})"
+            row = by_t.get(sym.upper())
+            us_row = row and (not row.get("bourse") or row["bourse"] in US_EXCHANGES)
+            if ex.upper() in US_EXCHANGES and us_row:
+                found = (row["cik"], f"SEC company_tickers (ticker {sym.upper()})")
                 break
-        else:
-            k = r["key"]
-            if isinstance(k, str) and f"K:{k}" in tick:
-                uni.at[i, "cik"] = tick[f"K:{k}"]["cik"]
-                uni.at[i, "cik_source"] = f"SEC company_tickers.json (nom « {tick[f'K:{k}']['title']} »)"
-            elif hit and hit["cik"]:
-                uni.at[i, "cik"] = hit["cik"]
-                uni.at[i, "cik_source"] = f"Wikidata P5531 — https://www.wikidata.org/wiki/{hit['qid']}"
-    return uni
+        keys = [k for k in map(strict_key, [r["nom"], *_split_list(r["alias"])]) if k in by_k]
+        if found is None and keys:
+            row = by_k[keys[0]]
+            found = (row["cik"], f"SEC company_tickers (nom « {row['nom']} »)")
+        if found is None and hit and hit.get("cik"):
+            found = (hit["cik"], f"Wikidata P5531 ({hit['qid']})")
+        if found:
+            co.at[i, "cik"], co.at[i, "cik_source"] = found
+    return co
 
 
-# -- comptes annuels (companyfacts) -------------------------------------------------------------------------
-# Concepts candidats par mesure, par ordre de préférence. Par société, le concept le mieux couvert gagne,
-# les autres ne bouchent que les années manquantes (chaque ligne garde le concept utilisé).
+# -- faits SEC (companyfacts) -------------------------------------------------------------------------------
+# Concepts candidats par indicateur, par ordre de préférence. Par société, le concept couvrant le plus
+# d'exercices gagne ; les autres ne bouchent que les années manquantes, dans la même unité.
 CONCEPTS: dict[str, list[str]] = {
-    "revenue": ["us-gaap:Revenues", "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
-                "us-gaap:RevenueFromContractWithCustomerIncludingAssessedTax", "us-gaap:SalesRevenueNet",
-                "us-gaap:SalesRevenueGoodsNet", "us-gaap:RevenueMineralSales", "ifrs-full:Revenue",
-                "ifrs-full:RevenueFromContractsWithCustomers"],
-    "capex": ["us-gaap:PaymentsToAcquirePropertyPlantAndEquipment",
-              "us-gaap:PaymentsToAcquireProductiveAssets",
-              "us-gaap:PaymentsToAcquireMiningAssets", "us-gaap:PaymentsForCapitalImprovements",
-              "ifrs-full:PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
-              "ifrs-full:PurchaseOfPropertyPlantAndEquipment",
-              "ifrs-full:PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwillInvestmentPropertyAndOtherNoncurrentAssets"],
-    "ppe_net": ["us-gaap:PropertyPlantAndEquipmentNet",
-                "us-gaap:PropertyPlantAndEquipmentAndFinanceLeaseRightOfUseAssetAfterAccumulatedDepreciationAndAmortization",
-                "ifrs-full:PropertyPlantAndEquipment"],
-    "ocf": ["us-gaap:NetCashProvidedByUsedInOperatingActivities",
-            "us-gaap:NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
-            "ifrs-full:CashFlowsFromUsedInOperatingActivities",
-            "ifrs-full:CashFlowsFromUsedInOperatingActivitiesContinuingOperations"],
-    "net_income": ["us-gaap:NetIncomeLoss", "us-gaap:ProfitLoss", "ifrs-full:ProfitLoss",
-                   "ifrs-full:ProfitLossAttributableToOwnersOfParent"],
-    "da": ["us-gaap:DepreciationDepletionAndAmortization", "us-gaap:DepreciationAndAmortization",
-           "us-gaap:DepreciationAmortizationAndAccretionNet", "ifrs-full:DepreciationAndAmortisationExpense",
-           "ifrs-full:AdjustmentsForDepreciationAndAmortisationExpense"],
+    "capex": [
+        "us-gaap:PaymentsToAcquirePropertyPlantAndEquipment", "us-gaap:PaymentsToAcquireProductiveAssets",
+        "us-gaap:PaymentsToAcquireMiningAssets",
+        "ifrs-full:PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
+        "ifrs-full:PurchaseOfPropertyPlantAndEquipment",
+        "ifrs-full:PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwillInvestmentProperty"
+        "AndOtherNoncurrentAssets"],
+    "chiffre_affaires": [
+        "us-gaap:Revenues", "us-gaap:RevenueFromContractWithCustomerExcludingAssessedTax",
+        "us-gaap:RevenueFromContractWithCustomerIncludingAssessedTax", "us-gaap:RevenueMineralSales",
+        "us-gaap:SalesRevenueNet", "us-gaap:SalesRevenueGoodsNet", "ifrs-full:Revenue",
+        "ifrs-full:RevenueFromContractsWithCustomers"],
+    "exploration": [
+        "us-gaap:ExplorationExpenseMining", "us-gaap:ExplorationExpense",
+        "us-gaap:ResultsOfOperationsExplorationExpense",
+        "ifrs-full:ExpenseArisingFromExplorationForAndEvaluationOfMineralResources",
+        "ifrs-full:CashFlowsFromUsedInExplorationForAndEvaluationOfMineralResourcesClassifiedAsInvesting"
+        "Activities",
+        "ifrs-full:PurchaseOfExplorationAndEvaluationAssets"],
+    "actifs_miniers": [
+        "us-gaap:PropertyPlantAndEquipmentNet",
+        "us-gaap:PropertyPlantAndEquipmentAndFinanceLeaseRightOfUseAssetAfterAccumulatedDepreciationAndAmortization",
+        "us-gaap:MineralPropertiesNet",
+        "ifrs-full:PropertyPlantAndEquipment",
+        "ifrs-full:PropertyPlantAndEquipmentIncludingRightofuseAssets"],
+    "effectifs": ["dei:EntityNumberOfEmployees", "ifrs-full:NumberOfEmployees",
+                  "ifrs-full:AverageNumberOfEmployees"],
 }
-INSTANT = {"ppe_net"}
-METRIC_LABELS = {
-    "revenue": "Chiffre d'affaires", "capex": "CAPEX (investissements corporels payés)",
-    "ppe_net": "Immobilisations corporelles nettes", "ocf": "Flux de trésorerie d'exploitation",
-    "net_income": "Résultat net", "da": "Amortissements et dépréciations",
-    "capex_revenue": "CAPEX / chiffre d'affaires", "capex_per_employee": "CAPEX par salarié",
-    "capex_growth": "Croissance du CAPEX", "ppe_growth": "Croissance des immobilisations",
-    "capex_da": "CAPEX / amortissements (> 1 : investissement de croissance)",
-    "capex_prevision": "CAPEX prévu (année suivante)",
+INSTANT = {"actifs_miniers"}  # postes de bilan : valeur à la clôture
+BOTH = {"effectifs"}  # effectif à une date ou moyenne de l'exercice
+ABS = {"capex", "exploration"}  # sorties de trésorerie parfois signées négativement
+LABELS = {
+    "capex": "CAPEX (investissements corporels payés)", "chiffre_affaires": "Chiffre d'affaires",
+    "exploration": "Dépenses d'exploration", "actifs_miniers": "Actifs miniers (immobilisations nettes)",
+    "effectifs": "Effectifs",
 }
-FIN_COLS = ["company_id", "cik", "year", "metric", "value", "unit", "concept", "form", "accn", "filed",
-            "period_end", "source_url", "lo90", "hi90"]
+FACT_COLS = ["company_id", "indicateur", "annee", "valeur", "unite", "devise", "source", "formulaire",
+             "concept", "fin_exercice", "depose", "accn", "cik", "origine"]
 
 
 def filing_url(cik: str, accn: str) -> str:
     return f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn.replace('-', '')}/{accn}-index.htm"
 
 
-def _base_form(f: str) -> str:
-    return (f or "").removesuffix("/A")
-
-
-def _annual_facts(facts: dict, concept: str) -> tuple[str | None, list[dict]]:
-    ns, local = concept.split(":")
-    units = facts.get("facts", {}).get(ns, {}).get(local, {}).get("units", {})
-    if not units:
-        return None, []
-    unit = "USD" if "USD" in units else max(units, key=lambda u: len(units[u]))
-    return unit, [x for x in units[unit] if _base_form(x.get("form")) in ANNUAL_FORMS]
+def _annual(x: dict) -> bool:
+    return (x.get("form") or "").removesuffix("/A") in ANNUAL_FORMS
 
 
 def _days(a: str, b: str) -> int:
     return (date.fromisoformat(b) - date.fromisoformat(a)).days
 
 
-def parse_facts(facts: dict, company_id: str, cik: str) -> pd.DataFrame:
-    """Valeurs annuelles par mesure : exercices complets seulement, retraitements → dernier dépôt."""
-    # dates de clôture déclarées par chaque dépôt annuel : les postes de bilan (instantanés) ne sont gardés
-    # qu'à ces dates, sinon un bilan trimestriel repris dans un 10-K passerait pour une clôture
-    closes: set[tuple[str, str]] = set()
-    per_metric: dict[str, list[tuple[str, str, dict[int, dict]]]] = {}
-    for metric, cands in CONCEPTS.items():
-        if metric in INSTANT:
-            continue
-        per_metric[metric] = []
-        for concept in cands:
-            unit, xs = _annual_facts(facts, concept)
+def _full_year(x: dict) -> bool:
+    return "start" in x and 330 <= _days(x["start"], x["end"]) <= 400
+
+
+def _units(facts: dict, concept: str, people: bool = False) -> tuple[str | None, list[dict]]:
+    """(unité retenue, faits annuels). Monnaie : USD sinon la plus fournie ; effectifs : toutes les écritures
+    (« Employee », « employees »… ) fusionnées."""
+    ns, local = concept.split(":")
+    units = facts.get("facts", {}).get(ns, {}).get(local, {}).get("units", {})
+    if not units:
+        return None, []
+    if people:
+        return "personnes", [x for xs in units.values() for x in xs if _annual(x)]
+    unit = "USD" if "USD" in units else max(units, key=lambda u: len(units[u]))
+    return unit, [x for x in units[unit] if _annual(x)]
+
+
+def _closes(facts: dict) -> dict[str, list[str]]:
+    """Dates de clôture déclarées par chaque dépôt annuel (fins d'exercices complets)."""
+    out: dict[str, set[str]] = {}
+    for ns in ("us-gaap", "ifrs-full"):
+        for c in facts.get("facts", {}).get(ns, {}).values():
+            for xs in c.get("units", {}).values():
+                for x in xs:
+                    if _annual(x) and _full_year(x):
+                        out.setdefault(x["accn"], set()).add(x["end"])
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def _year_of(x: dict, closes: dict[str, list[str]], instant_ok: bool) -> int | None:
+    if "start" in x:
+        return int(x["end"][:4]) if _full_year(x) else None
+    ends = closes.get(x["accn"], [])
+    if x["end"] in ends:
+        return int(x["end"][:4])
+    if not instant_ok:
+        return None  # bilan trimestriel repris dans un rapport annuel : pas une clôture
+    prior = [e for e in ends if e <= x["end"]]  # effectif daté après la clôture (page de garde)
+    return int(prior[-1][:4]) if prior else int(x["end"][:4])
+
+
+def parse_companyfacts(facts: dict, company_id: str, cik: str) -> pd.DataFrame:
+    """Une valeur par (indicateur, exercice) : rapports annuels seulement, exercice complet (330–400 j) ou
+    clôture, retraitement → dernier dépôt. Chaque ligne garde concept, unité, formulaire, dépôt."""
+    closes = _closes(facts)
+    rows = []
+    for ind, cands in CONCEPTS.items():
+        series = []
+        for prio, concept in enumerate(cands):
+            unit, xs = _units(facts, concept, people=ind == "effectifs")
             byyear: dict[int, dict] = {}
             for x in xs:
-                if "start" not in x or not 330 <= _days(x["start"], x["end"]) <= 400:
+                if ind in INSTANT and "start" in x:
                     continue
-                closes.add((x["accn"], x["end"]))
-                y = int(x["end"][:4])
+                if ind not in INSTANT | BOTH and "start" not in x:
+                    continue
+                y = _year_of(x, closes, instant_ok=ind in BOTH)
+                if y is None or y < FIRST_YEAR:
+                    continue
                 cur = byyear.get(y)
                 if cur is None or (x["filed"], x["end"]) > (cur["filed"], cur["end"]):
                     byyear[y] = x
             if byyear:
-                per_metric[metric].append((concept, unit, byyear))
-    for metric in INSTANT:
-        per_metric[metric] = []
-        for concept in CONCEPTS[metric]:
-            unit, xs = _annual_facts(facts, concept)
-            byyear = {}
-            for x in xs:
-                if "start" in x or (x["accn"], x["end"]) not in closes:
-                    continue
-                y = int(x["end"][:4])
-                cur = byyear.get(y)
-                if cur is None or (x["filed"], x["end"]) > (cur["filed"], cur["end"]):
-                    byyear[y] = x
-            if byyear:
-                per_metric[metric].append((concept, unit, byyear))
-
-    rows = []
-    for metric, lst in per_metric.items():
-        if not lst:
+                series.append((len(byyear), -prio, concept, unit, byyear))
+        if not series:
             continue
-        prio = {c: i for i, c in enumerate(CONCEPTS[metric])}
-        lst = sorted(lst, key=lambda t: (-len(t[2]), prio[t[0]]))
-        main_unit = lst[0][1]
-        done: set[int] = set()
-        for concept, unit, byyear in lst:
+        series.sort(reverse=True)
+        main_unit, done = series[0][3], set()
+        for _, _, concept, unit, byyear in series:
             if unit != main_unit:
-                continue  # jamais deux monnaies dans une même série
+                continue  # jamais deux devises dans une même série
             for y, x in sorted(byyear.items()):
-                if y in done or y < FIRST_YEAR:
+                if y in done:
                     continue
                 done.add(y)
                 v = float(x["val"])
-                rows.append(dict(company_id=company_id, cik=cik, year=y, metric=metric,
-                                 value=abs(v) if metric == "capex" else v, unit=unit, concept=concept,
-                                 form=x.get("form"), accn=x["accn"], filed=x["filed"], period_end=x["end"],
-                                 source_url=filing_url(cik, x["accn"]), lo90=np.nan, hi90=np.nan))
-    return pd.DataFrame(rows, columns=FIN_COLS)
+                money = unit != "personnes"
+                rows.append(dict(company_id=company_id, indicateur=ind, annee=y,
+                                 valeur=abs(v) if ind in ABS else v,
+                                 unite="monnaie" if money else "personnes",
+                                 devise=unit if money else None, source=filing_url(cik, x["accn"]),
+                                 formulaire=x.get("form"), concept=concept, fin_exercice=x["end"],
+                                 depose=x.get("filed"), accn=x["accn"], cik=cik, origine="sec"))
+    df = pd.DataFrame(rows, columns=FACT_COLS)
+    return df.sort_values(["indicateur", "annee"]).reset_index(drop=True)
 
 
-def merge_alt(main: pd.DataFrame, alt: pd.DataFrame) -> pd.DataFrame:
-    """Ajoute les (mesure, année) absents du CIK principal, dans la même monnaie seulement."""
-    if alt.empty:
-        return main
-    if main.empty:
-        return alt
-    units = main.groupby("metric")["unit"].first()
-    have = set(zip(main["metric"], main["year"], strict=True))
-    keep = [(m, y) not in have and units.get(m, u) == u
-            for m, y, u in zip(alt["metric"], alt["year"], alt["unit"], strict=True)]
-    out = pd.concat([main, alt[keep]], ignore_index=True)
-    return out.sort_values(["metric", "year"]).reset_index(drop=True)
+# -- faits Wikidata -----------------------------------------------------------------------------------------
+WD_PROPS = {"P1128": "effectifs", "P2139": "chiffre_affaires"}
 
 
-def dei_employees(facts: dict, company_id: str, cik: str) -> list[dict]:
-    """dei:EntityNumberOfEmployees quand la société le déclare (rare chez les miniers)."""
-    units = facts.get("facts", {}).get("dei", {}).get("EntityNumberOfEmployees", {}).get("units", {})
-    best: dict[int, dict] = {}
-    for xs in units.values():
-        for x in xs:
-            if _base_form(x.get("form")) not in ANNUAL_FORMS:
+def wikidata_facts(http, qid_to_company: dict[str, str], batch: int = 200) -> pd.DataFrame:
+    """Effectifs (P1128) et chiffre d'affaires (P2139) datés par le qualificatif P585 ; sans date : ignoré.
+    Devise : code ISO 4217 (P498) de l'unité. Plusieurs déclarations la même année : la plus récente."""
+    rows = []
+    qids = sorted(qid_to_company)
+    for i in range(0, len(qids), batch):
+        vals = " ".join(f"wd:{q}" for q in qids[i:i + batch])
+        q = (f"SELECT ?item ?prop ?amount ?date ?code WHERE {{ VALUES ?item {{ {vals} }} "
+             f'VALUES (?prop ?p ?psv) {{ ("P1128" p:P1128 psv:P1128) ("P2139" p:P2139 psv:P2139) }} '
+             f"?item ?p ?st . ?st ?psv ?vn . ?vn wikibase:quantityAmount ?amount . ?st pq:P585 ?date . "
+             f"OPTIONAL {{ ?vn wikibase:quantityUnit ?u . ?u wdt:P498 ?code }} }}")
+        for b in http.sparql(q):
+            try:
+                qid, prop = _qid_of(b["item"]["value"]), b["prop"]["value"]
+                v, d = float(b["amount"]["value"]), b["date"]["value"].lstrip("+")
+                y = int(d[:4])
+            except (KeyError, ValueError):
                 continue
-            y = int(x["end"][:4])
-            if y not in best or x["filed"] > best[y]["filed"]:
-                best[y] = x
-    return [dict(company_id=company_id, year=y, employees=float(x["val"]), source_kind="sec_dei",
-                 source_url=filing_url(cik, x["accn"]), snippet="dei:EntityNumberOfEmployees",
-                 accepted=True, reason="déclaré dans l'instance XBRL") for y, x in sorted(best.items())]
-
-
-# -- effectifs dans le texte des rapports annuels ------------------------------------------------------
-_NUM = r"(\d{1,3}(?:[,   ]\d{3})+|\d{2,6})"
-_NUM_FR = r"(\d{1,3}(?:[   .]\d{3})+|\d{2,6})"
-_QUAL_EN = r"(?:approximately|about|around|some|over|more than|nearly|roughly|a total of|an average of)?"
-_EMP_EN = [
-    re.compile(rf"(?:had|employ(?:ed|s)?|workforce (?:of|was|totall?ed)|total of|consisted of|comprised)\s+"
-               rf"{_QUAL_EN}\s*(?:a total of\s+|approximately\s+)?{_NUM}\s+(?:full[- ]time\s+|permanent\s+|"
-               rf"direct\s+|active\s+)?(?:employees|people|persons|staff|workers)", re.I),
-    re.compile(rf"{_QUAL_EN}\s*{_NUM}\s+(?:full[- ]time\s+|permanent\s+)?employees\b", re.I),
-    re.compile(rf"(?:total (?:number of )?employees|number of employees|total workforce)\s*(?:was|of|:)?\s*"
-               rf"{_QUAL_EN}\s*{_NUM}", re.I),
-]
-_QUAL_FR = r"(?:environ|près de|plus de|quelque|au total)?"
-_EMP_FR = [
-    re.compile(rf"(?:comptait|employait|emploie|employaient|"
-               rf"effectifs? (?:total )?(?:de|était de|s'élevait à)|total de)\s+{_QUAL_FR}\s*{_NUM_FR}\s+"
-               rf"(?:employés|salariés|personnes|travailleurs|membres du personnel)", re.I),
-    re.compile(rf"{_QUAL_FR}\s*{_NUM_FR}\s+(?:employés|salariés)\b", re.I),
-]
-_DATED = re.compile(r"(as of|as at|at (?:the end of|december|june|march|september)|au 31|à la fin|en date du|"
-                    r"year[- ]end)", re.I)
-_COMBINED = re.compile(r"^\W{0,3}(?:and|or|including|plus|et|y compris)\s+(?:\w+\s+){0,2}contractors?|"
-                       r"^\W{0,3}(?:et|and)\s+(?:\w+\s+){0,2}(?:entrepreneurs|sous-traitants)", re.I)
-EMP_RANGE = (10, 600_000)
-
-
-def html_to_text(s: str) -> str:
-    s = re.sub(r"(?is)<(script|style)[^>]*>.*?</\1>", " ", s)
-    s = re.sub(r"(?s)<[^>]+>", " ", s)
-    return " ".join(html.unescape(s).split())
-
-
-def extract_employees(text: str, lang: str = "en") -> tuple[int, str] | None:
-    """Effectif annoncé dans un rapport annuel : (nombre, extrait). Règles :
-    - phrases du type « we had approximately 22,200 employees » (anglais) ou « comptait 3 400 employés » ;
-    - un nombre suivi de « and contractors » est un total mêlé : rejeté ;
-    - hors [10 ; 600 000] : rejeté ; une phrase datée (« as of December 31 ») passe avant les autres."""
-    pats = _EMP_FR + _EMP_EN if lang == "fr" else _EMP_EN + _EMP_FR
-    cands = []
-    for rank, pat in enumerate(pats):
-        for m in pat.finditer(text):
-            raw = m.group(1)
-            n = int(re.sub(r"[^\d]", "", raw))
-            if not EMP_RANGE[0] <= n <= EMP_RANGE[1]:
+            ind = WD_PROPS.get(prop)
+            if ind is None or qid not in qid_to_company or y < FIRST_YEAR:
                 continue
-            if 1900 <= n <= 2100 and not re.search(r"[,   .]", raw):
-                continue  # une année (« in 2024 employees… »), pas un effectif
-            if _COMBINED.search(text[m.end():m.end() + 60]):
-                continue
-            ctx = text[max(0, m.start() - 160):m.end() + 40]
-            dated = bool(_DATED.search(ctx))
-            cands.append((not dated, rank, m.start(), n, ctx.strip()))
-    if not cands:
-        return None
-    _, _, _, n, ctx = min(cands)
-    return n, ctx[:300]
+            money = ind != "effectifs"
+            cur = b.get("code", {}).get("value") if money else None
+            if money and not cur:
+                continue  # montant sans devise connue : inutilisable
+            rows.append(dict(company_id=qid_to_company[qid], indicateur=ind, annee=y, valeur=v,
+                             unite="monnaie" if money else "personnes", devise=cur,
+                             source=f"https://www.wikidata.org/wiki/{qid}#{prop}",
+                             formulaire=f"Wikidata {prop}", concept=f"wikidata:{prop}", fin_exercice=d[:10],
+                             depose=None, accn=None, cik=None, origine="wikidata"))
+    df = pd.DataFrame(rows, columns=FACT_COLS)
+    if df.empty:
+        return df
+    # une seule devise par série (la plus fréquente), une valeur par année (date la plus récente)
+    main = df.groupby(["company_id", "indicateur"])["devise"].agg(
+        lambda s: s.mode().iloc[0] if s.notna().any() else None)
+    keep = [pd.isna(main.get((c, i))) or d == main.get((c, i))
+            for c, i, d in zip(df["company_id"], df["indicateur"], df["devise"], strict=True)]
+    df = df[keep].sort_values("fin_exercice")
+    df = df.drop_duplicates(["company_id", "indicateur", "annee"], keep="last")
+    return df.sort_values(["company_id", "indicateur", "annee"]).reset_index(drop=True)
 
 
-def validate_employees(n: float, year: int, others: dict[int, float], max_ratio: float = 5.0
-                       ) -> tuple[bool, str]:
-    """Plausibilité : dans la plage, et pas plus de ×5 d'écart avec l'effectif connu de l'année la plus
-    proche (une autre source), sinon le nombre lu est probablement autre chose (sites, contractants…)."""
-    if not EMP_RANGE[0] <= n <= EMP_RANGE[1]:
-        return False, "hors plage plausible"
-    near = [(abs(y - year), v) for y, v in others.items() if v and abs(y - year) <= 3]
-    if near:
-        _, ref = min(near)
-        r = max(n / ref, ref / n)
-        if r > max_ratio:
-            return False, f"écart ×{r:.1f} avec l'année la plus proche ({ref:,.0f})"
-    return True, "plausible"
+def best_facts(facts: pd.DataFrame) -> pd.DataFrame:
+    """Série retenue par (société, indicateur) : SEC si la société en déclare, sinon Wikidata (jamais un
+    mélange des deux, qui juxtaposerait des périmètres et des devises différents)."""
+    if facts.empty:
+        return facts
+    has_sec = set(map(tuple, facts.loc[facts["origine"] == "sec", ["company_id", "indicateur"]].to_numpy()))
+    keep = [o == "sec" or (c, i) not in has_sec
+            for c, i, o in zip(facts["company_id"], facts["indicateur"], facts["origine"], strict=True)]
+    return facts[keep].reset_index(drop=True)
 
 
-def annual_filings(sub: dict, n: int | None = None) -> list[dict]:
-    """Rapports annuels (10-K, 20-F, 40-F) les plus récents d'une fiche submissions."""
-    rec = sub.get("filings", {}).get("recent", {})
-    out = []
-    for i, f in enumerate(rec.get("form", [])):
-        if f in ANNUAL_FORMS:
-            out.append(dict(form=f, accn=rec["accessionNumber"][i], filed=rec["filingDate"][i],
-                            report=rec.get("reportDate", [""] * (i + 1))[i] or rec["filingDate"][i],
-                            primary=rec.get("primaryDocument", [""] * (i + 1))[i]))
-    out.sort(key=lambda d: d["filed"], reverse=True)
-    return out[:n] if n else out
-
-
-def _folder(cik: str, accn: str) -> str:
-    return f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accn.replace('-', '')}"
-
-
-_ROW = re.compile(r"(?is)<tr[^>]*>(.*?)</tr>")
-_HREF = re.compile(r'(?i)href="([^"]+)"')
-
-
-def annual_text_url(http, cik: str, f: dict) -> str | None:
-    """Document où lire l'effectif : le document principal (10-K, 20-F) ; pour un 40-F, la notice annuelle
-    (Annual Information Form, pièce EX-99.x) repérée dans l'index du dépôt."""
-    folder = _folder(cik, f["accn"])
-    if f["form"] != "40-F":
-        return f"{folder}/{f['primary']}" if f.get("primary") else None
-    idx = http.get_text(f"{folder}/{f['accn']}-index.htm")
-    if not idx:
-        return None
-    best = None
-    for row in _ROW.findall(idx):
-        txt, href = html_to_text(row).lower(), _HREF.search(row)
-        if not href or not re.search(r"\.(htm|html|txt)$", href.group(1), re.I):
-            continue
-        url = href.group(1) if href.group(1).startswith("http") else f"https://www.sec.gov{href.group(1)}"
-        if "annual information form" in txt or "notice annuelle" in txt:
-            return url
-        if best is None and re.search(r"\bex-99\.1\b", txt):
-            best = url
-    return best
-
-
-# -- CAPEX par segment (instance XBRL) ----------------------------------------------------------------------
-SEG_AXES = {"StatementBusinessSegmentsAxis", "SegmentsAxis"}
-_SEG_AXIS_EXT = re.compile(r"(Segment|Mine|Operation|Project|Site|Asset)s?Axis$")
-_NEUTRAL_AXES = {"ConsolidationItemsAxis"}
-SEG_CAPEX = {
-    "PaymentsToAcquireProductiveAssets", "PaymentsToAcquirePropertyPlantAndEquipment",
-    "PaymentsToAcquireMiningAssets", "SegmentExpenditureAdditionToLongLivedAssets",
-    "PropertyPlantAndEquipmentAdditions",
-    "PurchaseOfPropertyPlantAndEquipmentClassifiedAsInvestingActivities",
-    "AdditionsToNoncurrentAssets", "AdditionsOtherThanThroughBusinessCombinationsPropertyPlantAndEquipment",
-    "PurchaseOfPropertyPlantAndEquipmentIntangibleAssetsOtherThanGoodwill"
-    "InvestmentPropertyAndOtherNoncurrentAssets",
+# -- investissements annoncés (veille) ---------------------------------------------------------------------
+_MULT = {
+    "thousand": 1e3, "k": 1e3, "mil": 1e3,
+    "million": 1e6, "millions": 1e6, "mln": 1e6, "mn": 1e6, "m": 1e6, "mio": 1e6, "mio.": 1e6,
+    "millon": 1e6, "millones": 1e6, "milhao": 1e6, "milhoes": 1e6, "me": 1e6, "m€": 1e6,
+    "billion": 1e9, "billions": 1e9, "bn": 1e9, "b": 1e9, "bln": 1e9, "milliard": 1e9, "milliards": 1e9,
+    "md": 1e9, "mds": 1e9, "mrd": 1e9, "mrd.": 1e9, "milliarde": 1e9, "milliarden": 1e9,
+    "mil millones": 1e9, "bilhao": 1e9, "bilhoes": 1e9, "trillion": 1e12, "crore": 1e7, "crores": 1e7,
+    "lakh": 1e5,
 }
-_SEG_CAPEX_EXT = re.compile(r"(CapitalExpenditure|Capex|SustainingCapital|DevelopmentCapital|"
-                            r"PaymentsForPropertyPlantAndEquipment)", re.I)
-SEG_COLS = ["company_id", "kind", "year", "date", "axis", "member", "label", "concept", "value", "unit",
-            "site_id", "site_name", "match", "title", "event_type", "accn", "source_url"]
+_PREFIX_CUR = [
+    (r"US\s?\$|U\.S\.\s?\$|USD\s?\$?", "USD"), (r"A\$|AU\$|AUD\s?\$?", "AUD"), (r"C\$|CA\$|CAD\s?\$?", "CAD"),
+    (r"NZ\$|NZD", "NZD"), (r"R\$|BRL", "BRL"), (r"HK\$|HKD", "HKD"), (r"S\$|SGD", "SGD"),
+    (r"MX\$|MXN", "MXN"), (r"€|EUR", "EUR"), (r"£|GBP", "GBP"), (r"¥|JPY", "JPY"), (r"₹|INR|Rs\.?", "INR"),
+    (r"ZAR", "ZAR"), (r"CLP", "CLP"), (r"PEN|S/\.?", "PEN"), (r"CNY|RMB", "CNY"), (r"CHF", "CHF"),
+    (r"\$", "$"),
+]
+_SUFFIX_CUR = [
+    (r"(?:us|u\.s\.|american)\s+dollars?|d[oó]lares\s+(?:estadounidenses|americanos)|"
+     r"dollars?\s+am[eé]ricains?|usd|us\$", "USD"),
+    (r"australian\s+dollars?|aud|dollars?\s+australiens?", "AUD"),
+    (r"canadian\s+dollars?|cad|dollars?\s+canadiens?", "CAD"),
+    (r"dollars?|d[oó]lares|d[oó]lar", "$"), (r"euros?|eur|€", "EUR"),
+    (r"pounds?|livres?\s+sterling|gbp|£", "GBP"),
+    (r"rand|zar", "ZAR"), (r"reais|brl", "BRL"), (r"yuans?|renminbi|cny|rmb", "CNY"),
+    (r"rupees?|roupies?|inr", "INR"), (r"soles|pen", "PEN"), (r"pesos\s+chilenos|clp", "CLP"),
+    (r"pesos\s+mexicanos|mxn", "MXN"), (r"yens?|jpy", "JPY"), (r"roubles?|rubles?|rub", "RUB"),
+    (r"tenge|kzt", "KZT"),
+    (r"francs?\s+cfa|fcfa|xof|xaf", "XOF"),
+]
+_NUM = r"\d{1,3}(?:[.,   ]\d{3})+(?:[.,]\d+)?|\d+(?:[.,]\d+)?"
+_MULT_RE = (r"mil\s+millones|thousand|millions?|millones|mill[oó]n|milh[oõ]es|milh[aã]o|billions?|milliards?|"
+            r"milliarden|milliarde|bilh[oõ]es|bilh[aã]o|trillion|crores?|lakh|mln|bln|mio\.?|mrd\.?|mds|"
+            r"bn|mn|md|m|b|k")
+_PRE = "|".join(f"(?:{p})" for p, _ in _PREFIX_CUR)
+_SUF = "|".join(f"(?:{p})" for p, _ in _SUFFIX_CUR)
+_AMOUNT = re.compile(
+    rf"(?P<pre>{_PRE})\s?(?P<n1>{_NUM})[\s-]?(?P<m1>{_MULT_RE})?(?![a-z])"
+    rf"|(?P<n2>{_NUM})[\s-]?(?P<m2>{_MULT_RE})\.?\s?(?:(?:de|d'|of)\s?)?(?P<suf>{_SUF})(?![a-z])"
+    rf"|(?P<n3>{_NUM})\s?(?P<m3>{_MULT_RE})?\s?(?P<sym>€|£|\$)", re.I)
+_PER_UNIT = re.compile(r"^\s*(?:/|per\b|a share|an? (?:ounce|tonne|ton|pound)|par\b|por\b|la (?:once|tonne)|"
+                       r"pro\b|each)", re.I)
+# verbes et noms d'investissement (texte replié : minuscules, sans accents)
+INVEST_VERB = re.compile(
+    r"\b(invest\w*|spend\w*|capex|capital (?:expenditure|spending|budget|program\w*)|allocat\w*|commit\w*|"
+    r"earmark\w*|plough\w*|approv\w*|green[- ]?light\w*|to build|build\w*|construct\w*|expan\w*|"
+    r"develop\w*|upgrad\w*|acqui\w*|buy\w*|"
+    r"bought|purchas\w*|takeover|take over|merg\w*|bid\w*|"
+    r"investi\w*|consacr\w*|debloqu\w*|inject\w*|rachat|rachet\w*|acquiert|fusion\w*|opa|construi\w*|"
+    r"agrandi\w*|invers\w*|inviert\w*|invertir\w*|destinar\w*|destinara\w*|adquier\w*|adquisici\w*|compra\w*|"
+    r"constru\w*|ampli\w*|aporta\w*|adquir\w*|aquisic\w*|fusao|investier\w*|investition\w*|ubernimm\w*|"
+    r"ubernahme\w*|kauf\w*|baut|ausbau\w*)\b")
+# chiffres de résultat, de dette ou de sanction près du montant : ce n'est pas un investissement
+NOT_INVEST = re.compile(
+    r"\b(revenues?|sales|profits?|earnings|net income|loss(?:es)?|ebitda|dividends?|fined?|fines|penalt\w*|"
+    r"lawsuits?|sues?|damages|market (?:cap\w*|value)|valued|worth|debt|bonds?|loans?|royalt\w*|tax(?:es)?|"
+    r"wages?|salar\w*|benefices?|chiffre d'affaires|pertes?|amendes?|dette|ganancias?|utilidad\w*|ingresos|"
+    r"perdidas?|multas?|deuda|lucros?|receitas?|prejuizos?|dividas?|gewinn\w*|umsatz\w*|verlust\w*|strafe\w*|"
+    r"schulden)\b")
+# catégories, par ordre de priorité (la première qui correspond l'emporte)
+CATEGORIES: list[tuple[str, re.Pattern]] = [
+    ("rachat/fusion", re.compile(
+        r"\b(acqui\w*|takeover|take over|merg\w*|buyout|buys?|bought|purchas\w* (?:of )?(?:a )?(?:stake|"
+        r"interest|shares)|stake|bid\w*|rachat|rachet\w*|acquiert|fusion\w*|opa|adquisici\w*|adquier\w*|"
+        r"compra\w*|fusion|aquisic\w*|adquir\w*|fusao|ubernahme\w*|ubernimm\w*|kauf\w*)\b")),
+    ("exploration", re.compile(
+        r"\b(explor\w*|drill\w*|forage\w*|perforac\w*|sondag\w*|bohr\w*|prospect\w*)\b")),
+    ("décarbonation/énergie", re.compile(
+        r"\b(solar\w*|wind\w*|renewabl\w*|decarboni\w*|electrific\w*|batter\w*|green|hydrogen|emissions?|"
+        r"power (?:plant|station|project)|low[- ]carbon|net[- ]zero|energie|solaire|eolien\w*|"
+        r"renouvelable\w*|"
+        r"decarbon\w*|energia|eolic\w*|renovable\w*|solares|erneuerbar\w*|windpark|photovolta\w*)\b")),
+    ("usine/traitement", re.compile(
+        r"\b(plant|mill|processing|concentrator|smelter|refiner\w*|leach\w*|flotation|tailings|usine\w*|"
+        r"traitement|fonderie|raffinerie|planta|procesamiento|fundicion|refineria|usina|processamento|"
+        r"beneficiamento|anlage|hutte|raffinerie|aufbereitung)\b")),
+    ("infrastructure", re.compile(
+        r"\b(rail\w*|port|ports|road\w*|pipeline\w*|water|desalinat\w*|transmission|camp|infrastructur\w*|"
+        r"chemin de fer|route|ferrocarril|puerto|carretera|acueducto|desaladora|infraestructura|ferrovia|"
+        r"porto|"
+        r"estrada|infraestrutura|infrastruktur|hafen|bahn)\b")),
+    ("expansion", re.compile(
+        r"\b(expan\w*|extension|ramp[- ]?up|new mine|(?:stage|phase) (?:2|ii|two|3|iii|three)|develop\w*|"
+        r"build\w*|construct\w*|underground|capacity|"
+        r"life of mine|agrandi\w*|nouvelle mine|ampliac\w*|desarrollo|construc\w*|nueva mina|"
+        r"expansao|desenvolvimento|nova mina|erweiterung|ausbau\w*)\b")),
+]
+_TLD_DOLLAR = {"ca": "CAD", "au": "AUD", "nz": "NZD", "hk": "HKD", "sg": "SGD", "mx": "MXN", "cl": "CLP",
+               "ar": "ARS", "co": "COP"}
+MIN_AMOUNT = 1e5  # sous 100 000 : prix unitaire, salaire, action…
 
 
-def _local(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+def parse_number(s: str) -> float | None:
+    """« 1,200 » → 1200 ; « 1,5 » → 1.5 ; « 2.75 » → 2.75 ; « 1 200 » → 1200 ; « 1.234.567 » → 1234567.
+    Un séparateur unique suivi d'exactement trois chiffres est un séparateur de milliers."""
+    s = s.replace(" ", " ").replace(" ", " ").strip()
+    if re.fullmatch(r"\d{1,3}(?: \d{3})+", s):
+        return float(s.replace(" ", ""))
+    s = s.replace(" ", "")
+    seps = [c for c in s if c in ".,"]
+    try:
+        if not seps:
+            return float(s)
+        if len(set(seps)) == 2:  # les deux : le dernier est le séparateur décimal
+            dec = "," if s.rfind(",") > s.rfind(".") else "."
+            th = "." if dec == "," else ","
+            return float(s.replace(th, "").replace(dec, "."))
+        sep = seps[0]
+        parts = s.split(sep)
+        if len(parts) > 2 or len(parts[-1]) == 3:
+            return float(s.replace(sep, ""))
+        return float(s.replace(sep, "."))
+    except ValueError:
+        return None
 
 
-def member_label(qname: str) -> str:
-    """« nem:PenasquitoMember » → « Penasquito » ; « x:CopperSouthAustraliaSegmentMember » → mots séparés."""
-    s = qname.rsplit(":", 1)[-1]
-    s = re.sub(r"(Segment)?Member$", "", s)
-    s = s.replace("_", " ")
-    s = re.sub(r"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|(?<=[A-Za-z])(?=\d)", " ", s)
-    return " ".join(s.split())
+def _currency(m: re.Match, domain: str | None) -> tuple[str, bool]:
+    """(devise ISO, déduite ?) : « $ » seul prend la devise du domaine (.ca → CAD), sinon USD."""
+    raw = m.group("pre") or m.group("suf") or m.group("sym") or ""
+    code = None
+    table = _PREFIX_CUR if m.group("pre") else _SUFFIX_CUR
+    for p, c in table:
+        if re.fullmatch(p, raw.strip(), re.I):
+            code = c
+            break
+    if code is None:
+        code = {"€": "EUR", "£": "GBP", "m€": "EUR", "md€": "EUR"}.get(raw.lower(), "$")
+    if code != "$":
+        return code, False
+    tld = (domain or "").rsplit(".", 1)[-1].lower()
+    return _TLD_DOLLAR.get(tld, "USD"), True
 
 
-def parse_segment_capex(xml_text: str) -> list[dict]:
-    """Faits CAPEX ventilés par segment dans une instance XBRL : (axe, membre, année, concept, valeur)."""
-    root = ET.fromstring(xml_text.encode() if isinstance(xml_text, str) else xml_text)
-    ctx: dict[str, dict] = {}
-    for c in root.iter():
-        if _local(c.tag) != "context":
+def extract_investment(title: str, domain: str | None = None) -> dict | None:
+    """Montant + devise + verbe d'investissement dans un titre, et sa catégorie. None si l'une des trois
+    pièces manque, si le montant est un prix unitaire ou < 100 000, ou si un mot de résultat / dette /
+    sanction est collé au montant (« revenue of $2bn »)."""
+    if not isinstance(title, str) or not title.strip():
+        return None
+    folded = entities.fold(title)
+    if not INVEST_VERB.search(folded):
+        return None
+    for m in _AMOUNT.finditer(title):
+        num = m.group("n1") or m.group("n2") or m.group("n3")
+        mult_raw = (m.group("m1") or m.group("m2") or m.group("m3") or "").lower()
+        v = parse_number(num)
+        if v is None:
             continue
-        dims, start, end = {}, None, None
-        for e in c.iter():
-            t = _local(e.tag)
-            if t == "explicitMember":
-                dims[e.get("dimension", "")] = (e.text or "").strip()
-            elif t == "startDate":
-                start = (e.text or "").strip()
-            elif t == "endDate":
-                end = (e.text or "").strip()
-        ctx[c.get("id")] = dict(dims=dims, start=start, end=end)
-    out, seen = [], set()
-    for e in root.iter():
-        cref = e.get("contextRef")
-        if not cref or cref not in ctx:
+        key = entities.fold(mult_raw)
+        mult = _MULT.get(key, _MULT.get(key.rstrip("."), 1.0)) if mult_raw else 1.0
+        amount = v * mult
+        if amount < MIN_AMOUNT or _PER_UNIT.search(title[m.end():m.end() + 16]):
             continue
-        local = _local(e.tag)
-        ns = e.tag[1:].split("}")[0] if e.tag.startswith("{") else ""
-        std = "fasb.org/us-gaap" in ns or "xbrl.ifrs.org" in ns
-        if not ((std and local in SEG_CAPEX) or (not std and _SEG_CAPEX_EXT.search(local))):
+        if not mult_raw and 1900 <= v <= 2100:
+            continue  # une année
+        near = entities.fold(title[max(0, m.start() - 30):m.end() + 30])
+        if NOT_INVEST.search(near):
             continue
-        c = ctx[cref]
-        if not c["start"] or not c["end"] or not 330 <= _days(c["start"], c["end"]) <= 400:
-            continue
-        seg = [(a, m) for a, m in c["dims"].items() if _local(a) not in _NEUTRAL_AXES]
-        if len(seg) != 1:
-            continue
-        axis, member = seg[0]
-        if not (_local(axis) in SEG_AXES or _SEG_AXIS_EXT.search(_local(axis))):
-            continue
-        try:
-            v = abs(float((e.text or "").strip()))
-        except ValueError:
-            continue
-        prefix = "us-gaap" if "fasb.org" in ns else "ifrs-full" if "ifrs.org" in ns else "extension"
-        key = (member, c["end"], local)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(dict(axis=axis, member=member, label=member_label(member), year=int(c["end"][:4]),
-                        concept=f"{prefix}:{local}", value=v, unit=e.get("unitRef")))
+        verb = INVEST_VERB.search(folded)
+        cat = next((c for c, rx in CATEGORIES if rx.search(folded)), "autre")
+        devise, deduite = _currency(m, domain)
+        return dict(montant=float(amount), devise=devise, devise_deduite=deduite, categorie=cat,
+                    verbe=verb.group(1), extrait=m.group(0).strip())
+    return None
+
+
+# mots trop communs pour désigner seuls une société dans un titre
+_COMMON = {
+    "gold", "silver", "copper", "mining", "mines", "mine", "metals", "energy", "resources", "group", "first",
+    "royal", "global", "national", "general", "united", "american", "anglo", "pacific", "atlantic", "golden",
+    "premier", "capital", "new", "north", "south", "east", "west", "central", "international", "minerals",
+    "iron", "coal", "nickel", "zinc", "lithium", "uranium", "state", "government", "city", "china", "india",
+    "canada", "australia", "africa", "peru", "chile", "brazil", "mexico", "news", "world", "best", "vale",
+    "orion", "apollo", "summit", "liberty", "victory", "phoenix", "eagle", "star", "sun", "sierra",
+    "mountain",
+}
+
+
+def name_index(co: pd.DataFrame) -> dict[str, str]:
+    """Clé de nom (nom + alias) → société. Clé d'un seul mot : ≥ 4 lettres et pas un mot courant."""
+    from strate import catalog
+
+    idx: dict[str, str] = {}
+    for cid, nom, ali in zip(co["id"], co["nom"], co["alias"], strict=True):
+        for n in [nom, *_split_list(ali)]:
+            k = norm_key(n)
+            if not k:
+                continue
+            w = k.split()
+            if len(w) == 1 and (len(k) < 4 or k in _COMMON or k in catalog._GENERIC or k.isdigit()):
+                continue
+            idx.setdefault(k, cid)
+    return idx
+
+
+def match_companies(text: str, idx: dict[str, str], max_words: int = 5) -> list[str]:
+    """Sociétés nommées dans un texte : n-grammes de mots repliés, le plus long d'abord, sans recouvrement."""
+    w = _split_words(text or "")
+    out, i = [], 0
+    while i < len(w):
+        for L in range(min(max_words, len(w) - i), 0, -1):
+            cid = idx.get(" ".join(w[i:i + L]))
+            if cid:
+                if cid not in out:
+                    out.append(cid)
+                i += L
+                break
+        else:
+            i += 1
     return out
 
 
-def instance_url(http, cik: str, accn: str) -> str | None:
-    """Instance XBRL d'un dépôt : celle extraite du XBRL en ligne (…_htm.xml), sinon le .xml principal."""
-    folder = _folder(cik, accn)
-    js = http.get_json(f"{folder}/index.json")
-    if not js:
-        return None
-    names = [it.get("name", "") for it in js.get("directory", {}).get("item", [])]
-    for n in names:
-        if n.endswith("_htm.xml"):
-            return f"{folder}/{n}"
-    skip = re.compile(r"(_cal|_def|_lab|_pre)\.xml$|FilingSummary")
-    xs = [n for n in names if n.endswith(".xml") and not skip.search(n)]
-    return f"{folder}/{xs[0]}" if xs else None
+INV_COLS = ["doc_id", "date", "montant", "devise", "devise_deduite", "categorie", "titre", "url", "domaine",
+            "langue", "site_id", "company_id", "rattachement", "verbe", "extrait"]
 
 
-class MineMatcher:
-    """Rattache un libellé de segment à une mine : mêmes mots distinctifs (catalog._sim_tokens exact),
-    d'abord parmi les mines de la société, sinon dans tout le catalogue si un SEUL site correspond.
-    Libellés géographiques ou comptables (« Africa », « Corporate and other ») : jamais rattachés."""
+def _veille_db() -> Path:
+    try:
+        from strate.veille import store
+        return Path(store.DB_PATH)
+    except Exception:  # module en cours de modification ailleurs : chemin par défaut
+        return DATA_DIR / "veille" / "veille.db"
 
-    def __init__(self, cat: pd.DataFrame | None, graph=None):
-        from strate import catalog
 
-        self.catalog = catalog
-        self.cat = cat if cat is not None else pd.DataFrame()
-        self.graph = graph or entities.load()
-        self._index: dict[str, list[str]] | None = None
-
-    def names(self, site_id: str) -> list[str]:
-        if site_id in self.graph.sites:
-            return [self.graph.sites[site_id].name]
-        if not self.cat.empty and site_id in self.cat.index:
-            r = self.cat.loc[site_id]
-            return [x for x in [r.get("name"), *_split_list(r.get("aliases"))] if isinstance(x, str)]
+def _veille_query(sql: str, params: Iterable = (), db: Path | None = None) -> list[tuple]:
+    p = db or _veille_db()
+    if not p.exists():
+        return []
+    try:
+        con = sqlite3.connect(f"file:{p}?mode=ro", uri=True, timeout=10)
+        try:
+            return con.execute(sql, tuple(params)).fetchall()
+        finally:
+            con.close()
+    except sqlite3.Error as e:
+        log.warning("veille illisible (%s)", e)
         return []
 
-    def _build(self) -> dict[str, list[str]]:
-        idx: dict[str, list[str]] = defaultdict(list)
-        if not self.cat.empty:
-            for sid, n, a in zip(self.cat.index, self.cat["name"], self.cat.get("aliases", pd.Series(
-                    index=self.cat.index, dtype=object)), strict=True):
-                for name in [n, *_split_list(a)]:
-                    for t in self.catalog._core(self.catalog._tokens(name)):
-                        idx[t].append(sid)
-        return idx
 
-    def _aggregate(self, label: str) -> bool:
-        words = set(_split_words(label))
-        if words & _REGION_WORDS:
-            return True
-        return entities.fold(label) in entities.COUNTRY_ALIASES
-
-    def match(self, label: str, company_sites: list[str]) -> tuple[str | None, str | None, str | None]:
-        cg = self.catalog
-        tl = cg._tokens(label)
-        if not cg._core(tl) or self._aggregate(label):
-            return None, None, None
-        hits = [s for s in company_sites if any(cg._sim_tokens(tl, cg._tokens(n), exact=True)
-                                                for n in self.names(s))]
-        if len(set(hits)) == 1:
-            return hits[0], self.names(hits[0])[0], "mine de la société"
-        if hits:
-            return None, None, None  # plusieurs mines de la société portent ce nom : ambigu
-        if self._index is None:
-            self._index = self._build()
-        core = cg._core(tl)
-        cand = set.intersection(*(set(self._index.get(t, ())) for t in core)) if core else set()
-        ok = {s for s in cand if any(cg._sim_tokens(tl, cg._tokens(n), exact=True) for n in self.names(s))}
-        if len(ok) == 1:
-            s = ok.pop()
-            return s, self.names(s)[0], "catalogue (nom unique)"
-        return None, None, None
-
-
-# -- investissements annoncés (veille) ----------------------------------------------------------------------
-INVEST_WORDS = re.compile(
-    r"\b(invest\w*|expansion|expand\w*|capex|capital (?:spending|expenditure|project)|construction|"
-    r"build\w*|develop(?:ment)?|upgrade\w*|extension|ramp[- ]up|"
-    r"investissement\w*|agrandissement|extension|expansion|construction|"
-    r"inversi[oó]n\w*|ampliaci[oó]n|expansi[oó]n|construcci[oó]n|"
-    r"investimento\w*|amplia[cç][aã]o|expans[aã]o|constru[cç][aã]o|"
-    r"investition\w*|erweiterung|ausbau)\b", re.I)
-
-
-def announced_investments(company_id: str, sites: list[str]) -> list[dict]:
-    """Articles de la veille (types opérations/finance) dont le titre parle d'investissement ou d'expansion,
-    sur les mines de la société. Ce sont des annonces de presse, pas des montants audités."""
-    if not sites:
-        return []
+def investments(co: pd.DataFrame, lk: pd.DataFrame, db: Path | None = None) -> pd.DataFrame:
+    """Annonces d'investissement extraites des titres de la veille, rattachées à la société nommée (titre ou
+    organisations GDELT) et/ou à la mine (rattachement de la veille, puis ses propriétaires/exploitants)."""
+    docs = _veille_query("SELECT id, published_at, fetched_at, url, domain, lang, title, organizations, "
+                         "hint_site FROM raw_docs WHERE title IS NOT NULL AND status != 'rejected'", db=db)
+    if not docs:
+        return pd.DataFrame(columns=INV_COLS)
+    ev: dict[str, list[str]] = {}
+    for doc_id, site in _veille_query("SELECT doc_id, site_id FROM events", db=db):
+        ev.setdefault(doc_id, []).append(site)
+    idx = name_index(co) if len(co) else {}
+    owners: dict[str, list[str]] = {}
+    for cid, sid in (zip(lk["company_id"], lk["site_id"], strict=True) if len(lk) else []):
+        owners.setdefault(sid, []).append(cid)
     rows = []
-    for i in range(0, len(sites), 500):
-        chunk = sites[i:i + 500]
-        q = (f"SELECT site_id, site_name, event_type, published_at, title, url FROM events "
-             f"WHERE event_type IN ('operations','finance') AND site_id IN ({','.join('?' * len(chunk))})")
-        for sid, sname, et, pub, title, url in _veille_query(q, chunk):
-            if not title or not INVEST_WORDS.search(title):
-                continue
-            rows.append(dict(company_id=company_id, kind="annonce_veille", year=int(pub[:4]), date=pub[:10],
-                             axis=None, member=None, label=None, concept=None, value=np.nan, unit=None,
-                             site_id=sid, site_name=sname, match="veille", title=title, event_type=et,
-                             accn=None, source_url=url))
-    return rows
+    for doc_id, pub, fetched, url, domain, lang, title, orgs, hint in docs:
+        got = extract_investment(title, domain)
+        if got is None:
+            continue
+        named = match_companies(title, idx)
+        for o in _split_list(orgs):
+            k = norm_key(o)
+            if k in idx and idx[k] not in named:
+                named.append(idx[k])
+        sites = list(dict.fromkeys([*ev.get(doc_id, []), *([hint] if hint else [])]))
+        targets: list[tuple[str | None, str | None, str]] = []
+        for cid in named:
+            s = next((x for x in sites if cid in owners.get(x, [])), None)
+            targets.append((cid, s, "nom+mine" if s else "nom"))
+        if not named:
+            for s in sites:
+                cs = owners.get(s, [])
+                targets += [(c, s, "mine") for c in cs] or [(None, s, "mine")]
+        for cid, sid, how in targets:
+            rows.append(dict(doc_id=doc_id, date=(pub or fetched or "")[:10] or None, titre=title, url=url,
+                             domaine=domain, langue=lang, site_id=sid, company_id=cid, rattachement=how,
+                             **got))
+    df = pd.DataFrame(rows, columns=INV_COLS)
+    return df.drop_duplicates(["doc_id", "company_id", "site_id"]).sort_values("date", ascending=False) \
+        .reset_index(drop=True)
+
+
+# -- production et satellite par société -------------------------------------------------------------------
+def _weights(lk: pd.DataFrame) -> pd.DataFrame:
+    w = lk[["company_id", "site_id", "part"]].copy()
+    w["w"] = w["part"].where(w["part"] > 0, 1.0).fillna(1.0)
+    return w
+
+
+def mine_production_growth(cat: pd.DataFrame, prod: pd.DataFrame, sites: Iterable[str],
+                           twins: dict[str, str] | None = None) -> pd.DataFrame:
+    """Variation log annuelle de la série principale de chaque mine (choix de screener.main_production,
+    fixé une fois par mine pour ne jamais comparer minerai et métal), années consécutives seulement."""
+    from strate import screener
+
+    cols = ["site_id", "annee", "g"]
+    if prod.empty or cat.empty or "jasansky" not in cat:
+        return pd.DataFrame(columns=cols)
+    twins = twins or {}
+    by_fac = {k: g for k, g in prod[prod["value_tonnes"] > 0].groupby("facility_id")}
+    rows = []
+    for sid in set(sites):
+        cid = twins.get(sid, sid)
+        if cid not in cat.index or not isinstance(cat.at[cid, "jasansky"], str):
+            continue
+        p = by_fac.get(cat.at[cid, "jasansky"])
+        if p is None:
+            continue
+        last = {s: (int(g["year"].iloc[-1]), float(g["value_tonnes"].iloc[-1]))
+                for s, g in p.sort_values("year").groupby("serie")}
+        serie, _, _ = screener.main_production(last, screener.commodity_groups(cat.at[cid, "commodities"]))
+        v = p[p["serie"] == serie].groupby("year")["value_tonnes"].sum().sort_index()
+        lg = np.log(v)
+        for y in v.index:
+            if y - 1 in v.index:
+                rows.append(dict(site_id=sid, annee=int(y), g=float(lg[y] - lg[y - 1])))
+    return pd.DataFrame(rows, columns=cols)
+
+
+def company_growth(lk: pd.DataFrame, mine_g: pd.DataFrame, col: str = "g") -> pd.DataFrame:
+    """Moyenne des variations des mines d'une société, pondérée par la part détenue (1 si inconnue)."""
+    cols = ["company_id", "annee", "valeur", "n_mines"]
+    if mine_g.empty or lk.empty:
+        return pd.DataFrame(columns=cols)
+    d = _weights(lk).merge(mine_g, on="site_id")
+    if d.empty:
+        return pd.DataFrame(columns=cols)
+    d["wg"] = d["w"] * d[col]
+    g = d.groupby(["company_id", "annee"]).agg(s=("wg", "sum"), w=("w", "sum"),
+                                                n_mines=("site_id", "nunique"))
+    g["valeur"] = g["s"] / g["w"]
+    return g.reset_index()[cols]
+
+
+def _optical(site_id: str) -> pd.DataFrame:
+    p = DATA_DIR / "signals" / "optical" / f"{site_id}.parquet"
+    try:
+        return pd.read_parquet(p) if p.exists() else pd.DataFrame()
+    except (OSError, ValueError):
+        return pd.DataFrame()
+
+
+def mine_footprint_growth(sites: Iterable[str], reader: Callable[[str], pd.DataFrame] = _optical,
+                          min_quality: float = 0.5, min_months: int = 3) -> pd.DataFrame:
+    """Variation log annuelle de la surface nue (médiane des mois clairs, ≥ 3 mois par an)."""
+    rows = []
+    for sid in set(sites):
+        d = reader(sid)
+        if d.empty or "signal" not in d:
+            continue
+        d = d[(d["signal"] == "bare_km2") & (d["quality"] >= min_quality) & (d["value"] > 0)]
+        if d.empty:
+            continue
+        yr = pd.to_datetime(d["date"]).dt.year
+        a = d.groupby(yr)["value"].agg(["median", "size"])
+        a = a[a["size"] >= min_months]["median"]
+        for y in a.index:
+            if y - 1 in a.index:
+                rows.append(dict(site_id=sid, annee=int(y), g=float(math.log(a[y] / a[y - 1]))))
+    return pd.DataFrame(rows, columns=["site_id", "annee", "g"])
+
+
+def fact_growth(facts: pd.DataFrame, indicateur: str) -> pd.DataFrame:
+    """Variation log d'un indicateur (exercices consécutifs, même concept, valeurs > 0)."""
+    cols = ["company_id", "annee", "valeur"]
+    f = best_facts(facts)
+    f = f[(f["indicateur"] == indicateur) & (f["valeur"] > 0)] if len(f) else f
+    if f.empty:
+        return pd.DataFrame(columns=cols)
+    f = f.sort_values(["company_id", "annee"])
+    g = f.groupby("company_id")
+    ok = (f["annee"] - g["annee"].shift() == 1) & (f["concept"] == g["concept"].shift())
+    out = f.assign(valeur=np.log(f["valeur"] / g["valeur"].shift()))[ok]
+    return out[cols].reset_index(drop=True)
+
+
+# -- corrélations ----------------------------------------------------------------------------------------
+CORR_COLS = ["portee", "company_id", "x", "y", "decalage", "r", "r_lo", "r_hi", "rho", "rho_lo", "rho_hi",
+             "n_societes", "n_points", "verdict", "calcule_le"]
+MIN_POINTS_COMPANY = 5  # points d'une société pour sa propre corrélation
+MIN_YEARS_POOLED = 3  # une société n'entre dans l'ensemble qu'avec au moins 3 années appariées
+
+
+def _ci(vals: list[float]) -> tuple[float, float]:
+    v = [x for x in vals if np.isfinite(x)]
+    if len(v) < 20:
+        return np.nan, np.nan
+    lo, hi = np.percentile(v, [5, 95])
+    return float(lo), float(hi)
+
+
+def _coefs(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    if len(x) < 3 or np.unique(x).size < 3 or np.unique(y).size < 3:
+        return np.nan, np.nan
+    return float(pearsonr(x, y).statistic), float(spearmanr(x, y).statistic)
+
+
+def corr_stats(d: pd.DataFrame, x: str = "x", y: str = "y", group: str | None = "company_id",
+               n_boot: int = 1000, seed: int = 0) -> dict:
+    """r de Pearson, ρ de Spearman et leurs IC 90 % par bootstrap : sur les groupes (sociétés) si `group`,
+    sinon sur les points. Toujours avec n points et n groupes."""
+    d = d.replace([np.inf, -np.inf], np.nan).dropna(subset=[x, y])
+    n, k = len(d), (d[group].nunique() if group else 1)
+    r, rho = _coefs(d[x].to_numpy(), d[y].to_numpy())
+    res = dict(r=r, r_lo=np.nan, r_hi=np.nan, rho=rho, rho_lo=np.nan, rho_hi=np.nan, n_points=int(n),
+               n_societes=int(k))
+    if not np.isfinite(r):
+        return res
+    rng = np.random.default_rng(seed)
+    rs, rhos = [], []
+    if group and k >= 2:
+        parts = [g[[x, y]].to_numpy() for _, g in d.groupby(group)]
+        for _ in range(n_boot):
+            b = np.concatenate([parts[i] for i in rng.integers(0, k, k)])
+            a, c = _coefs(b[:, 0], b[:, 1])
+            rs.append(a)
+            rhos.append(c)
+    elif not group:
+        arr = d[[x, y]].to_numpy()
+        for _ in range(n_boot):
+            b = arr[rng.integers(0, n, n)]
+            a, c = _coefs(b[:, 0], b[:, 1])
+            rs.append(a)
+            rhos.append(c)
+    res["r_lo"], res["r_hi"] = _ci(rs)
+    res["rho_lo"], res["rho_hi"] = _ci(rhos)
+    return res
+
+
+def verdict(s: dict, min_points: int, min_groups: int = 1) -> str:
+    if s["n_points"] < min_points or s["n_societes"] < min_groups or not np.isfinite(s["rho"]):
+        return f"trop peu de données (n = {s['n_points']}, sociétés = {s['n_societes']})"
+    if not np.isfinite(s["rho_lo"]):
+        return "intervalle incalculable : chiffres indicatifs"
+    if s["rho_lo"] > 0:
+        return "lien positif démontré (IC 90 % de ρ au-dessus de 0)"
+    if s["rho_hi"] < 0:
+        return "lien négatif démontré (IC 90 % de ρ sous 0)"
+    return "non démontré : l'IC 90 % de ρ contient 0"
+
+
+PAIRS = [  # (x, y, décalage) ; x et y sont des variations annuelles en log
+    ("CAPEX", "production (mines détenues)", 0), ("CAPEX", "production (mines détenues)", 1),
+    ("CAPEX", "production (mines détenues)", 2), ("effectifs", "production (mines détenues)", 0),
+    ("CAPEX", "emprise satellite (surface nue)", 0), ("CAPEX", "emprise satellite (surface nue)", 1),
+]
+
+
+def correlate(facts: pd.DataFrame, lk: pd.DataFrame, *, cat: pd.DataFrame | None = None,
+              prod: pd.DataFrame | None = None, twins: dict[str, str] | None = None,
+              reader: Callable[[str], pd.DataFrame] = _optical, n_boot: int = 1000) -> pd.DataFrame:
+    """Toutes les corrélations du § 2 : sur l'ensemble (portee = « ensemble ») et par société."""
+    from strate import catalog
+
+    run_at = _now()
+    sites = set(lk["site_id"]) if len(lk) else set()
+    if cat is None:
+        cat = catalog.load()
+    if prod is None:
+        try:
+            prod = catalog.all_production()
+        except (OSError, KeyError, ValueError) as e:
+            log.warning("production réelle indisponible (%s)", e)
+            prod = pd.DataFrame()
+    if twins is None:
+        twins = _twins()
+    series = {
+        "CAPEX": fact_growth(facts, "capex"), "effectifs": fact_growth(facts, "effectifs"),
+        "production (mines détenues)": company_growth(lk, mine_production_growth(cat, prod, sites, twins)),
+        "emprise satellite (surface nue)": company_growth(lk, mine_footprint_growth(sites, reader)),
+    }
+    rows = []
+    for xn, yn, lag in PAIRS:
+        xs, ys = series[xn], series[yn]
+        if xs.empty or ys.empty:
+            d = pd.DataFrame(columns=["company_id", "annee", "x", "y"])
+        else:
+            d = xs.rename(columns={"valeur": "x"}).merge(
+                ys.assign(annee=ys["annee"] - lag).rename(columns={"valeur": "y"})[
+                    ["company_id", "annee", "y"]],
+                on=["company_id", "annee"])
+        cnt = d.groupby("company_id").size() if len(d) else pd.Series(dtype=int)
+        pooled = d[d["company_id"].isin(cnt[cnt >= MIN_YEARS_POOLED].index)]
+        s = corr_stats(pooled, n_boot=n_boot)
+        rows.append(dict(portee="ensemble", company_id=None, x=xn, y=yn, decalage=lag, **s,
+                         verdict=verdict(s, 8, 3), calcule_le=run_at))
+        for cid in cnt[cnt >= MIN_POINTS_COMPANY].index:
+            s = corr_stats(d[d["company_id"] == cid], group=None, n_boot=n_boot)
+            rows.append(dict(portee="societe", company_id=cid, x=xn, y=yn, decalage=lag, **s,
+                             verdict=verdict(s, MIN_POINTS_COMPANY), calcule_le=run_at))
+    return pd.DataFrame(rows, columns=CORR_COLS)
 
 
 # -- stockage ---------------------------------------------------------------------------------------------
@@ -1047,18 +1261,19 @@ def _write(name: str, df: pd.DataFrame) -> None:
     tmp.replace(_path(name))
 
 
-def _replace_company(name: str, cid: str, new: pd.DataFrame, cols: list[str],
-                     keep: Callable[[pd.DataFrame], pd.Series] | None = None) -> None:
-    """Remplace les lignes d'une société (les autres restent) : écriture après chaque société → reprise."""
-    old = load(name)
-    if len(old):
-        drop = old["company_id"] == cid
-        if keep is not None:
-            drop &= ~keep(old)
+def _replace_facts(new: pd.DataFrame, *, company_id: str | None = None, origine: str) -> None:
+    """Remplace les faits d'une origine (pour une société, ou pour toutes) ; le reste est conservé."""
+    old = load("facts")
+    if len(old) and set(FACT_COLS) <= set(old.columns):
+        drop = old["origine"] == origine
+        if company_id is not None:
+            drop &= old["company_id"] == company_id
         old = old[~drop]
+    else:
+        old = pd.DataFrame(columns=FACT_COLS)
     parts = [x for x in (old, new) if len(x)]
-    df = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=cols)
-    _write(name, df.reindex(columns=cols))
+    df = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=FACT_COLS)
+    _write("facts", df.reindex(columns=FACT_COLS))
 
 
 def _read_json(p: Path) -> dict:
@@ -1083,639 +1298,159 @@ def _age_days(stamp: str | None) -> float:
     if not stamp:
         return math.inf
     try:
-        return (datetime.now(UTC) - datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-                ).total_seconds() / 86400
+        t = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
     except ValueError:
         return math.inf
-
-
-EMP_COLS = ["company_id", "year", "employees", "source_kind", "source_url", "snippet", "accepted", "reason"]
+    return (datetime.now(UTC) - t).total_seconds() / 86400
 
 
 # -- mise à jour ---------------------------------------------------------------------------------------------
-def update(limit: int | None = None, *, http=None, force: bool = False, refresh_days: float = REFRESH_DAYS,
-           wikidata: bool = True, wikidata_min_mines: int = 2, wikidata_aliases: int = 2,
-           cat: pd.DataFrame | None = None,
-           say: Callable[[str], None] = log.info) -> dict:
-    """Met à jour la couche sociétés, de façon incrémentale et reprenable.
+def _carry_ids(co: pd.DataFrame) -> pd.DataFrame:
+    """QID, pays et CIK trouvés lors d'une mise à jour précédente : gardés sans relire le réseau."""
+    old = load("companies")
+    if old.empty or not {"id", "qid", "cik", "pays"} <= set(old.columns):
+        return co
+    prev = old.drop_duplicates("id").set_index("id")
+    co = co.copy()
+    for i, cid in zip(co.index, co["id"], strict=True):
+        if cid not in prev.index:
+            continue
+        for col in ("qid", "pays"):
+            if not isinstance(co.at[i, col], str) and isinstance(prev.at[cid, col], str):
+                co.at[i, col] = prev.at[cid, col]
+        # CIK : seul celui venu de Wikidata (relu une fois par mois) est repris ; graine et registre SEC
+        # sont recalculés à chaque fois, une règle corrigée s'applique donc tout de suite
+        src = prev.at[cid, "cik_source"]
+        if not isinstance(co.at[i, "cik"], str) and isinstance(src, str) and src.startswith("Wikidata"):
+            co.at[i, "cik"], co.at[i, "cik_source"] = prev.at[cid, "cik"], src
+    return co
 
-    `limit` : nombre maximal de sociétés interrogées à la SEC pendant cet appel (les plus prioritaires
-    d'abord : liste suivie, graine, puis par nombre de mines). Une société lue il y a moins de
-    `refresh_days` jours est sautée, sauf `force`. Chaque société est écrite dès qu'elle est finie.
-    """
+
+def sec_queue(co: pd.DataFrame, state: dict, force: bool = False) -> list[str]:
+    """Sociétés à lire à la SEC, dans l'ordre : jamais lues, puis les plus anciennes (priorité du tri)."""
+    per = state.get("sec", {})
+    todo = []
+    for cid, cik in zip(co["id"], co["cik"], strict=True):
+        if not isinstance(cik, str):
+            continue
+        st = per.get(cid, {})
+        wait = REFRESH_DAYS if st.get("ok") else RETRY_DAYS  # un échec est retenté plus tôt
+        if force or st.get("cik") != cik or _age_days(st.get("at")) >= wait:
+            todo.append(cid)
+    return sorted(todo, key=lambda c: per.get(c, {}).get("at") or "")
+
+
+def refresh(max_companies: int = MAX_COMPANIES, *, http=None, force: bool = False, wikidata: bool = True,
+            cat: pd.DataFrame | None = None, graph=None, twins: dict[str, str] | None = None,
+            veille_db: Path | None = None, with_correlations: bool = True, n_boot: int = 1000,
+            prod: pd.DataFrame | None = None, reader: Callable[[str], pd.DataFrame] | None = None,
+            say: Callable[[str], None] = log.info) -> dict:
+    """Met à jour data/companies/ : entités, identifiants, faits SEC (au plus `max_companies` sociétés par
+    appel, chacune écrite dès qu'elle est lue : un arrêt ne perd rien et l'appel suivant reprend), faits
+    Wikidata, investissements annoncés, corrélations. Retourne le statut écrit dans status.json."""
     from strate import catalog
 
-    ua, contact = sec_user_agent()
-    http = http or Http(ua)
+    http = http or Http()
     state = _read_json(STATE)
     errors: list[str] = []
     if cat is None:
         cat = catalog.load()
-    graph = entities.load()
+    if twins is None:
+        twins = _twins()
+    co, lk = build_entities(cat, graph, twins)
+    co = _carry_ids(co)
 
-    uni = build_universe(cat, graph)
-    old = load("companies")
-    if len(old) and "qid" in old:  # QID et CIK déjà trouvés : gardés si Wikidata n'est pas relu
-        prev = old.set_index("id")
-        for i, r in uni.iterrows():
-            if r["id"] in prev.index:
-                p = prev.loc[r["id"]]
-                if not isinstance(r["qid"], str) and isinstance(p.get("qid"), str):
-                    uni.at[i, "qid"] = p["qid"]
-                if not isinstance(r["cik"], str) and isinstance(p.get("cik"), str):
-                    uni.at[i, "cik"], uni.at[i, "cik_source"] = p["cik"], p.get("cik_source")
-
-    wd, tick = {}, {}
-    if wikidata and (force or _age_days(state.get("wikidata_at")) > WIKIDATA_REFRESH_DAYS):
-        pick = uni[(uni["n_mines"] >= wikidata_min_mines) | uni["watchlist"] | uni["cik"].notna()]
-        names = sorted({v for _, r in pick.iterrows()
-                        for n in [r["name"], *_split_list(r["aliases"])[:wikidata_aliases]]
-                        for v in name_variants(n)})
+    tick = []
+    try:
+        tick = sec_tickers(http, force=force)
+    except Exception as e:  # réseau : on garde les CIK déjà connus
+        errors.append(f"SEC company_tickers : {type(e).__name__}")
+    wd: dict[str, dict] = {}
+    if wikidata and (force or _age_days(state.get("wikidata_ids_at")) >= WIKIDATA_DAYS):
+        pick = co[(co["n_mines"] >= 2) | co["suivie"] | co["cik"].notna() | co["qid"].notna()]
+        names = {v for n, a in zip(pick["nom"], pick["alias"], strict=True)
+                 for x in [n, *_split_list(a)[:2]] if not _QID.fullmatch(x) for v in name_variants(x)}
         try:
-            wd = wikidata_lookup(http, names)
-            state["wikidata_at"] = _now()
-            say(f"Wikidata : {len(wd)} noms reconnus sur {len(names)}")
-        except Exception as e:  # réseau, quota : on garde les identifiants déjà connus
-            errors.append(f"Wikidata : {type(e).__name__}")
-    if contact:
-        tick = sec_tickers(http)
-        if not tick:
-            errors.append("SEC company_tickers.json : réponse vide ou refusée")
-    uni = assign_ids(uni, wd, tick)
-    _write("companies", uni)
-
-    if wikidata and len(wd):
-        try:
-            we = wikidata_employees(http, [q for q in uni["qid"] if isinstance(q, str)])
-            q2c = {q: c for c, q in zip(uni["id"], uni["qid"], strict=True) if isinstance(q, str)}
-            rows = [dict(company_id=q2c[r.qid], year=r.year, employees=r.employees, source_kind="wikidata",
-                         source_url=r.source_url, snippet="Wikidata P1128 (date P585)", accepted=True,
-                         reason="source tierce datée") for r in we.itertuples() if r.qid in q2c]
-            emp = load("employees")
-            emp = emp[emp["source_kind"] != "wikidata"] if len(emp) else emp
-            parts = [x for x in (emp, pd.DataFrame(rows, columns=EMP_COLS)) if len(x)]
-            _write("employees", pd.concat(parts, ignore_index=True).reindex(columns=EMP_COLS) if parts
-                   else pd.DataFrame(columns=EMP_COLS))
+            wd = wikidata_lookup(http, names, [q for q in co["qid"] if isinstance(q, str)])
+            state["wikidata_ids_at"] = _now()
+            say(f"Wikidata : {len(wd)} correspondances pour {len(names)} noms")
         except Exception as e:
-            errors.append(f"Wikidata effectifs : {type(e).__name__}")
-
-    todo = uni[uni["cik"].notna()]
-    done_ok = 0
-    processed = 0
-    per = state.setdefault("companies", {})
-    matcher = MineMatcher(cat, graph)
-    for _, r in todo.iterrows():
-        if limit is not None and processed >= limit:
-            break
-        st = per.get(r["id"], {})
-        if not force and st.get("ok") and _age_days(st.get("fetched_at")) < refresh_days:
-            continue
-        processed += 1
-        try:
-            msg = _update_company(http, r, contact, matcher)
-            per[r["id"]] = dict(fetched_at=_now(), ok=True, message=msg)
-            done_ok += 1
-            say(f"{r['name']} : {msg}")
-        except Exception as e:  # une société en échec n'arrête pas les autres
-            log.exception("société %s", r["id"])
-            per[r["id"]] = dict(fetched_at=_now(), ok=False, message=f"{type(e).__name__}: {e}"[:300])
-            errors.append(f"{r['id']} : {type(e).__name__}")
-        _write_json(STATE, state)
-
-    # annonces de la veille pour toutes les sociétés (aucun réseau)
-    ann = []
-    for _, r in uni.iterrows():
-        ann += announced_investments(r["id"], [m["site"] for m in mines_of(r)])
-    seg = load("segments")
-    seg = seg[seg["kind"] != "annonce_veille"] if len(seg) else seg
-    parts = [x for x in (seg, pd.DataFrame(ann, columns=SEG_COLS)) if len(x)]
-    _write("segments", pd.concat(parts, ignore_index=True).reindex(columns=SEG_COLS) if parts
-           else pd.DataFrame(columns=SEG_COLS))
+            errors.append(f"Wikidata (identifiants) : {type(e).__name__}")
+    co = assign_ids(co, wd, tick)
+    co, lk = merge_by_qid(co, lk)
+    _write("companies", co)
+    _write("mines", lk)
     _write_json(STATE, state)
 
-    st = _status(uni, contact, errors, processed, done_ok, getattr(http, "requests", None))
-    _write_json(STATUS, {**_read_json(STATUS), **st})
-    return st
-
-
-def _update_company(http, r, contact: bool, matcher: MineMatcher) -> str:
-    cik, cid = r["cik"], r["id"]
-    facts = http.get_json(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json")
-    fin = parse_facts(facts, cid, cik) if facts else pd.DataFrame(columns=FIN_COLS)
-    for alt in _split_list(r.get("cik_alt")):  # ancienne entité, cotation jumelle : années manquantes
-        fa = http.get_json(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{alt}.json")
-        if fa:
-            fin = merge_alt(fin, parse_facts(fa, cid, alt))
-    _replace_company("financials", cid, fin, FIN_COLS)
-    emp_rows = dei_employees(facts, cid, cik) if facts else []
-    parts = [f"{fin['year'].nunique() if len(fin) else 0} exercices" if facts else "companyfacts absent"]
-
-    seg_rows: list[dict] = []
-    if contact:
-        sub = http.get_json(f"https://data.sec.gov/submissions/CIK{cik}.json")
-        filings = annual_filings(sub) if sub else []
-        known = {}
-        emp_old = load("employees")
-        if len(emp_old):
-            e = emp_old[(emp_old["company_id"] == cid) & emp_old["accepted"].astype(bool)]
-            known = dict(zip(e["year"], e["employees"], strict=True))
-        known.update({x["year"]: x["employees"] for x in emp_rows})
-        n_txt = 0
-        for f in filings[:TEXT_FILINGS]:
-            url = annual_text_url(http, cik, f)
-            txt = http.get_text(url) if url else None
-            if not txt:
-                continue
-            year = int((f["report"] or f["filed"])[:4])
-            got = extract_employees(html_to_text(txt), lang="en")
-            if got is None:
-                got = extract_employees(html_to_text(txt), lang="fr")
-            if got is None:
-                continue
-            n, snip = got
-            ok, why = validate_employees(n, year, {y: v for y, v in known.items() if y != year})
-            emp_rows.append(dict(company_id=cid, year=year, employees=float(n), source_kind="rapport_annuel",
-                                 source_url=url, snippet=snip, accepted=ok, reason=why))
-            if ok:
-                known[year] = n
-                n_txt += 1
-        parts.append(f"effectifs lus dans {n_txt} rapport(s)")
-        sites = [m["site"] for m in mines_of(r)]
-        for f in filings[:SEGMENT_FILINGS]:
-            iu = instance_url(http, cik, f["accn"])
-            xml = http.get_text(iu) if iu else None
-            if not xml:
-                continue
-            try:
-                facts_seg = parse_segment_capex(xml)
-            except ET.ParseError:
-                continue
-            for x in facts_seg:
-                sid, sname, how = matcher.match(x["label"], sites)
-                seg_rows.append(dict(
-                    company_id=cid, kind="xbrl_segment", year=x["year"], date=None, axis=x["axis"],
-                    member=x["member"], label=x["label"], concept=x["concept"], value=x["value"],
-                    unit=x["unit"],
-                    site_id=sid, site_name=sname, match=how, title=None, event_type=None, accn=f["accn"],
-                    source_url=filing_url(cik, f["accn"])))
-        seg_df = pd.DataFrame(seg_rows, columns=SEG_COLS)
-        if len(seg_df):  # dédoublonnage : un même segment-année revient dans deux rapports successifs
-            seg_df = seg_df.sort_values("accn", ascending=False).drop_duplicates(
-                ["member", "year", "concept"]).sort_values(["year", "value"], ascending=[True, False])
-        _replace_company("segments", cid, seg_df, SEG_COLS, keep=lambda d: d["kind"] != "xbrl_segment")
-        parts.append(f"{len(seg_df)} lignes de CAPEX par segment")
-    _replace_company("employees", cid, pd.DataFrame(emp_rows, columns=EMP_COLS), EMP_COLS,
-                     keep=lambda d: d["source_kind"] == "wikidata")
-    return ", ".join(parts)
-
-
-def _status(uni: pd.DataFrame, contact: bool, errors: list[str], processed: int, ok: int, requests) -> dict:
-    fin, emp, seg = load("financials"), load("employees"), load("segments")
-    base = fin[fin["metric"].isin(list(CONCEPTS))] if len(fin) else fin
-    msg = ("contact SEC déclaré : effectifs (texte des rapports) et CAPEX par segment lus"
-           if contact else
-           "pas de contact SEC (STRATE_SEC_UA ou config.local.toml [sec] user_agent) : comptes annuels "
-           "seulement ; effectifs par le texte, CAPEX par segment et company_tickers.json sautés "
-           "(www.sec.gov répond 403 sans contact)")
-    return dict(
-        updated_at=_now(), sec_contact=contact, message=msg, errors=errors[-50:],
-        n_companies=int(len(uni)), n_with_cik=int(uni["cik"].notna().sum()),
-        n_with_qid=int(uni["qid"].notna().sum()), n_with_mines=int((uni["n_mines"] > 0).sum()),
-        processed_this_run=processed, ok_this_run=ok, sec_requests=requests,
-        n_with_financials=int(base["company_id"].nunique()) if len(base) else 0,
-        n_financial_rows=int(len(base)),
-        n_with_capex=int(base.loc[base["metric"] == "capex", "company_id"].nunique()) if len(base) else 0,
-        n_with_employees=(int(emp.loc[emp["accepted"].astype(bool), "company_id"].nunique()) if len(emp)
-                          else 0),
-        n_segment_rows=int((seg["kind"] == "xbrl_segment").sum()) if len(seg) else 0,
-        n_segment_matched=int(((seg["kind"] == "xbrl_segment") & seg["site_id"].notna()).sum()) if len(seg)
-        else 0,
-        n_announcements=int((seg["kind"] == "annonce_veille").sum()) if len(seg) else 0,
-    )
-
-
-# -- ratios ----------------------------------------------------------------------------------------------
-def best_employees(emp: pd.DataFrame) -> pd.DataFrame:
-    """Un effectif par société-année : SEC dei > rapport annuel > Wikidata (seules les valeurs acceptées)."""
-    if emp.empty:
-        return pd.DataFrame(columns=["company_id", "year", "employees", "source_kind", "source_url"])
-    rank = {"sec_dei": 0, "rapport_annuel": 1, "wikidata": 2}
-    e = emp[emp["accepted"].astype(bool)].copy()
-    e["_r"] = e["source_kind"].map(rank).fillna(9)
-    e = e.sort_values(["company_id", "year", "_r"]).drop_duplicates(["company_id", "year"])
-    return e.drop(columns="_r").reset_index(drop=True)
-
-
-def wide(fin: pd.DataFrame, emp: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Une ligne par société-année, une colonne par mesure (+ concept utilisé pour les croissances)."""
-    base = fin[fin["metric"].isin(list(CONCEPTS))] if len(fin) else fin
-    if base.empty:
-        return pd.DataFrame()
-    w = base.pivot_table(index=["company_id", "year"], columns="metric", values="value", aggfunc="first")
-    conc = base.pivot_table(index=["company_id", "year"], columns="metric", values="concept", aggfunc="first")
-    for m in ("capex", "ppe_net"):
-        if m in conc:
-            w[f"{m}_concept"] = conc[m]
-    unit = base.groupby(["company_id", "year"])["unit"].first()
-    w["unit"] = unit
-    w = w.reset_index()
-    if emp is not None and len(emp):
-        be = best_employees(emp)[["company_id", "year", "employees"]]
-        w = w.merge(be, on=["company_id", "year"], how="left")
-    return w
-
-
-def ratios(w: pd.DataFrame) -> pd.DataFrame:
-    """capex/CA, capex/salarié, capex/amortissements, croissances (années consécutives, même concept)."""
-    if w.empty:
-        return w
-    w = w.sort_values(["company_id", "year"]).copy()
-    for c in ("capex", "revenue", "ppe_net", "da", "employees", "capex_concept", "ppe_net_concept"):
-        if c not in w:
-            w[c] = np.nan
-    w["capex_revenue"] = w["capex"] / w["revenue"].where(w["revenue"] > 0)
-    w["capex_per_employee"] = w["capex"] / w["employees"].where(w["employees"] > 0)
-    w["capex_da"] = w["capex"] / w["da"].where(w["da"] > 0)
-    g = w.groupby("company_id")
-    for m, out in (("capex", "capex_growth"), ("ppe_net", "ppe_growth")):
-        prev, prev_y, prev_c = g[m].shift(), g["year"].shift(), g[f"{m}_concept"].shift()
-        ok = (w["year"] - prev_y == 1) & (prev > 0) & (w[m] > 0) & (w[f"{m}_concept"] == prev_c)
-        w[out] = (w[m] / prev - 1).where(ok)
-    return w
-
-
-# -- statistiques -----------------------------------------------------------------------------------------
-def corr_stats(df: pd.DataFrame, x: str, y: str, group: str = "company_id", n_boot: int = 1000,
-               seed: int = 0, min_n: int = 8, min_groups: int = 4) -> dict:
-    """Pearson r et Spearman ρ, n, nombre de sociétés, IC 90 % par bootstrap SUR LES SOCIÉTÉS (les années
-    d'une même société ne sont pas indépendantes), et un verdict honnête."""
-    d = df[[group, x, y]].replace([np.inf, -np.inf], np.nan).dropna()
-    n, k = len(d), d[group].nunique()
-    res = dict(n=int(n), n_companies=int(k), pearson_r=np.nan, pearson_lo=np.nan, pearson_hi=np.nan,
-               spearman_rho=np.nan, spearman_lo=np.nan, spearman_hi=np.nan)
-    if n < 3 or d[x].nunique() < 3 or d[y].nunique() < 3:
-        res["verdict"] = f"trop peu de données (n={n}, sociétés={k})"
-        return res
-    res["pearson_r"] = float(pearsonr(d[x], d[y]).statistic)
-    res["spearman_rho"] = float(spearmanr(d[x], d[y]).statistic)
-    groups = {g: v for g, v in d.groupby(group)}
-    ids = list(groups)
-    rng = np.random.default_rng(seed)
-    pr, sr = [], []
-    for _ in range(n_boot):
-        b = pd.concat([groups[i] for i in rng.choice(ids, len(ids), replace=True)], ignore_index=True)
-        if b[x].nunique() < 3 or b[y].nunique() < 3:
-            continue
-        pr.append(pearsonr(b[x], b[y]).statistic)
-        sr.append(spearmanr(b[x], b[y]).statistic)
-    if pr:
-        res["pearson_lo"], res["pearson_hi"] = (float(v) for v in np.nanpercentile(pr, [5, 95]))
-        res["spearman_lo"], res["spearman_hi"] = (float(v) for v in np.nanpercentile(sr, [5, 95]))
-    if n < min_n or k < min_groups:
-        res["verdict"] = f"trop peu de données (n={n}, sociétés={k}) : chiffres indicatifs seulement"
-    elif res["spearman_lo"] > 0:
-        res["verdict"] = "lien positif démontré (IC 90 % de ρ au-dessus de 0)"
-    elif res["spearman_hi"] < 0:
-        res["verdict"] = "lien négatif démontré (IC 90 % de ρ sous 0)"
-    else:
-        res["verdict"] = "non démontré : l'intervalle à 90 % contient 0"
-    return res
-
-
-# -- satellite et production par société ---------------------------------------------------------------------
-def _optical(site_id: str) -> pd.DataFrame:
-    p = DATA_DIR / "signals" / "optical" / f"{site_id}.parquet"
-    return pd.read_parquet(p) if p.exists() else pd.DataFrame()
-
-
-def mine_satellite_annual(site_id: str, min_quality: float = 0.5, min_months: int = 3,
-                          reader: Callable[[str], pd.DataFrame] = _optical) -> pd.DataFrame:
-    """Par an : médiane des mois clairs de la surface nue et de la surface nouvellement mise à nu."""
-    d = reader(site_id)
-    if d.empty:
-        return pd.DataFrame(columns=["site", "year", "bare_km2", "new_bare_km2"])
-    d = d[(d["quality"] >= min_quality) & d["signal"].isin(["bare_km2", "new_bare_km2"])].copy()
-    d["year"] = pd.to_datetime(d["date"]).dt.year
-    cnt = d[d["signal"] == "bare_km2"].groupby("year").size()
-    a = d.pivot_table(index="year", columns="signal", values="value", aggfunc="median")
-    a = a[a.index.isin(cnt[cnt >= min_months].index)]
-    for c in ("bare_km2", "new_bare_km2"):
-        if c not in a:
-            a[c] = np.nan
-    return a.reset_index().assign(site=site_id)[["site", "year", "bare_km2", "new_bare_km2"]]
-
-
-def company_satellite(uni: pd.DataFrame, analysed: set[str],
-                      reader: Callable[[str], pd.DataFrame] = _optical) -> pd.DataFrame:
-    """Expansion vue du ciel par société-année, sur ses mines analysées (pondérées par la part détenue
-    quand elle est connue). Croissance = log(surface nue Y / Y−1) sur les MÊMES mines les deux années."""
-    rows = []
-    cache: dict[str, pd.DataFrame] = {}
-    for _, r in uni.iterrows():
-        ms = [m for m in mines_of(r) if m["site"] in analysed]
-        if not ms:
-            continue
-        parts = []
-        for m in ms:
-            if m["site"] not in cache:
-                cache[m["site"]] = mine_satellite_annual(m["site"], reader=reader)
-            a = cache[m["site"]]
-            if len(a):
-                parts.append(a.assign(w=m.get("share") if m.get("share") is not None else 1.0))
-        if not parts:
-            continue
-        a = pd.concat(parts, ignore_index=True)
-        for y in sorted(a["year"].unique()):
-            cur, prev = a[a["year"] == y].set_index("site"), a[a["year"] == y - 1].set_index("site")
-            both = cur.index.intersection(prev.index)
-            if not len(both):
-                continue
-            w = cur.loc[both, "w"]
-            b1, b0 = (cur.loc[both, "bare_km2"] * w).sum(), (prev.loc[both, "bare_km2"] * w).sum()
-            nb = (cur.loc[both, "new_bare_km2"] * w).sum()
-            if b0 > 0 and b1 > 0:
-                rows.append(dict(company_id=r["id"], year=int(y), sat_growth=math.log(b1 / b0),
-                                 new_share=nb / b0, n_mines=int(len(both))))
-    return pd.DataFrame(rows, columns=["company_id", "year", "sat_growth", "new_share", "n_mines"])
-
-
-_SERIES_PREF = ["minerai extrait", "minerai traité", "charbon"]
-
-
-def company_production(uni: pd.DataFrame, cat: pd.DataFrame, prod: pd.DataFrame) -> pd.DataFrame:
-    """Croissance de production réelle (Jasansky 2023) par société-année : moyenne des croissances log de
-    la série principale de chaque mine liée (minerai, sinon charbon, sinon le métal le mieux couvert)."""
-    if prod.empty or cat.empty or "jasansky" not in cat:
-        return pd.DataFrame(columns=["company_id", "year", "prod_growth", "n_mines"])
-    by_fac = {k: g for k, g in prod.groupby("facility_id")}
-    growth_cache: dict[str, pd.Series] = {}
-
-    def mine_growth(fid: str) -> pd.Series:
-        if fid in growth_cache:
-            return growth_cache[fid]
-        p = by_fac.get(fid)
-        s = pd.Series(dtype=float)
-        if p is not None:
-            series = next((x for x in _SERIES_PREF if x in set(p["serie"])), None)
-            if series is None:
-                series = p.groupby("serie")["year"].nunique().idxmax()
-            v = p[p["serie"] == series].groupby("year")["value_tonnes"].sum().sort_index()
-            v = v[v > 0]
-            g = np.log(v).diff()
-            s = g[(v.index.to_series().diff() == 1).to_numpy()]
-        growth_cache[fid] = s
-        return s
-
-    rows = []
-    for _, r in uni.iterrows():
-        gs = []
-        for m in mines_of(r):
-            if m["site"] in cat.index:
-                fid = cat.at[m["site"], "jasansky"]
-                if isinstance(fid, str):
-                    s = mine_growth(fid)
-                    if len(s):
-                        gs.append(s)
-        if not gs:
-            continue
-        df = pd.concat(gs, axis=1)
-        mean, cnt = df.mean(axis=1), df.notna().sum(axis=1)
-        for y, v in mean.dropna().items():
-            rows.append(dict(company_id=r["id"], year=int(y), prod_growth=float(v), n_mines=int(cnt[y])))
-    return pd.DataFrame(rows, columns=["company_id", "year", "prod_growth", "n_mines"])
-
-
-# -- prévision du CAPEX (rétro-test) ------------------------------------------------------------------
-# Chaque modèle ne voit que l'information disponible à la fin de l'exercice précédent. La persistance
-# (« l'an prochain comme cette année ») est la référence à battre : un modèle qui ne la bat pas de façon
-# démontrée n'est pas utilisé pour la prévision publiée.
-FORECAST_MODELS = {
-    "persistance": "CAPEX(Y) = CAPEX(Y−1)",
-    "tendance": "CAPEX(Y) = CAPEX(Y−1) × croissance médiane des 3 derniers exercices",
-    "cash_flow": "CAPEX(Y) = médiane passée de CAPEX/OCF(Y−1) × OCF(Y−1)",
-    "ajustement_partiel": "moyenne géométrique de « persistance » et « cash_flow » (le CAPEX rattrape "
-                          "lentement la trésorerie)",
-}
-
-
-def _predict(cap: pd.Series, ocf: pd.Series, y: int, min_hist: int = 3) -> dict[str, float] | None:
-    """Prévisions de CAPEX(y) par chaque modèle, avec les seuls exercices < y. None si historique court."""
-    hist = [t for t in cap.index if t < y and cap[t] > 0]
-    if len(hist) < min_hist or (y - 1) not in hist:
-        return None
-    prev = cap[y - 1]
-    out = {"persistance": prev}
-    g = [math.log(cap[t] / cap[t - 1]) for t in hist[-3:] if (t - 1) in cap.index and cap[t - 1] > 0]
-    if len(g) >= 2:
-        out["tendance"] = prev * math.exp(float(np.median(g)))
-    ks = [cap[t] / ocf[t - 1] for t in hist if (t - 1) in ocf.index and ocf[t - 1] > 0]
-    o1 = ocf.get(y - 1, np.nan)
-    if len(ks) >= 2 and o1 > 0:
-        out["cash_flow"] = float(np.median(ks)) * o1
-        out["ajustement_partiel"] = math.sqrt(prev * out["cash_flow"])
-    return out
-
-
-def forecast_backtest(w: pd.DataFrame, min_hist: int = 3) -> pd.DataFrame:
-    """Une ligne par (société, année, modèle) : CAPEX prévu fin Y−1, CAPEX réel, CAPEX de Y−1."""
-    rows = []
-    cols = ["company_id", "year", "model", "actual", "prev", "pred"]
-    if w.empty or "capex" not in w:
-        return pd.DataFrame(columns=cols)
-    for cid, g in w.sort_values("year").groupby("company_id"):
-        g = g.set_index("year")
-        cap = g["capex"].dropna()
-        ocf = g["ocf"].dropna() if "ocf" in g else pd.Series(dtype=float)
-        for y in cap.index:
-            p = _predict(cap, ocf, y, min_hist)
-            if not p or not cap[y] > 0:
-                continue
-            for m, v in p.items():
-                rows.append(dict(company_id=cid, year=int(y), model=m, actual=cap[y], prev=cap[y - 1],
-                                 pred=v))
-    return pd.DataFrame(rows, columns=cols)
-
-
-def forecast_next(w: pd.DataFrame, model: str, errors: np.ndarray, min_err: int = 20) -> pd.DataFrame:
-    """Prévision de l'exercice qui suit le dernier publié, par `model`, intervalle à 90 % tiré des erreurs
-    (log réel/prévu) du rétro-test de ce modèle ; pas d'intervalle sous `min_err` erreurs."""
-    rows = []
-    if w.empty or "capex" not in w:
-        return pd.DataFrame()
-    q05, q95 = np.percentile(errors, [5, 95]) if len(errors) >= min_err else (np.nan, np.nan)
-    for cid, g in w.sort_values("year").groupby("company_id"):
-        g = g.set_index("year")
-        cap = g["capex"].dropna()
-        if cap.empty:
-            continue
-        y = int(cap.index.max()) + 1
-        ocf = g["ocf"].dropna() if "ocf" in g else pd.Series(dtype=float)
-        p = (_predict(cap, ocf, y) or {}).get(model)
-        if p is None:
-            continue
-        rows.append(dict(company_id=cid, year=y, value=p, unit=g.at[y - 1, "unit"], model=model,
-                         lo90=p * math.exp(q05) if np.isfinite(q05) else np.nan,
-                         hi90=p * math.exp(q95) if np.isfinite(q95) else np.nan))
-    return pd.DataFrame(rows)
-
-
-# -- rapport ----------------------------------------------------------------------------------------------
-CORR_COLS = ["test", "label", "x", "y", "lag", "n", "n_companies", "pearson_r", "pearson_lo", "pearson_hi",
-             "spearman_rho", "spearman_lo", "spearman_hi", "verdict", "details", "run_at"]
-
-
-def _pairs(gw: pd.DataFrame, other: pd.DataFrame, col: str, lag: int) -> pd.DataFrame:
-    o = other[["company_id", "year", col]].assign(year=other["year"] - lag)
-    return gw.merge(o, on=["company_id", "year"], how="inner")
-
-
-def report(*, cat: pd.DataFrame | None = None, prod: pd.DataFrame | None = None,
-           analysed: Iterable[str] | None = None, reader: Callable[[str], pd.DataFrame] = _optical,
-           n_boot: int = 1000, write: bool = True) -> dict:
-    """Ratios, corrélations (avec r, ρ, n, IC 90 %, verdict) et prévision ; écrit correlations.parquet,
-    ajoute ratios et prévisions à financials.parquet et met à jour status.json. Aucun réseau."""
-    from strate import catalog, core
-
-    uni, fin, emp = load("companies"), load("financials"), load("employees")
-    run_at = _now()
-    if uni.empty or fin.empty:
-        st = dict(report_at=run_at, report_message="rien à analyser : lancer d'abord companies.update()")
-        if write:
-            _write_json(STATUS, {**_read_json(STATUS), **st})
-        return st
-    if cat is None:
-        cat = catalog.load()
-    if prod is None:
+    queue = sec_queue(co, state, force)
+    per = state.setdefault("sec", {})
+    ciks = dict(zip(co["id"], co["cik"], strict=True))
+    names = dict(zip(co["id"], co["nom"], strict=True))
+    done = 0
+    for cid in queue[:max(0, max_companies)]:
+        cik = ciks[cid]
         try:
-            prod = catalog.all_production()
-        except (OSError, KeyError, ValueError) as e:
-            log.warning("production Jasansky indisponible (%s)", e)
-            prod = pd.DataFrame()
-    analysed = set(analysed if analysed is not None else core.analysed("optical"))
+            js = http.get_json(SEC_FACTS_URL.format(cik=cik))
+            fa = parse_companyfacts(js, cid, cik) if js else pd.DataFrame(columns=FACT_COLS)
+            _replace_facts(fa, company_id=cid, origine="sec")
+            per[cid] = dict(at=_now(), cik=cik, ok=js is not None, n_faits=int(len(fa)),
+                            message="companyfacts absent" if js is None
+                            else f"{fa['annee'].nunique()} exercices")
+            say(f"{names[cid]} : {per[cid]['message']}")
+            done += 1
+        except Exception as e:  # une société en échec n'arrête pas les autres
+            log.exception("société %s", cid)
+            per[cid] = dict(at=_now(), cik=cik, ok=False, message=f"{type(e).__name__}: {e}"[:300])
+            errors.append(f"{cid} : {type(e).__name__}")
+        _write_json(STATE, state)
 
-    w = ratios(wide(fin, emp))
-    w["capex_glog"] = np.log1p(w["capex_growth"])
-    gw = w[["company_id", "year", "capex_glog"]].dropna()
+    if wikidata and (force or _age_days(state.get("wikidata_facts_at")) >= WIKIDATA_DAYS):
+        q2c = {q: c for c, q in zip(co["id"], co["qid"], strict=True) if isinstance(q, str)}
+        try:
+            _replace_facts(wikidata_facts(http, q2c), origine="wikidata")
+            state["wikidata_facts_at"] = _now()
+        except Exception as e:
+            errors.append(f"Wikidata (faits) : {type(e).__name__}")
+        _write_json(STATE, state)
 
-    tests = []
-
-    def add(test, label, x, y, lag, df, details=None):
-        s = corr_stats(df, x, y, n_boot=n_boot)
-        tests.append(dict(test=test, label=label, x=x, y=y, lag=lag, **s,
-                          details=json.dumps(details or {}, ensure_ascii=False), run_at=run_at))
-
-    sat = company_satellite(uni, analysed, reader=reader)
-    for lag in (0, 1):
-        quand = "même année" if lag == 0 else "année suivante"
-        add("capex_vs_satellite", f"Croissance du CAPEX ↔ croissance de la surface nue des mines ({quand})",
-            "capex_glog", "sat_growth", lag, _pairs(gw, sat, "sat_growth", lag),
-            dict(mines_analysees=len(analysed), societes_avec_satellite=int(sat["company_id"].nunique())))
-        add("capex_vs_new_bare",
-            f"Croissance du CAPEX ↔ surface nouvellement mise à nu / surface nue ({quand})",
-            "capex_glog", "new_share", lag, _pairs(gw, sat, "new_share", lag))
-    pr = company_production(uni, cat, prod if prod is not None else pd.DataFrame())
-    for lag in (0, 1):
-        quand = "même année" if lag == 0 else "année suivante"
-        add("capex_vs_production", f"Croissance du CAPEX ↔ croissance de la production réelle ({quand})",
-            "capex_glog", "prod_growth", lag, _pairs(gw, pr, "prod_growth", lag),
-            dict(source="Jasansky et al. 2023 (production jusqu'en 2019–2021)"))
-
-    bt = forecast_backtest(w)
-    fc = pd.DataFrame()
-    if len(bt):
-        bt = bt.assign(pred_g=np.log(bt["pred"] / bt["prev"]), act_g=np.log(bt["actual"] / bt["prev"]),
-                       err=np.log(bt["actual"] / bt["pred"]))
-        base = bt[bt["model"] == "persistance"].set_index(["company_id", "year"])["err"]
-        best, best_err = "persistance", float(base.abs().median())
-        for m in [m for m in FORECAST_MODELS if m != "persistance"]:
-            d = bt[bt["model"] == m].set_index(["company_id", "year"])
-            d = d.assign(err_p=base.reindex(d.index)).dropna(subset=["err_p"]).reset_index()
-            if d.empty:
-                continue
-            gain = _boot_ratio(d, n_boot)
-            beats = gain["hi"] < 1
-            add("capex_forecast", f"Prévision du CAPEX, modèle « {m} » (rétro-test) : croissance prévue ↔ "
-                "croissance réelle", "pred_g", "act_g", 1, d,
-                dict(modele=FORECAST_MODELS[m], erreur_mediane_log=float(d["err"].abs().median()),
-                     erreur_mediane_log_persistance=float(d["err_p"].abs().median()),
-                     ratio_erreur_sur_persistance=gain,
-                     verdict_gain=("bat la persistance (IC 90 % du ratio d'erreur sous 1)" if beats else
-                                   "fait PIRE que la persistance (IC 90 % au-dessus de 1)" if gain["lo"] > 1
-                                   else "ne bat pas la persistance de façon démontrée")))
-            if beats and gain["value"] * best_err < best_err and m != best:
-                best, best_err = m, float(d["err"].abs().median())
-        errs = bt.loc[bt["model"] == best, "err"].to_numpy()
-        fc = forecast_next(w, best, errs)
-    corr = pd.DataFrame(tests, columns=CORR_COLS)
-
-    if write:
-        _write("correlations", corr)
-        fin2 = _with_ratio_rows(fin, w, fc)
-        _write("financials", fin2)
-    st = dict(report_at=run_at, n_correlations=int(len(corr)),
-              n_forecasts=int(len(fc)), correlations=json.loads(corr.drop(columns=["details"]).to_json(
-                  orient="records", force_ascii=False)))
-    if write:
-        _write_json(STATUS, {**_read_json(STATUS), **st})
-    return st
+    inv = investments(co, lk, veille_db)
+    _write("investments", inv)
+    facts = load("facts")
+    facts = facts if set(FACT_COLS) <= set(facts.columns) else pd.DataFrame(columns=FACT_COLS)
+    if with_correlations:
+        _write("correlations", correlate(facts, lk, cat=cat, prod=prod, twins=twins, n_boot=n_boot,
+                                         reader=reader or _optical))
+    rest = len(sec_queue(co, state))
+    st = dict(
+        mis_a_jour=_now(), user_agent_personnalise=bool(os.environ.get("STRATE_SEC_UA", "").strip()),
+        n_societes=int(len(co)), n_avec_cik=int(co["cik"].notna().sum()),
+        n_avec_qid=int(co["qid"].notna().sum()),
+        n_avec_mines=int((co["n_mines"] > 0).sum()), n_liens_mines=int(len(lk)),
+        sec_lues_ce_lancement=done, sec_restantes=rest,
+        n_societes_avec_faits=int(facts["company_id"].nunique()) if len(facts) else 0,
+        n_faits=int(len(facts)), n_investissements=int(len(inv)),
+        requetes_sec=getattr(http, "requests", None),
+        requetes_wikidata=getattr(http, "sparql_requests", None),
+        erreurs=errors[-50:],
+        message=(f"{rest} société(s) SEC restent à lire : relancer « strate companies refresh »" if rest
+                 else "à jour"))
+    _write_json(STATUS, st)
+    return _deep(st)
 
 
-def _boot_ratio(bt: pd.DataFrame, n_boot: int, seed: int = 0) -> dict:
-    """Erreur médiane du modèle / erreur médiane de la persistance, IC 90 % par société."""
-    def f(d):
-        den = d["err_p"].abs().median()
-        return d["err"].abs().median() / den if den > 0 else np.nan
-    groups = {g: v for g, v in bt.groupby("company_id")}
-    ids = list(groups)
-    rng = np.random.default_rng(seed)
-    vals = [f(pd.concat([groups[i] for i in rng.choice(ids, len(ids))], ignore_index=True))
-            for _ in range(n_boot)]
-    vals = [v for v in vals if np.isfinite(v)]
-    lo, hi = (np.percentile(vals, [5, 95]) if vals else (np.nan, np.nan))
-    return dict(value=float(f(bt)), lo=float(lo), hi=float(hi), n=int(len(bt)), n_companies=len(ids))
-
-
-RATIO_METRICS = ["capex_revenue", "capex_per_employee", "capex_da", "capex_growth", "ppe_growth"]
-
-
-def _with_ratio_rows(fin: pd.DataFrame, w: pd.DataFrame, fc: pd.DataFrame) -> pd.DataFrame:
-    base = fin[fin["metric"].isin(list(CONCEPTS))]
-    rows = []
-    cik = dict(zip(base["company_id"], base["cik"], strict=False))
-    for m in RATIO_METRICS:
-        d = w[["company_id", "year", m, "unit"]].dropna(subset=[m])
-        unit = {"capex_per_employee": None, "capex_revenue": "ratio", "capex_da": "ratio"}.get(m, "variation")
-        for r in d.itertuples(index=False):
-            rows.append(dict(company_id=r.company_id, cik=cik.get(r.company_id), year=int(r.year), metric=m,
-                             value=float(getattr(r, m)), unit=unit or f"{r.unit}/salarié", concept="calcul",
-                             form=None, accn=None, filed=None, period_end=None, source_url=None,
-                             lo90=np.nan, hi90=np.nan))
-    for r in fc.itertuples(index=False) if len(fc) else []:
-        rows.append(dict(company_id=r.company_id, cik=cik.get(r.company_id), year=int(r.year),
-                         metric="capex_prevision", value=float(r.value), unit=r.unit,
-                         concept=f"modèle {r.model} : {FORECAST_MODELS[r.model]}", form=None,
-                         accn=None, filed=None, period_end=None, source_url=None, lo90=r.lo90, hi90=r.hi90))
-    out = pd.concat([base, pd.DataFrame(rows, columns=FIN_COLS)], ignore_index=True) if rows else base
-    return out.reindex(columns=FIN_COLS)
-
-
-# -- lecture pour l'API --------------------------------------------------------------------------------------
+# -- lecture (API) ------------------------------------------------------------------------------------------
 def _clean(v):
+    if isinstance(v, np.generic):
+        v = v.item()
     if isinstance(v, float) and not math.isfinite(v):
         return None
-    if isinstance(v, (np.integer,)):
-        return int(v)
-    if isinstance(v, (np.floating,)):
-        return None if not np.isfinite(v) else float(v)
-    if isinstance(v, (np.bool_,)):
-        return bool(v)
     if v is pd.NA or v is pd.NaT:
         return None
     return v
 
 
 def _deep(v):
-    """Nettoyage récursif pour JSON strict (NaN → None, types numpy → Python)."""
+    """Nettoyage récursif pour un JSON strict (NaN → None, types numpy → Python)."""
     if isinstance(v, dict):
         return {k: _deep(x) for k, x in v.items()}
     if isinstance(v, (list, tuple)):
@@ -1727,97 +1462,105 @@ def _records(df: pd.DataFrame) -> list[dict]:
     return [{k: _clean(v) for k, v in r.items()} for r in df.to_dict("records")]
 
 
-def table() -> list[dict]:
-    """Liste des sociétés pour l'écran « Sociétés » : dernier exercice publié et ratios clés."""
-    uni = load("companies")
-    if uni.empty:
-        return []
-    fin = load("financials")
-    last = pd.DataFrame()
-    if len(fin):
-        keep = ["revenue", "capex", "capex_revenue", "capex_growth", "capex_per_employee"]
-        f = fin[fin["metric"].isin(keep)]
-        if len(f):
-            ly = f[f["metric"] == "capex"].groupby("company_id")["year"].max()
-            f = f[f.set_index("company_id").index.map(ly).to_numpy() == f["year"].to_numpy()]
-            last = f.pivot_table(index="company_id", columns="metric", values="value", aggfunc="first")
-            last["year"] = ly
-            last["currency"] = fin[fin["metric"] == "capex"].groupby("company_id")["unit"].last()
-    emp = best_employees(load("employees"))
-    le = pd.DataFrame()
-    if len(emp):
-        le = emp.sort_values("year").groupby("company_id").last().reset_index()
-        le = le.set_index("company_id", drop=False)
-    out = []
-    for r in uni.itertuples(index=False):
-        L = last.loc[r.id].to_dict() if r.id in last.index else {}
-        E = le.loc[r.id].to_dict() if r.id in le.index else {}
-        out.append({k: _clean(v) for k, v in dict(
-            id=r.id, name=r.name, tickers=_split_list(r.tickers), cik=r.cik, watchlist=bool(r.watchlist),
-            n_mines=int(r.n_mines), year=L.get("year"), currency=L.get("currency"), revenue=L.get("revenue"),
-            capex=L.get("capex"), capex_revenue=L.get("capex_revenue"), capex_growth=L.get("capex_growth"),
-            capex_per_employee=L.get("capex_per_employee"), employees=E.get("employees"),
-            employees_year=int(E["year"]) if E.get("year") is not None else None,
-        ).items()})
+def _new_format(df: pd.DataFrame, cols: list[str]) -> bool:
+    return not df.empty and set(cols) <= set(df.columns)
+
+
+def _last(f: pd.DataFrame, ind: str) -> pd.DataFrame:
+    """Dernière valeur par société d'un indicateur (série retenue)."""
+    x = f[f["indicateur"] == ind].sort_values("annee")
+    return x.groupby("company_id").tail(1).set_index("company_id") if len(x) else pd.DataFrame()
+
+
+TABLE_COLS = ["id", "nom", "pays", "tickers", "cik", "qid", "n_mines", "capex_dernier", "capex_annee",
+              "effectifs", "effectifs_annee", "ca_dernier", "devise", "investissements_12m"]
+
+
+def table(today: date | None = None) -> pd.DataFrame:
+    """Une ligne par société (champs de GET /api/companies). Vide tant que refresh() n'a pas tourné."""
+    co = load("companies")
+    if not _new_format(co, COMPANY_COLS):
+        return pd.DataFrame(columns=TABLE_COLS)
+    facts = load("facts")
+    f = best_facts(facts) if _new_format(facts, FACT_COLS) else pd.DataFrame(columns=FACT_COLS)
+    capex, emp, ca = _last(f, "capex"), _last(f, "effectifs"), _last(f, "chiffre_affaires")
+    inv = load("investments")
+    since = ((today or date.today()) - timedelta(days=365)).isoformat()
+    n12 = (inv[inv["date"].fillna("") >= since].groupby("company_id").size()
+           if _new_format(inv, INV_COLS) else pd.Series(dtype=int))
+
+    def get(df, cid, col):
+        return df.at[cid, col] if len(df) and cid in df.index else None
+
+    rows = []
+    for r in co.itertuples(index=False):
+        cur = get(capex, r.id, "devise") or get(ca, r.id, "devise")
+        rows.append(dict(id=r.id, nom=r.nom, pays=r.pays, tickers=_split_list(r.tickers), cik=r.cik,
+                         qid=r.qid,
+                         n_mines=int(r.n_mines), capex_dernier=get(capex, r.id, "valeur"),
+                         capex_annee=get(capex, r.id, "annee"), effectifs=get(emp, r.id, "valeur"),
+                         effectifs_annee=get(emp, r.id, "annee"), ca_dernier=get(ca, r.id, "valeur"),
+                         devise=cur, investissements_12m=int(n12.get(r.id, 0))))
+    out = pd.DataFrame(rows, columns=TABLE_COLS)
+    for c in ("capex_annee", "effectifs_annee"):
+        out[c] = out[c].astype("Int64")
     return out
 
 
-def dossier(company_id: str) -> dict | None:
-    """Fiche complète d'une société : identité, mines, comptes annuels avec sources, effectifs, segments,
-    annonces, prévision. None si la société est inconnue."""
-    uni = load("companies")
-    if uni.empty or company_id not in set(uni["id"]):
+def company(company_id: str) -> dict | None:
+    """Fiche d'une société (champs de GET /api/company) ; None si inconnue."""
+    co = load("companies")
+    if not _new_format(co, COMPANY_COLS) or company_id not in set(co["id"]):
         return None
-    r = uni[uni["id"] == company_id].iloc[0]
-    fin, emp, seg = load("financials"), load("employees"), load("segments")
-    f = fin[fin["company_id"] == company_id] if len(fin) else fin
-    years = []
-    if len(f):
-        for y, g in f[f["metric"] != "capex_prevision"].groupby("year"):
-            row = {"year": int(y)}
-            src = {}
-            for x in g.itertuples(index=False):
-                row[x.metric] = _clean(x.value)
-                if isinstance(x.source_url, str):
-                    src[x.metric] = dict(url=x.source_url, concept=x.concept, form=x.form, accn=x.accn)
-            units = g.loc[g["metric"].isin(list(CONCEPTS)), "unit"]
-            row["currency"] = _clean(units.iloc[0]) if len(units) else None
-            row["sources"] = src
-            years.append(row)
-    fc = f[f["metric"] == "capex_prevision"] if len(f) else f
-    e = emp[emp["company_id"] == company_id].sort_values("year") if len(emp) else emp
-    s = seg[seg["company_id"] == company_id] if len(seg) else seg
-    segs = s[s["kind"] == "xbrl_segment"] if len(s) else s
-    segs = segs.sort_values(["year", "value"], ascending=[False, False]) if len(segs) else segs
-    ann = s[s["kind"] == "annonce_veille"].sort_values("date", ascending=False) if len(s) else s
+    r = co[co["id"] == company_id].iloc[0]
+    lk, facts, inv, corr = load("mines"), load("facts"), load("investments"), load("correlations")
+    m = lk[lk["company_id"] == company_id].sort_values(["part", "site_id"], ascending=[False, True]) \
+        if _new_format(lk, LINK_COLS) else pd.DataFrame(columns=LINK_COLS)
+    f = facts[facts["company_id"] == company_id] if _new_format(facts, FACT_COLS) \
+        else pd.DataFrame(columns=FACT_COLS)
+    retenu = set(map(tuple, best_facts(f)[["indicateur", "annee", "origine"]].to_numpy())) \
+        if len(f) else set()
+    f = f.sort_values(["indicateur", "annee", "origine"])
+    i = inv[inv["company_id"] == company_id] if _new_format(inv, INV_COLS) else pd.DataFrame(columns=INV_COLS)
+    c = corr[(corr["portee"] == "societe") & (corr["company_id"] == company_id)] \
+        if _new_format(corr, CORR_COLS) else pd.DataFrame(columns=CORR_COLS)
+    cik, qid = _clean(r["cik"]), _clean(r["qid"])
+    profil = dict(
+        id=r["id"], nom=r["nom"], alias=_split_list(r["alias"]), tickers=_split_list(r["tickers"]), cik=cik,
+        cik_source=_clean(r["cik_source"]), qid=qid, pays=_clean(r["pays"]),
+        sources=_split_list(r["sources"]),
+        suivie=bool(r["suivie"]), n_mines=int(r["n_mines"]),
+        sec_url=f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={cik}" if cik else None,
+        wikidata_url=f"https://www.wikidata.org/wiki/{qid}" if qid else None)
+    faits = [dict(indicateur=x.indicateur, libelle=LABELS.get(x.indicateur, x.indicateur), annee=int(x.annee),
+                  valeur=_clean(x.valeur), unite=x.unite, devise=_clean(x.devise), source=x.source,
+                  formulaire=_clean(x.formulaire), concept=x.concept, fin_exercice=_clean(x.fin_exercice),
+                  origine=x.origine, retenu=(x.indicateur, x.annee, x.origine) in retenu)
+             for x in f.itertuples(index=False)]
     return _deep(dict(
-        company={k: _clean(v) for k, v in dict(
-            id=r["id"], name=r["name"], aliases=_split_list(r["aliases"]), tickers=_split_list(r["tickers"]),
-            cik=r["cik"], cik_source=r["cik_source"], qid=r["qid"], sources=_split_list(r["sources"]),
-            watchlist=bool(r["watchlist"]), n_mines=int(r["n_mines"])).items()},
-        mines=mines_of(r),
-        financials=years,
-        employees=_records(e.drop(columns=["company_id"])) if len(e) else [],
-        segments=(_records(segs.drop(columns=["company_id", "kind", "title", "event_type", "date"]))
-                  if len(segs) else []),
-        announcements=_records(ann[["date", "site_id", "site_name", "event_type", "title", "source_url"]])
-        if len(ann) else [],
-        forecast=_records(fc[["year", "value", "unit", "lo90", "hi90", "concept"]]) if len(fc) else [],
-        labels=METRIC_LABELS,
+        profil=profil,
+        mines=[dict(site_id=x.site_id, nom=_clean(x.nom), part=_clean(x.part), role=x.role, source=x.source)
+               for x in m.itertuples(index=False)],
+        faits=faits,
+        investissements=[dict(date=x.date, montant=x.montant, devise=x.devise, categorie=x.categorie,
+                              titre=x.titre, url=x.url, site_id=_clean(x.site_id),
+                              rattachement=x.rattachement)
+                         for x in i.itertuples(index=False)],
+        correlations=[{k: _clean(row[k]) for k in CO_CORR_KEYS} | {"n": int(row["n_points"])}
+                      for row in c.to_dict("records")],
     ))
 
 
-def correlations() -> list[dict]:
+CO_CORR_KEYS = ("x", "y", "decalage", "r", "r_lo", "r_hi", "rho", "rho_lo", "rho_hi", "n_points", "verdict")
+
+
+def correlations() -> dict:
+    """Corrélations sur l'ensemble des sociétés (champs de GET /api/companies/correlations)."""
     c = load("correlations")
-    if c.empty:
-        return []
-    out = _records(c)
-    for x in out:
-        try:
-            x["details"] = json.loads(x["details"]) if x.get("details") else {}
-        except ValueError:
-            x["details"] = {}
-    return out
+    rows = []
+    if _new_format(c, CORR_COLS):
+        rows = _records(c[c["portee"] == "ensemble"].drop(columns=["portee", "company_id"]))
+    return dict(rows=rows, methode=METHODE_CORRELATIONS)
 
 
 def status() -> dict:
