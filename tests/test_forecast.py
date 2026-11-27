@@ -298,6 +298,22 @@ def test_forecast_site_is_read_only(tmp_path):
     assert r["serie"] == "minerai extrait" and r["qualite"] == {"n": 0}
 
 
+def test_published_interval_is_the_measured_one_even_if_biased(tmp_path):
+    """Quantiles d'erreur biaisés (réel toujours au-dessus du prévu) : les bornes publiées sont celles dont
+    le rétro-test mesure la couverture (prévision + quantiles), sans être ramenées à la valeur prévue."""
+    p = _panel("trend", n=20, y1=2019)
+    bt = fc.run_backtest(p, n_boot=30, today=TODAY)
+    bt["retenu_modele"] = "naif"
+    for x in bt["intervalles"]["avenir"]["naif"].values():
+        x["q"] = [0.05, 0.1, 0.2, 0.3]
+    (tmp_path / "backtest.json").write_text(json.dumps(bt), "utf-8")
+    r = fc.forecast_site("m001", out=tmp_path, panel=p, today=TODAY)
+    assert r["prevision"]
+    for x in r["prevision"]:
+        off = [math.log(x[k] / x["value"]) for k in ("lo90", "lo80", "hi80", "hi90")]
+        assert off == pytest.approx([0.05, 0.1, 0.2, 0.3], abs=1e-4)
+
+
 def test_forecast_site_blames_backtest_not_series(tmp_path):
     """backtest.json présent mais sans résultat : le message nomme le rétro-test, pas la série de la mine."""
     p = _panel("trend", n=12, y1=2019)

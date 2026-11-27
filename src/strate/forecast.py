@@ -817,8 +817,13 @@ def forecast_site(site_id: str, out: Path | None = None, panel: pd.DataFrame | N
                                "backtest_run_at": bt.get("run_at")})
     fc = site_forecast_frame(g, bt, today)
     prev = []
-    env = np.zeros(4)  # écarts log (lo90, lo80, hi80, hi90) : enveloppe qui ne rétrécit pas au changement
-    for h, f in fc.groupby("h", sort=True):  # de modèle retenu d'un horizon à l'autre
+    # Écarts log (lo90, lo80, hi80, hi90) à la valeur prévue. Avec un seul modèle pour tout le chemin, ce
+    # sont exactement les bornes dont le rétro-test mesure la couverture (quantiles déjà monotones en h).
+    # L'enveloppe ne sert qu'à l'ancien format (modèle retenu par horizon) : l'intervalle ne rétrécit pas
+    # au changement de modèle. Elle part du premier horizon, pas de zéro : un zéro ramènerait lo à la
+    # valeur prévue (ou hi) dès que les quantiles d'erreur sont biaisés (q80 bas > 0 ou q80 haut < 0).
+    env = None
+    for h, f in fc.groupby("h", sort=True):
         r = f[f["model"] == _retenu(bt, int(h))]
         if len(r):
             r = r.iloc[0]
@@ -826,8 +831,9 @@ def forecast_site(site_id: str, out: Path | None = None, panel: pd.DataFrame | N
             with np.errstate(divide="ignore", invalid="ignore"):
                 off = np.log(np.array([r["lo90"], r["lo80"], r["hi80"], r["hi90"]], float) / v)
             if np.isfinite(off).all():
-                env = np.r_[np.minimum(off[:2], env[:2]), np.maximum(off[2:], env[2:])]
-                off = env
+                if env is not None:
+                    off = np.r_[np.minimum(off[:2], env[:2]), np.maximum(off[2:], env[2:])]
+                env = off
             b = v * np.exp(off)
             prev.append({"year": int(r["target_year"]), "horizon": int(h), "mesure": bool(r["mesure"]),
                          "model": r["model"], "value": v,
