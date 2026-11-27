@@ -808,33 +808,41 @@ MINING_THEMES = ("ENV_MINING", "TAX_FNCACT_MINER", "WB_1698_COAL_MINING")   # pr
 _ENV_DIRTY = ("POLLUT", "TOXIC", "SPILL", "CONTAMIN", "WASTE")   # ENV_* de pollution, pas d'énergie
 
 # Mots-clés du titre d'origine, par type et par langue (radicaux : « effondr » couvre « effondrement »).
+# Les articles de l'API documentaire n'ont pas de thèmes GDELT (KILL, CRISISLEX_T03_DEAD…) : les verbes
+# « mourir » (die, dies, died, meurt, muere, morre, stirbt, muore, zmarł, умер…) doivent être dans le titre.
+# Exclus à dessein : turc « öldü » (replié « oldu », aussi « il est devenu »), « meurtre » (« meurt= »
+# exact), indonésien « mati » (aussi « en panne, à l'arrêt ») ; « tewas » et « meninggal » suffisent.
 # Mots de 3 lettres ou moins : mot exact. Allemand/néerlandais : aussi au milieu d'un composé.
 KEYWORDS: dict[str, dict[str, str]] = {
     "accident": {
         "en": "accident collaps cave-in explosion blast fatal fatality killed killing dead deadly death "
-              "died injur trapped rescue flood landslide mudslide rockfall rockburst victim bodies tragedy "
-              "disaster",
-        "fr": "accident effondr eboul explosion incendie mort deces tue tues tuee blesse victime disparu "
-              "piege sauvet inondation grisou drame catastrophe glissement",
-        "es": "accidente derrumbe colapso explosion incendio muert fallec herid atrapad rescate victima "
-              "desaparecid inundacion deslave deslizamiento tragedia siniestro",
-        "pt": "acidente desabamento desmoronamento colapso explosao incendio mort falec ferid soterrad "
-              "resgate vitima desaparecid inundacao deslizamento tragedia rompimento",
-        "de": "unfall ungluck einsturz eingesturzt explosion brand tote toten getotet verletzt verschuttet "
-              "eingeschlossen rettung vermisst flutung uberflut",
-        "it": "incidente crollo esplosione incendio morti morto vittim ferit intrappolat soccors dispersi "
-              "frana alluvione tragedia",
-        "pl": "wypadek wypadk katastrof zawal wybuch pozar zgin ofiar ranny ranni zasypan uwiezi ratownic "
-              "tapniecie metan",
-        "ru": "авари обрушен взрыв пожар погиб гибел жертв пострада ранен заблокирован спасат затоплен "
-              "трагеди катастроф выброс",
-        "tr": "kaza gocuk patlama yangin olu olum yarali mahsur kurtarma facia felaket grizu hayatini",
-        "id": "kecelakaan longsor ambruk runtuh ledakan kebakaran tewas meninggal korban terjebak tertimbun "
-              "evakuasi banjir tragedi",
-        "ar": "حادث انهيار انفجار حريق مقتل قتلى وفاة مصرع جرحى إصابة محاصرين إنقاذ فيضان",
-        "zh": "事故 坍塌 塌方 冒顶 爆炸 火灾 起火 死亡 遇难 身亡 罹难 受伤 被困 救援 透水 瓦斯 矿难 失踪",
-        "ja": "事故 崩落 落盤 爆発 火災 死亡 死者 負傷 閉じ込め 救助 浸水 遭難 行方不明",
-        "ko": "사고 붕괴 매몰 폭발 화재 사망 숨져 부상 고립 구조 침수 실종",
+              "die dies died dying injur trapped rescue flood landslide mudslide rockfall rockburst victim "
+              "bodies tragedy disaster",
+        "fr": "accident effondr eboul explosion incendie mort deces decede meurt= meurent tue tues tuee "
+              "blesse victime disparu piege sauvet inondation grisou drame catastrophe glissement",
+        "es": "accidente derrumbe colapso explosion incendio muert muere murio murieron fallec "
+              "herid atrapad rescate victima desaparecid inundacion deslave deslizamiento tragedia "
+              "siniestro",
+        "pt": "acidente desabamento desmoronamento colapso explosao incendio mort morre falec ferid "
+              "soterrad resgate vitima desaparecid inundacao deslizamento tragedia rompimento",
+        "de": "unfall ungluck einsturz eingesturzt explosion brand tot= tote toten getotet stirbt sterben "
+              "gestorben ums_leben verletzt verschuttet eingeschlossen rettung vermisst flutung uberflut",
+        "it": "incidente crollo esplosione incendio morti morto morta muore muoiono decedut decesso "
+              "vittim ferit intrappolat soccors dispersi frana alluvione tragedia",
+        "pl": "wypadek wypadk katastrof zawal wybuch pozar zgin zmarl smierc smiertel nie_zyje ofiar "
+              "ranny ranni zasypan uwiezi ratownic tapniecie metan",
+        "ru": "авари обрушен взрыв пожар погиб гибел умер= умерл умира скончал смерт жертв пострада "
+              "ранен заблокирован спасат затоплен трагеди катастроф выброс",
+        "tr": "kaza gocuk patlama yangin olu olum oldurul hayatini yarali mahsur kurtarma facia felaket "
+              "grizu",
+        "id": "kecelakaan longsor ambruk runtuh ledakan kebakaran tewas meninggal korban terjebak "
+              "tertimbun evakuasi banjir tragedi",
+        "ar": "حادث انهيار انفجار حريق مقتل قتلى وفاة مصرع مات يموت توفي حتفه جرحى إصابة محاصرين إنقاذ "
+              "فيضان",
+        "zh": "事故 坍塌 塌方 冒顶 爆炸 火灾 起火 死亡 遇难 身亡 罹难 丧生 致死 殉职 受伤 被困 救援 透水 "
+              "瓦斯 矿难 失踪",
+        "ja": "事故 崩落 落盤 爆発 火災 死亡 死者 死去 亡くな 犠牲 負傷 閉じ込め 救助 浸水 遭難 行方不明",
+        "ko": "사고 붕괴 매몰 폭발 화재 사망 숨져 숨진 숨졌 목숨 부상 고립 구조 침수 실종",
     },
     "social": {
         "en": "strike striker walkout protest demonstrat blockade roadblock unionist trade_union "

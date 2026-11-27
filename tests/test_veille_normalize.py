@@ -261,6 +261,27 @@ def test_multilingual_keywords(title, lang, expected):
     assert strength == 0.9
 
 
+# les articles de l'API documentaire n'ont pas de thèmes : « mourir » doit suffire dans chaque langue
+@pytest.mark.parametrize("title,lang", [
+    ("Two workers die at Kibali mine", "en"), ("Miner dies in Kibali mine", "en"),
+    ("Worker died at Kibali mine", "en"), ("Un mineur meurt dans la mine de Fekola", "fr"),
+    ("Dos mineros mueren en la mina", "es"), ("Minero murió en derrumbe", "es"),
+    ("Trabalhador morre em mina", "pt"), ("Bergmann stirbt in Grube", "de"),
+    ("Zwei Kumpel kamen ums Leben", "de"), ("Minatore muore in miniera", "it"),
+    ("Górnik zmarł w kopalni", "pl"), ("Шахтёр умер на руднике", "ru"),
+    ("Madenci hayatını kaybetti", "tr"), ("Penambang meninggal di tambang emas", "id"),
+    ("توفي عامل في منجم", "ar"), ("煤矿工人丧生", "zh"), ("鉱山で作業員が亡くなる", "ja"),
+    ("광산 노동자 숨진 채 발견", "ko"),
+])
+def test_dying_verbs_are_accidents(title, lang):
+    assert N.classify(title, [], lang)[0] == "accident", title
+
+
+def test_dying_keywords_avoid_false_senses():
+    assert N.classify("Murder trial over mine dispute: meurtre", [], "fr")[0] != "accident"
+    assert N.classify("Maden şirketi halka açık oldu", [], "tr")[0] != "accident"   # « oldu » : devenu
+
+
 def test_classify_themes_and_false_friends():
     assert N.classify("Mine news", ["STRIKE", "PROTEST"], "en")[0] == "social"
     typ, s, _ = N.classify("Mine news", ["LEGISLATION"], "en")
