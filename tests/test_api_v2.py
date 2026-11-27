@@ -402,6 +402,19 @@ def test_companies_table_filters(client, monkeypatch):
     assert d["total"] == 3 and len(d["rows"]) == 1
 
 
+def test_companies_pays_aliases_and_investment_count(client, monkeypatch):
+    """Filtre pays par nom canonique (français, ISO2, casse) ; investissements_12m entier, 0 si aucun."""
+    fake(monkeypatch, "companies", table=lambda: TABLE.assign(investissements_12m=[2.0, 0, None]))
+    ids = [r["id"] for r in client.get("/api/companies", params={"pays": "brésil, CL"}).json()["rows"]]
+    assert ids == ["vale", "codelco"]
+    assert client.get("/api/companies", params={"pays": "united states"}).json()["total"] == 1
+    assert client.get("/api/companies", params={"pays": "Atlantide"}).json()["total"] == 0
+    counts = [r["investissements_12m"] for r in client.get("/api/companies").json()["rows"]]
+    assert counts == [2, 0, 0] and all(type(c) is int for c in counts)
+    fake(monkeypatch, "companies", table=lambda: TABLE.drop(columns=["investissements_12m"]))
+    assert client.get("/api/companies").json()["rows"][0]["investissements_12m"] is None  # inconnu
+
+
 def test_companies_legacy_names_and_list(client, monkeypatch):
     fake(
         monkeypatch,

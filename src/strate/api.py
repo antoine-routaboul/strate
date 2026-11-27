@@ -1017,8 +1017,17 @@ def _companies_rows() -> tuple[list[dict], str | None]:
     for r in rows:
         s = _shape(r, CO_ROW)
         s["tickers"] = _list(s["tickers"])
+        if "investissements_12m" in r:  # compte d'annonces : 0 quand aucune ; absent du module → inconnu
+            v = s["investissements_12m"]
+            ok = isinstance(v, (int, float)) and not isinstance(v, bool)
+            s["investissements_12m"] = int(v) if ok else 0
         out.append(s)
     return out, None if out else MSG_SOCIETES
+
+
+def _country_key(c) -> str | None:
+    n = norm_country(c)
+    return _fold(n) if n else None
 
 
 @app.get("/api/companies")
@@ -1033,9 +1042,9 @@ def companies_api(q: str | None = None, pays: str | None = None, limit: int = Qu
             return _fold(" ".join(str(v) for v in vals if v is not None))
 
         rows = [r for r in rows if qn in hay(r)]
-    if pays:
-        want = {norm_country(p) for p in _csv_list(pays) or []}
-        rows = [r for r in rows if r["pays"] is not None and norm_country(r["pays"]) in want]
+    if pays:  # nom canonique (alias, nom français, ISO2), sans casse ni accent
+        want = {k for p in _csv_list(pays) or [] if (k := _country_key(p))}
+        rows = [r for r in rows if _country_key(r["pays"]) in want]
     out = {"total": len(rows), "rows": rows[:limit]}
     if msg:
         out["message"] = msg
