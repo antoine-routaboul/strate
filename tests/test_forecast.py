@@ -248,7 +248,8 @@ def test_forecast_site(tmp_path):
             "skill_hi", "couverture80", "couverture90", "facteur_median", "n", "n_mines", "r_niveau",
             "r_niveau_lo", "rho_niveau_hi", "note"}
     assert keys <= set(r["qualite"]) and r["qualite"]["portee"] == "global"
-    assert r["suivi_site"]["n"] > 0
+    st = r["suivi_site"]  # période de test seulement : cibles 2015–2019 à h = 1
+    assert st["n"] == 5 and st["periode"] == "2015–2021" and st["facteur_max"] >= st["facteur_median"] >= 1
     assert fc.forecast_site("J001", out=tmp_path, panel=p, today=TODAY)["site_id"] == "m001"
 
 

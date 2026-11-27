@@ -713,14 +713,22 @@ def _resolve(site_id: str, panel: pd.DataFrame) -> pd.DataFrame:
 
 
 def _site_track(g: pd.DataFrame, bt: dict, model: str) -> dict:
-    """Bilan de la mine elle-même à h = 1 (rétro-test rejoué avec les mêmes réglages)."""
+    """Bilan de la mine elle-même à h = 1, sur la seule période de test (cibles > TUNE_END) : les années de
+    réglage ont servi à choisir φ et κ, elles ne disent rien de la qualité hors échantillon.
+
+    Pas d'IC : au plus 7 années cibles, et les années d'une même mine ne sont pas indépendantes. On donne
+    n, l'erreur multiplicative médiane et la plus forte, à lire comme une description, pas comme un test."""
     par = (bt.get("emprise") or {}).get("par_origine", [])
     coefs = {(x[0], int(x[1])): tuple(x[2:]) for x in par}
-    c = add_anchor(make_cases(g, h_max=1), coefs)
+    c = add_anchor(make_cases(g, first=TUNE_END + 1, h_max=1), coefs)
+    base = {"modele": model, "horizon": 1, "periode": f"{TUNE_END + 1}–{LAST_TARGET}",
+            "note": "Description de cette mine (au plus 7 années cibles, dépendantes) : pas d'IC, pas un "
+                    "test."}
     if c.empty:
-        return {"n": 0}
+        return base | {"n": 0}
     e = np.abs(c["y"].to_numpy(float) - predict(c, *_reglages(bt))[model])
-    return {"n": int(len(c)), "facteur_median": float(np.exp(np.median(e))), "modele": model, "horizon": 1}
+    return base | {"n": int(len(c)), "facteur_median": float(np.exp(np.median(e))),
+                   "facteur_max": float(np.exp(e.max()))}
 
 
 def forecast_site(site_id: str, out: Path | None = None, panel: pd.DataFrame | None = None,
