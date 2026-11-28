@@ -269,6 +269,7 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 .card h3{font-weight:500;color:var(--muted);font-size:12px}
 .estim{font-size:20px;font-weight:600;margin:0 0 6px}
 .calnote{border-left:1px solid var(--border);padding-left:14px;color:var(--muted);max-width:880px}
+#me_cal .calnote{border-left:0;padding-left:0;color:var(--text);font-size:13px;line-height:20px;max-width:760px;margin:0 0 8px}
 .imgs{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap)}
 .imgs img{width:100%;aspect-ratio:1;object-fit:cover;background:var(--raised);border-radius:var(--r-card);display:block;margin-top:8px}
 /* le cadre reste positionné quel que soit l'état (wait / none / chargée) : sinon le message se place contre la page */
@@ -2195,7 +2196,8 @@ function calRows(){
   if(tr(r.intra_mine_niveau).length) add('activité radar (écart à la moyenne de la mine)','production (écart à la moyenne de la mine)',tr(r.intra_mine_niveau)[0],tr(r.intra_mine_niveau)[1],tr(r.intra_mine_niveau)[2],r.mines_test);
   return out;
 }
-const calRow=c=>`<div class="cbrow"><div class="rel"><b>${esc(c.x)} ↔ ${esc(c.y)}</b>${c.note?`<small>${esc(c.note)}</small>`:''}</div><div>${corrBadge({type:'rho',v:c.v,lo:c.lo,hi:c.hi,n:c.n,nUnit:c.unit})}</div></div>`;
+// une note qui ne dit que l'unité de n (« n = paires d’années ») ne se répète pas : le badge la porte
+const calRow=c=>`<div class="cbrow"><div class="rel"><b>${esc(c.x)} ↔ ${esc(c.y)}</b>${c.note&&!c.note.startsWith('n =')?`<small>${esc(c.note)}</small>`:''}</div><div>${corrBadge({type:'rho',v:c.v,lo:c.lo,hi:c.hi,n:c.n,nUnit:c.unit})}</div></div>`;
 // sous la note de calibration d'une fiche : les mêmes chiffres, avec leur intervalle et leur n
 function calBadges(compact){
   const rs=calRows(); if(!rs.length) return '';
@@ -2206,12 +2208,12 @@ function calPage(){
   setHead('methode',head('Calibration',`Confrontation des signaux satellite à la production publiée${CAL.date?` · calibration du ${esc(CAL.date)}`:''}`));
   const el=$('#me_cal');
   if(num(CAL.mines)==null){ el.innerHTML=CAL_READY?box('Calibration absente : uv run strate calibrate'):loading(); return; }
-  const a=CAL.alertes||{}, prec=Array.isArray(a.precision)?a.precision:[];
-  const p=calNote(true);
+  // une phrase par paragraphe, à l'encre : la prose est le texte de la page, pas une note ; la précision de la règle
+  // d'alerte et son taux de base y sont déjà, avec leur IC (plus de bandeau qui les répète)
+  const p=calNote(true).replace(/\n    /g,'</p><p class="calnote">');
   el.innerHTML=`<h2 style="margin-top:0">Ce que l’on sait</h2>${p}
     <h2>Corrélations mesurées</h2>${calBadges(false)}
-    ${num(prec[0])!=null?`<h2>Règle d’alerte annuelle</h2><div class="kpis" style="--k:2"><div><span>Précision (variation &gt; 10 % de la surface nue → vraie variation &gt; 20 %)</span><b>${pct(prec[0])}</b><span>IC 90 % ${pct(num(prec[1]))} à ${pct(num(prec[2]))}</span></div><div><span>Taux de base (au hasard)</span><b>${pct(num(a.taux_de_base))}</b></div></div>`:''}
-    <p class="note">Détail de la méthode : docs/calibration.md. Les alertes mensuelles du radar n’ont pas été confrontées à la production.</p>`;
+    <p class="note" style="margin-top:10px">Détail de la méthode : docs/calibration.md.</p>`;
 }
 const SRC=[['Copernicus Sentinel-2 L2A et Sentinel-1','Images optiques et radar, via Microsoft Planetary Computer. Données Copernicus libres et ouvertes (mention « contient des données Copernicus Sentinel modifiées »).'],
   ['Wikimedia Pageviews','Vues des articles Wikipedia de la mine et de ses propriétaires. CC0.'],
