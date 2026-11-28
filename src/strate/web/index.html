@@ -1915,6 +1915,9 @@ function rankList(rows,val,lab,n=15){
   if(!top.length) return null; const mx=Math.max(...top.map(val));
   return `<div class="barlist">${top.map(co=>`<div class="bl"><a class="nm" href="#/societe/${esc(enc(co.id))}">${esc(co.nom||co.id)}</a><span class="num">${lab(co)}</span><i style="width:${Math.max(1,Math.round(val(co)/mx*100))}%"></i></div>`).join('')}</div>`;
 }
+// sous-titre des pages CAPEX et effectifs : ce que disent les données, compté, jamais écrit à la main
+const coFewTxt=rel=>{ const nf=rel.filter(cc=>['r','rho'].some(t=>/trop peu/i.test(ccVerdict(cc,t)??''))).length;
+  return `${fmt(rel.length,0)} ${plur(rel.length,'relation testée')}${!rel.length?'':nf===rel.length?(rel.length>1?', toutes sous l’effectif minimal':', sous l’effectif minimal'):nf?`, dont ${fmt(nf,0)} sous l’effectif minimal`:''}`; };
 async function coCapex(){
   const live=pgSeq('co'), el=$('#co_capex');
   setHead('societes',head('CAPEX & investissements','Dans quoi les sociétés investissent, et si cet investissement annonce quelque chose dans leurs mines.'));
@@ -1930,6 +1933,8 @@ async function coCapex(){
     const rl=dev?rankList(D.rows.filter(co=>cd(co)===dev),co=>num(co.capex_dernier),co=>`${money(co.capex_dernier,cd(co))}${yr(co.capex_annee)}`):null;
     rank=rl?`${rl}<p class="note" style="margin-top:10px">Dernier exercice déclaré, en ${esc(dev)} seulement (les autres devises ne se comparent pas sans change) ; les exercices diffèrent d’une société à l’autre.</p>`:box(esc(D.message||'Aucun CAPEX déclaré.'));
     const il=rankList(D.rows,co=>cnt12(co.investissements_12m),co=>`${fmt(cnt12(co.investissements_12m),0)} ${plur(cnt12(co.investissements_12m),'annonce')}`,10);
+    if(C){ const nC=D.rows.filter(co=>num(co.capex_dernier)!=null).length, nU=dev?D.rows.filter(co=>cd(co)===dev&&num(co.capex_dernier)!=null).length:0;
+      $('#co_sub').innerHTML=`${fmt(nC,0)} ${plur(nC,'société')} avec un CAPEX déclaré${dev?` (${fmt(nU,0)} en ${esc(dev)})`:''} · ${coFewTxt(rel)}`; }
     inv=il?`<div class="panel">${il}</div>`:box('Aucune annonce d’investissement relevée ces 12 derniers mois (la veille extrait montant, devise et catégorie des titres collectés).'); }
   el.innerHTML=`<h2 style="margin-top:0">Le CAPEX annonce-t-il quelque chose ?</h2>${corr}
     <h2>Plus gros CAPEX déclarés</h2><div class="panel">${rank}</div>
@@ -1937,7 +1942,7 @@ async function coCapex(){
 }
 async function coEff(){
   const live=pgSeq('co'), el=$('#co_eff');
-  setHead('societes',head('Effectifs','Effectifs déclarés (SEC dei:EntityNumberOfEmployees, rapports annuels, Wikidata) et leur lien avec la production.'));
+  setHead('societes',head('Effectifs','Effectifs déclarés et leur lien avec la production.'));
   el.innerHTML=loading();
   const [c,d]=await Promise.allSettled([coCorrRows(),coRows()]); if(!live()) return;
   const C=c.status==='fulfilled'?c.value:null, D=d.status==='fulfilled'?d.value:null;
@@ -1945,9 +1950,11 @@ async function coEff(){
   const corr=!C?errBox('Corrélations indisponibles',c.reason):rel.length?`<div class="panel" style="padding:4px 20px">${rel.map(cc=>ccRow(cc)).join('')}</div>`
     :box('Aucune corrélation effectifs ↔ production calculée : trop peu de sociétés ont des effectifs sur plusieurs exercices.');
   const now=new Date().getFullYear();
+  if(C&&D){ const E=D.rows.filter(co=>num(co.effectifs)!=null), nO=E.filter(co=>num(co.effectifs_annee)!=null&&now-co.effectifs_annee>5).length;
+    $('#co_sub').innerHTML=`${fmt(E.length,0)} ${plur(E.length,'société')} avec des effectifs déclarés${nO?`, dont ${fmt(nO,0)} de plus de 5 ans`:''} · ${coFewTxt(rel)}`; }
   const rl=D?rankList(D.rows,co=>num(co.effectifs),co=>`${fmt(co.effectifs,0)}${num(co.effectifs_annee)==null?'':`<div class="u">exercice ${esc(co.effectifs_annee)}${now-co.effectifs_annee>5?' · ancien':''}</div>`}`,20):null;
   el.innerHTML=`<h2 style="margin-top:0">Effectifs ↔ production</h2>${corr}
-    <h2>Plus gros effectifs déclarés</h2><div class="panel">${!D?errBox('Annuaire indisponible',d.reason):rl?rl+'<p class="note" style="margin-top:10px">Dernier exercice où la société a déclaré ses effectifs ; « ancien » = plus de 5 ans.</p>':box(esc(D.message||'Aucun effectif déclaré.'))}</div>`;
+    <h2>Plus gros effectifs déclarés</h2><div class="panel">${!D?errBox('Annuaire indisponible',d.reason):rl?rl+'<p class="note" style="margin-top:10px">Dernier exercice où la société a déclaré ses effectifs (SEC EDGAR, rapports annuels, Wikidata) ; « ancien » = plus de 5 ans.</p>':box(esc(D.message||'Aucun effectif déclaré.'))}</div>`;
 }
 
 // -- prévisions par mine -------------------------------------------------------------------------
