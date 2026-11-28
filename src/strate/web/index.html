@@ -134,6 +134,9 @@ abbr.flag{color:var(--warning);text-decoration:none;cursor:help;margin-left:2px}
 .more[open]>summary{margin-bottom:8px}
 .more p,.more .note{font-size:13px;line-height:20px}
 .notice{border:1px solid var(--border);background:var(--surface);border-radius:var(--r-card);padding:10px 14px;margin:0 0 16px}
+/* un cadre sans données prend la même forme que .empty : bordure pointillée, pas de fond, une phrase */
+.feed.is-empty,.card.is-empty{border:1px dashed var(--control);background:none}
+.card.is-empty{padding:12px 14px;color:var(--muted)}.card.is-empty .vnone{margin:0}
 
 /* -- contrôles ------------------------------------------------------------------------------------- */
 button,.btn{display:inline-flex;align-items:center;gap:6px;height:var(--ctl);padding:0 14px;border:1px solid var(--control);
@@ -277,7 +280,6 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 .totals div{padding:14px 16px;border-right:1px solid var(--rule);border-bottom:1px solid var(--rule)}
 .totals div:nth-child(4n){border-right:0}.totals div:nth-last-child(-n+4){border-bottom:0}
 .totals b{display:block;font-size:20px;font-weight:500}.totals span{color:var(--muted);font-size:12px}
-.vempty{border:1px solid var(--border);background:var(--surface);border-radius:var(--r-card);padding:10px 14px;margin:0 0 20px}
 .vgrid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:var(--gap)}
 .vgrid>div>h2:first-child{margin-top:0}
 /* pas d'espace de rangée : chaque titre garde sa marge de 32 px, aussi quand les colonnes s'empilent */
@@ -436,7 +438,7 @@ a.mine{color:var(--accent)}
     <div class="actions"><span class="beat" id="v_beat"><i></i><span id="v_beat_t">…</span></span><span class="meta" id="v_upd"></span></div></div>
   <div class="vbar" id="v_bar"><i></i></div>
   <nav class="subtabs" aria-label="Veille"><a href="#/veille/flux" data-sub="flux">Flux d’actualité</a><a href="#/veille/correlations" data-sub="correlations">Corrélations événements ↔ satellite</a><a href="#/veille/suivies" data-sub="suivies">Mines suivies</a><a href="#/veille/etat" data-sub="etat">État du service</a></nav>
-  <p class="vempty" id="v_empty" hidden></p>
+  <p class="notice" id="v_empty" hidden></p>
   <section data-sub="flux">
     <div class="vgrid">
       <div>
@@ -1259,11 +1261,11 @@ function vItem(it,fresh){
 }
 // VEI.seen : ids déjà montrés. Les nouveaux d'une actualisation à l'autre s'allument brièvement (pas au 1er rendu).
 function vFeed(r,er){
-  const box=$('#v_feed');
+  const box=$('#v_feed'); box.classList?.remove('is-empty');
   if(er){ $('#v_total').textContent='indisponible'; box.innerHTML=`<p class="meta" style="padding:12px 14px;margin:0">Fil ${esc(er)}</p>`; return; }
   r=obj(r); const evs=arr(r.events).map(obj), tot=num(r.total)??evs.length;
   $('#v_total').textContent=evs.length<tot?`${fmt(evs.length,0)} plus récents sur ${fmt(tot,0)}`:`${fmt(tot,0)} ${tot>1?'événements':'événement'}`;
-  if(!evs.length){ box.innerHTML=`<p class="meta" style="padding:12px 14px;margin:0">${VEI.empty?EMPTY:'Aucun événement ne correspond à ces filtres.'}</p>`; return; }
+  if(!evs.length){ box.classList?.add('is-empty'); box.innerHTML=`<p class="meta" style="padding:12px 14px;margin:0">${VEI.empty?EMPTY:'Aucun événement ne correspond à ces filtres.'}</p>`; return; }
   const first=VEI.seen==null, seen=VEI.seen||new Set();
   box.innerHTML=evs.map(it=>vItem(it,!first&&!seen.has(it.id))).join('');
   evs.forEach(it=>seen.add(it.id)); VEI.seen=seen;
@@ -1274,7 +1276,8 @@ function vFeed(r,er){
 function vChart(key,el,cfg,empty=''){
   VEI.charts[key]?.destroy(); VEI.charts[key]=null;
   if(cfg&&el) VEI.charts[key]=new Chart(el,cfg);
-  if(el){ el.style.display=cfg?'':'none'; const m=$('#'+el.id+'_e'); if(m) m.textContent=cfg?'':empty; }
+  if(el){ el.style.display=cfg?'':'none'; const m=$('#'+el.id+'_e'); if(m) m.textContent=cfg?'':empty;
+    el.closest?.('.card')?.classList?.toggle('is-empty',!cfg); }
 }
 // /api/veille/stats regroupe les langues et pays absents (NULL) sous « inconnu » : aucun filtre de
 // /api/veille/events ne les retrouve (lower(country)=lower('inconnu') ne vaut jamais pour NULL), donc pas d'option.
@@ -1337,6 +1340,7 @@ function vStats(st,sp,er){
     datasets:[{data:lg.map(x=>x[1]),backgroundColor:tok('--accent','#1f5fae')}]},options:{indexAxis:'y',animation:false,aspectRatio:ar($('#v_lang'),240),
     plugins:{legend:{display:false}},scales:{x:{...ax(),beginAtZero:true,ticks:{...ax().ticks,precision:0}},y:{...ax(),grid:{display:false}}}}}:null,noData);
   const top=arr(st.top_mines).map(obj).slice(0,10), mx=Math.max(1,...top.map(x=>num(x.n)??0));
+  $('#v_top').classList?.toggle('is-empty',!top.length);
   $('#v_top').innerHTML=top.length?top.map(x=>`<div class="tm"><div class="tmn">${mineLink(x.site_id,x.site_name)}<span>${fmt(num(x.n),0)}</span></div><i style="width:${Math.round((num(x.n)??0)/mx*100)}%"></i></div>`).join('')
     :`<p class="meta" style="margin:0">${noData}</p>`;
 }
