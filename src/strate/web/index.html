@@ -143,8 +143,8 @@ abbr.flag{color:var(--faint);text-decoration:none;cursor:help;margin-left:2px}
 button,.btn{display:inline-flex;align-items:center;gap:6px;height:var(--ctl);padding:0 14px;border:1px solid var(--control);
   border-radius:var(--r-ctl);background:var(--surface);color:var(--text);font:inherit;font-weight:500;cursor:pointer;white-space:nowrap}
 button:hover,.btn:hover{border-color:var(--muted);text-decoration:none}
-.btn-primary,#go,#scr_go{background:var(--primary);color:var(--on-primary);border-color:var(--primary)}
-.btn-primary:hover,#go:hover,#scr_go:hover{opacity:.88}
+.btn-primary,#go{background:var(--primary);color:var(--on-primary);border-color:var(--primary)}
+.btn-primary:hover,#go:hover{opacity:.88}
 button:disabled{opacity:.6;cursor:wait}
 .btn-text{height:auto;padding:0;border:0;background:none;color:var(--accent);font-weight:500}
 .ghost{background:var(--surface)}
@@ -157,7 +157,14 @@ select,input[type=text],input[type=number],input[type=search]{height:var(--ctl);
 .filters input[type=number]{width:104px}.filters input[type=text],.filters input[type=search]{width:190px}
 .filters .chk{flex-direction:row;align-items:center;gap:6px;height:var(--ctl);padding:0 12px;border:1px solid var(--control);
   border-radius:var(--r-ctl);color:var(--text);font-size:13px;background:var(--surface);cursor:pointer}
-.filters .chk input{margin:0;accent-color:var(--accent)}
+/* bascules : la case native est cachée (toujours focalisable), la pastille entière dit l'état, cochée = teinte d'accent */
+.filters .chk{position:relative}
+.filters .chk input{position:absolute;opacity:0;width:1px;height:1px;margin:0;pointer-events:none}
+.filters .chk:has(input:checked){background:var(--accent-soft);border-color:var(--accent);color:var(--accent-ink)}
+.filters .chk:has(input:focus-visible){outline:2px solid var(--accent);outline-offset:2px}
+.filters select{max-width:190px}
+.filters .brk{flex-basis:100%;height:0;margin-top:-12px}  /* champs sur une ligne, bascules sur la suivante */
+.filters .pair{display:flex;gap:6px}.filters .pair input[type=number]{width:84px}
 input[type=range]{accent-color:var(--accent);width:150px}
 /* filtres repliables : ouverts et sans bouton sur grand écran ; sur téléphone, un bouton « Filtres · n » les replie */
 .fbox>summary{display:none}
@@ -425,10 +432,9 @@ a.mine{color:var(--accent)}
     <label>Pays<input type="text" id="f_pays" list="l_pays" placeholder="tous"><datalist id="l_pays"></datalist></label>
     <label>Commodité<select id="f_com"><option value="">toutes</option></select></label>
     <label>Catégorie<select id="f_cat"><option value="">toutes</option></select></label>
-    <label>Emprise min. (km²)<input type="number" id="f_emin" min="0" step="0.5"></label>
-    <label>Emprise max. (km²)<input type="number" id="f_emax" min="0" step="0.5"></label>
+    <label>Emprise (km²)<span class="pair"><input type="number" id="f_emin" min="0" step="0.5" placeholder="min" aria-label="Emprise min. (km²)"><input type="number" id="f_emax" min="0" step="0.5" placeholder="max" aria-label="Emprise max. (km²)"></span></label>
     <label>Prod. estimée min. (Mt/an)<input type="number" id="f_pmin" min="0" step="0.5"></label>
-    <label class="chk"><input type="checkbox" id="f_emp">avec emprise</label>
+    <i class="brk" aria-hidden="true"></i><label class="chk"><input type="checkbox" id="f_emp">avec emprise</label>
     <label class="chk"><input type="checkbox" id="f_real">avec production réelle</label>
     <label class="chk" title="signaux satellite de moins de 6 mois ; les mines de calibration (2016–2019) n'en font pas partie"><input type="checkbox" id="f_ana">analyse récente</label>
     <label class="chk"><input type="checkbox" id="f_alert">en alerte</label>
@@ -440,7 +446,7 @@ a.mine{color:var(--accent)}
     <th data-s="emprise_km2" class="n" scope="col">Emprise km²</th><th data-s="prod_estimee_t" class="n s" scope="col">Prod. estimée /an (minerai, IC 90 %)</th>
     <th data-s="prod_reelle_t" class="n" scope="col">Prod. réelle publiée</th><th data-s="niveau" scope="col">Alerte</th></tr></thead><tbody><tr><td colspan="7"><div class="skel" aria-busy="true"><p class="meta">Chargement…</p><i></i><i></i><i></i><i></i><i></i><i></i></div></td></tr></tbody></table></div>
   <div class="pager"><button class="ghost" id="pg_prev" type="button" aria-label="Page précédente">←</button><span id="pg_info" class="meta"></span><button class="ghost" id="pg_next" type="button" aria-label="Page suivante">→</button></div>
-  <p class="note" id="scr_note" style="margin-top:16px"></p>
+  <details class="more"><summary>« Prod. estimée » : ordre de grandeur d’après la taille de l’emprise, pas une mesure ; détail et erreurs des modèles</summary><p class="note" id="scr_note"></p></details>
 </div>
 
 <div id="view-veille">
@@ -1017,7 +1023,7 @@ async function scrInit(){
   $('#l_pays').innerHTML=Object.keys(obj(f.pays)).map(p=>`<option value="${esc(p)}">`).join('');
   $('#f_com').innerHTML+=Object.entries(obj(f.commodites)).map(([c,n])=>`<option value="${esc(c)}">${esc(c)} (${fmt(n,0)})</option>`).join('');
   $('#f_cat').innerHTML+=Object.entries(obj(f.categories)).map(([c,n])=>`<option value="${esc(c)}">${esc(c)} (${fmt(n,0)})</option>`).join('');
-  SCR.facets=f; $('#scr_note').innerHTML=scrNote(f);
+  SCR.facets=f; if(CAL_READY) $('#scr_note').innerHTML=scrNote(f);  // sinon afterBoot() l'écrit : pas de « ? mines », « × — »
   ['#f_com','#f_cat','#f_emp','#f_real','#f_ana','#f_alert','#f_bbox'].forEach(id=>$(id).onchange=()=>{SCR.page=1;scrLoad();});
   ['#f_q','#f_pays','#f_emin','#f_emax','#f_pmin'].forEach(id=>{let t;$(id).oninput=()=>{clearTimeout(t);t=setTimeout(()=>{SCR.page=1;scrLoad();},300);};});
   $('#f_reset').onclick=()=>{document.querySelectorAll('#view-screener .filters input').forEach(i=>i.type==='checkbox'?i.checked=false:i.value='');$('#f_com').value='';$('#f_cat').value='';SCR.page=1;scrLoad();};
@@ -1056,7 +1062,7 @@ async function scrLoad(){
   $('#scr_total').textContent=`${fmt(r.total,0)} sites correspondent aux filtres`;
   $('#pg_info').textContent=r.total?`${fmt((SCR.page-1)*SCR.per+1,0)}–${fmt(Math.min(SCR.page*SCR.per,r.total),0)} sur ${fmt(r.total,0)}`:'';
   $('#scr tbody').innerHTML=r.rows.map(x=>`<tr class="row" data-id="${esc(x.id)}">
-    <td><a class="nm" href="#/site/${esc(enc(x.id))}">${esc(x.nom||'Emprise sans nom')}</a>${x.suivi?' <span class="meta">· suivie</span>':''}${x.analyse?' <span class="pill p-acc" title="analyse récente (signaux de moins de 6 mois)">analysée</span>':''}${x.categorie&&x.categorie!=='mine active'?`<div class="sl">${esc(x.categorie)}</div>`:''}</td>
+    <td><a class="nm" href="#/site/${esc(enc(x.id))}">${esc(x.nom||'Emprise sans nom')}</a>${x.suivi?' <span class="meta">· suivie</span>':''}${x.analyse?' <span class="pill p-acc" title="analyse récente (signaux de moins de 6 mois)">analysée</span>':''}${x.categorie&&!['mine active','mine suivie'].includes(x.categorie)?`<div class="sl">${esc(x.categorie)}</div>`:''}</td>
     <td>${esc(x.pays||'—')}</td><td>${esc(x.commodites||'—')}</td>
     <td class="n">${x.emprise_km2==null?'—':fmt(x.emprise_km2,x.emprise_km2<10?2:0)}${x.avertissement?`<abbr class="flag" title="${esc(x.avertissement)}">*</abbr>`:''}</td>
     <td class="n">${x.prod_estimee_t==null?'—':'≈ '+mt(x.prod_estimee_t)+(x.prod_estimee_type==='charbon'?' <span class="u">charbon</span>':'')+`<div class="sl">${mt(x.prod_estimee_bas90)} – ${mt(x.prod_estimee_haut90)}</div>`}</td>
