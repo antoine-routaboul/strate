@@ -1689,7 +1689,8 @@ const varL=k=>Object.hasOwn(VARL,String(k))?VARL[k]:String(k??'—').replace(/_/
 const METL={capex:'CAPEX (investissements corporels payés)',revenue:'Chiffre d’affaires',ppe_net:'Immobilisations corporelles nettes',
   ocf:'Flux de trésorerie d’exploitation',net_income:'Résultat net',da:'Amortissements et dépréciations',effectifs:'Effectifs',
   employees:'Effectifs',capex_revenue:'CAPEX / chiffre d’affaires',capex_per_employee:'CAPEX par salarié',capex_growth:'Croissance du CAPEX',
-  ppe_growth:'Croissance des immobilisations',capex_da:'CAPEX / amortissements',capex_prevision:'CAPEX prévu (année suivante)'};
+  ppe_growth:'Croissance des immobilisations',capex_da:'CAPEX / amortissements',capex_prevision:'CAPEX prévu (année suivante)',
+  chiffre_affaires:'Chiffre d’affaires',actifs_miniers:'Actifs miniers',exploration:'Dépenses d’exploration'};
 const metL=k=>Object.hasOwn(METL,String(k))?METL[k]:String(k??'—').replace(/_/g,' ');
 const CATL={expansion:'expansion',exploration:'exploration','usine/traitement':'usine / traitement',
   'décarbonation/énergie':'décarbonation / énergie','rachat/fusion':'rachat / fusion',infrastructure:'infrastructure',autre:'autre'};
@@ -1859,17 +1860,30 @@ async function coSheet(id){
   // clés du profil de companies.company() ; les liens (sec_url, wikidata_url) sont déjà dans l'en-tête
   const skip=new Set(['id','name','nom','tickers','cik','qid','sec_url','wikidata_url']);
   const PFL={alias:'Autres noms',aliases:'Autres noms',cik_source:'Source du CIK',sources:'Sources',suivie:'Mine de la liste suivie',
-    watchlist:'Liste suivie',n_mines:'Mines',pays:'Pays',country:'Pays'};
-  const kv=Object.entries(pf).filter(([k,v])=>!skip.has(k)&&v!=null&&v!==''&&typeof v!=='object'||Array.isArray(v)&&v.length&&!skip.has(k))
-    .slice(0,10).map(([k,v])=>`<div>${esc(Object.hasOwn(PFL,k)?PFL[k]:k.replace(/_/g,' '))}</div><div>${esc(Array.isArray(v)?v.join(', '):typeof v==='boolean'?(v?'oui':'non'):v)}</div>`).join('');
+    watchlist:'Liste suivie',n_mines:'Mines',pays:'Pays',country:'Pays',pays_source:'Source du pays',cloture:'Clôture de l’exercice'};
+  const MOIS=['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
+  const pv=(k,v)=>{ if(Array.isArray(v)){ const a=/^alias/.test(k)?v.filter(x=>String(x)!==String(name)):v; return a.length?a.join(', '):null; }
+    if(typeof v==='boolean') return v?'oui':'non';
+    if(k==='cloture'&&/^\d{1,2}$/.test(String(v))&&+v>=1&&+v<=12) return MOIS[+v-1];
+    return v; };
+  const ents=Object.entries(pf).filter(([k,v])=>!skip.has(k)&&(v!=null&&v!==''&&typeof v!=='object'||Array.isArray(v)&&v.length))
+    .map(([k,v])=>[k,pv(k,v)]).filter(([,v])=>v!=null&&v!=='').slice(0,10);
+  // ce qui décrit la société d'abord ; la provenance des données (source du CIK, du pays, liste suivie…) repliée
+  const MAIN=['pays','country','n_mines','cloture','alias','aliases'], kvl=e=>e.map(([k,v])=>`<div>${esc(Object.hasOwn(PFL,k)?PFL[k]:k.replace(/_/g,' '))}</div><div>${esc(v)}</div>`).join('');
+  const kvMain=kvl(MAIN.flatMap(m=>ents.filter(([k])=>k===m))), kvProv=kvl(ents.filter(([k])=>!MAIN.includes(k)));
+  const kv=(kvMain?`<div class="kv" style="margin:0 0 8px">${kvMain}</div>`:'')
+    +(kvProv?`<details class="more" style="margin-top:4px"><summary>Provenance des données</summary><div class="kv">${kvProv}</div></details>`:'');
   const CS=coSeries(faits,['capex']), ES=coSeries(faits,['effectifs','employees']), cap=CS.rows, emp=ES.rows;
   const capDev=CS.dev, capDiv=cap.some(f=>Math.abs(f.valeur)>=1e9)?1e9:1e6;
   // dernier chiffre par indicateur : le fait retenu le plus récent (même règle que les graphiques)
   const latest=new Map(); for(const k of [...new Set(faits.map(f=>String(f.indicateur)))]){ const r=coPick(faits,[k]).at(-1); if(r) latest.set(k,r); }
+  // document : le formulaire, en lien vers la source quand elle est sûre (une seule colonne pour un seul fait)
   const factRow=f=>{ const u=safeUrl(f.source);
-    return `<tr><td>${esc(metL(f.indicateur))}</td><td class="n">${esc(f.annee??'—')}</td><td class="n">${factVal(f)}</td><td class="meta">${esc(f.formulaire||'—')}</td><td>${u?`<a href="${esc(u)}" target="_blank" rel="noopener">source</a>`:'—'}</td></tr>`; };
+    return `<tr><td>${esc(metL(f.indicateur))}</td><td class="n">${esc(f.annee??'—')}</td><td class="n">${factVal(f)}</td><td>${u?`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(f.formulaire||'source')}</a>`:`<span class="meta">${esc(f.formulaire||'—')}</span>`}</td></tr>`; };
+  // six mines, le reste replié : pas de second défilement dans la carte
+  const mineRow=mi=>`<tr><td>${mi.site_id?`<a class="nm" href="#/site/${esc(enc(mi.site_id))}">${esc(mi.nom||mi.site_id)}</a>`:esc(mi.nom||'—')}</td><td class="n">${num(mi.part)==null?'<span class="meta">—</span>':fmt(mi.part<=1?mi.part*100:mi.part,0)+' %'}</td></tr>`;
   const sortedF=[...faits].sort((a,b)=>String(a.indicateur).localeCompare(String(b.indicateur))||(num(b.annee)??0)-(num(a.annee)??0));
-  el.innerHTML=`${kv?`<div class="kv" style="margin:0 0 8px">${kv}</div>`:''}
+  el.innerHTML=`${kv}
     <div class="grid2" style="margin-top:24px">
       <div><h2 style="margin-top:0">CAPEX par exercice${capDev?` <span class="u">${capDiv===1e9?'Md':'M'} ${esc(capDev)}</span>`:''}</h2><div class="card">${cap.length?'<canvas id="co_cap" height="160"></canvas>'+coSeriesNote(CS):'<p class="meta" style="margin:0">Pas de CAPEX déclaré.</p>'}</div></div>
       <div><h2 style="margin-top:0">Effectifs par exercice</h2><div class="card">${emp.length?'<canvas id="co_emp" height="160"></canvas>'+coSeriesNote(ES):'<p class="meta" style="margin:0">Pas d’effectifs déclarés.</p>'}</div></div>
@@ -1877,9 +1891,9 @@ async function coSheet(id){
     <h2>Ce que disent les chiffres de cette société</h2>
     ${cor.length?`<div class="panel" style="padding:4px 20px">${cor.map(cc=>ccRow(cc,'exercices')).join('')}</div>`:box('Pas assez d’exercices pour une corrélation propre à cette société ; voir les corrélations sur l’ensemble des sociétés dans CAPEX &amp; investissements.')}
     <div class="grid-7-5">
-      <div><h2>Derniers chiffres déclarés</h2>${latest.size?`<div class="tablebox"><table><thead><tr><th>Indicateur</th><th class="n">Exercice</th><th class="n">Valeur</th><th>Formulaire</th><th>Source</th></tr></thead><tbody>${[...latest.values()].map(factRow).join('')}</tbody></table></div>
+      <div><h2>Derniers chiffres déclarés</h2>${latest.size?`<div class="tablebox"><table><thead><tr><th>Indicateur</th><th class="n">Exercice</th><th class="n">Valeur</th><th>Document</th></tr></thead><tbody>${[...latest.values()].map(factRow).join('')}</tbody></table></div>
         ${sortedF.length>latest.size?`<details style="margin-top:10px"><summary class="meta" style="cursor:pointer">Tous les faits (${fmt(sortedF.length,0)})</summary><div class="tablebox" style="margin-top:8px"><table><tbody>${sortedF.slice(0,400).map(factRow).join('')}</tbody></table></div></details>`:''}`:box('Aucun fait financier ou humain déclaré.')}</div>
-      <div><h2>Mines détenues ou exploitées — ${fmt(mines.length,0)}</h2>${mines.length?`<div class="tablebox" style="max-height:420px"><table><thead><tr><th>Mine</th><th class="n">Part</th></tr></thead><tbody>${mines.slice(0,300).map(mi=>`<tr><td>${mi.site_id?`<a class="nm" href="#/site/${esc(enc(mi.site_id))}">${esc(mi.nom||mi.site_id)}</a>`:esc(mi.nom||'—')}</td><td class="n">${num(mi.part)==null?'—':fmt(mi.part<=1?mi.part*100:mi.part,0)+' %'}</td></tr>`).join('')}</tbody></table></div>`:box('Aucune mine rattachée.')}</div>
+      <div><h2>Mines détenues ou exploitées — ${fmt(mines.length,0)}</h2>${mines.length?`<div class="tablebox"><table><thead><tr><th>Mine</th><th class="n">Part</th></tr></thead><tbody>${mines.slice(0,6).map(mineRow).join('')}</tbody></table></div>${mines.length>6?`<details class="more" style="margin-top:10px"><summary>${fmt(Math.min(mines.length,300)-6,0)} autres ${plur(Math.min(mines.length,300)-6,'mine')}</summary><div class="tablebox"><table><tbody>${mines.slice(6,300).map(mineRow).join('')}</tbody></table></div></details>`:''}`:box('Aucune mine rattachée.')}</div>
     </div>
     <h2>Annonces d’investissement</h2>
     ${inv.length?`<div class="tablebox"><table><thead><tr><th>Date</th><th class="n">Montant</th><th>Catégorie</th><th>Annonce</th><th>Mine</th></tr></thead><tbody>${inv.slice(0,200).map(iv=>{ const u=safeUrl(iv.url);
