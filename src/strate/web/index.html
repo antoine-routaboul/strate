@@ -294,6 +294,10 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 .totals b{display:block;font-size:20px;font-weight:500}.totals span{color:var(--muted);font-size:12px}
 .vgrid{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);gap:var(--gap)}
 .vgrid>div>h2:first-child{margin-top:0}
+/* base vide : ni graphiques vides ni filtres qui ne filtrent rien, le fil seul garde sa place */
+#view-veille.is-empty .vgrid{grid-template-columns:minmax(0,1fr)}
+#view-veille.is-empty .vgrid>div:last-child,#view-veille.is-empty #vf_box{display:none}
+#v_empty code{white-space:nowrap}
 /* pas d'espace de rangée : chaque titre garde sa marge de 32 px, aussi quand les colonnes s'empilent */
 .vcols{display:grid;grid-template-columns:1fr 1fr;gap:0 var(--gap)}
 .feed{max-height:720px;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card)}
@@ -1287,7 +1291,7 @@ function vStage(n,name,role,x,live,iv){
 }
 function vStatus(s,er){
   if(er){ $('#v_pipe').innerHTML=`<p class="meta">Veille ${esc(er)}</p>`; $('#v_tot').innerHTML=''; vBeatSet(null);
-    VEI.empty=false; $('#v_empty').hidden=true; return; }
+    VEI.empty=false; $('#view-veille').classList.toggle('is-empty',false); $('#v_empty').hidden=true; return; }
   s=obj(s); const by={}; arr(s.stages).map(obj).forEach(x=>{ if(x.stage) by[x.stage]=x; });
   const svc=obj(s.service), live=svc.actif===true, iv=vCnt(by.service).interval_s;
   vBeatSet(svc,by.service);
@@ -1296,8 +1300,10 @@ function vStatus(s,er){
   const t=obj(s.totaux);
   $('#v_tot').innerHTML=TOT.map(([k,l])=>`<div><b>${fmt(num(t[k]),0)}</b><span>${l}</span></div>`).join('');
   VEI.empty=!(num(t.docs)>0)&&!(num(t.events)>0);
+  // premier lancement : le bandeau porte l'action une fois, chaque page garde sa phrase EMPTY à la place des données
+  $('#view-veille').classList.toggle('is-empty',VEI.empty);
   const em=$('#v_empty'); em.hidden=!VEI.empty;
-  em.innerHTML=VEI.empty?`${EMPTY}. <span class="meta">Un cycle à la main : <code>uv run strate veille once</code> · en continu (service launchd ou systemd) : <code>uv run strate veille install</code>.</span>`:'';
+  em.innerHTML=VEI.empty?`Pour démarrer : un cycle à la main <code>uv run strate veille once</code> <span class="meta">·</span> en continu (service launchd ou systemd) <code>uv run strate veille install</code>`:'';
 }
 
 // -- fil d'actualité -------------------------------------------------------------------------
