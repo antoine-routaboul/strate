@@ -275,17 +275,14 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 .beat{display:inline-flex;align-items:center;gap:7px}.beat i{width:8px;height:8px;border-radius:50%;background:var(--faint)}
 .beat.on i{background:var(--positive);animation:beat 2s ease-in-out infinite}.beat.off i{background:var(--faint)}
 @keyframes beat{50%{opacity:.35}}
-.pipe{display:grid;grid-template-columns:1fr 28px 1fr 28px 1fr;margin-bottom:8px}
-.pipe .arrow{position:relative}
-.pipe .arrow::before{content:'';position:absolute;left:4px;right:6px;top:50%;height:1px;background:var(--control)}
-.pipe.live .arrow::before{background:var(--accent)}
+.pipe{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:var(--gap);margin-bottom:8px}
 .stage{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);padding:14px 16px;min-width:0}
 .stage h3{display:flex;justify-content:space-between;align-items:center;gap:8px;margin:0 0 4px;font-size:13px}
 .stage .st{background:var(--neu-bg);color:var(--neu-ink)}
 .stage.ok .st{background:var(--pos-bg);color:var(--pos-ink)}.stage.err .st{background:var(--neg-bg);color:var(--neg-ink)}
 .stage.late .st{background:var(--warn-bg);color:var(--warn-ink)}
-.stage .role{color:var(--muted);font-size:12px}.stage .msg{font-size:12px;margin:8px 0;min-height:1.5em;overflow-wrap:anywhere}
-.stage .when{color:var(--muted);font-size:12px;margin-top:8px}
+.stage .role{color:var(--muted);font-size:12px}.stage .msg{font-size:12px;margin:8px 0;overflow-wrap:anywhere}.stage .msg:empty{display:none}
+.stage .when{color:var(--muted);font-size:12px;margin-top:8px}.stage .cnt{margin-top:8px}
 .cnt{display:grid;grid-template-columns:1fr auto;gap:2px 10px;font-size:12px}
 .cnt span:nth-child(odd){color:var(--muted)}.cnt span:nth-child(even){text-align:right}
 .totals{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card)}
@@ -386,7 +383,7 @@ a.mine{color:var(--accent)}
   #view-map.is-site #map{height:160px}
   #map{height:58vh}
   .grid2,.vcols,.srclist{grid-template-columns:minmax(0,1fr)}
-  .pipe{grid-template-columns:1fr;gap:8px}.pipe .arrow{display:none}
+  .pipe{grid-template-columns:1fr}
   .fi{grid-template-columns:1fr}.fi .m{grid-column:1}
   .totals,.kpis{grid-template-columns:1fr 1fr}.kpis>div:nth-child(2n){border-right:0}
   .totals div{border-right:1px solid var(--rule)!important;border-bottom:1px solid var(--rule)!important}
@@ -1298,10 +1295,11 @@ function vStage(n,name,role,x,live,iv){
   const c=vCnt(x);
   const kv=Object.entries(c).filter(([,v])=>v!=null&&typeof v!=='object').slice(0,8)
     .map(([k,v])=>`<span>${esc(k.replace(/_/g,' '))}</span><span>${typeof v==='number'?fmt(v,v%1?2:0):esc(v)}</span>`).join('');
-  return `<div class="stage ${cls}"><h3><span>${n} · ${name}</span><span class="pill st">${lbl}</span></h3>
-    <div class="role">${role}</div><div class="msg" title="${esc(x?.message)}">${esc(x?.message||'')}</div>
-    <div class="cnt">${kv||'<span>compteurs</span><span>—</span>'}</div>
-    <div class="when">${ran?`dernier passage ${esc(ago(x.last_run))}`:'—'}</div></div>`;
+  const head=`<h3><span>${n} · ${name}</span><span class="pill st">${lbl}</span></h3><div class="role">${role}</div>`;
+  // jamais lancée : le titre et le rôle suffisent, pas de compteurs ni de date en tirets
+  if(!ran) return `<div class="stage ${cls}">${head}</div>`;
+  return `<div class="stage ${cls}">${head}<div class="msg" title="${esc(x?.message)}">${esc(x?.message||'')}</div>
+    ${kv?`<div class="cnt">${kv}</div>`:''}<div class="when">dernier passage ${esc(ago(x.last_run))}</div></div>`;
 }
 function vStatus(s,er){
   if(er){ $('#v_pipe').innerHTML=`<p class="meta">Veille ${esc(er)}</p>`; $('#v_tot').innerHTML=''; vBeatSet(null);
@@ -1309,8 +1307,7 @@ function vStatus(s,er){
   s=obj(s); const by={}; arr(s.stages).map(obj).forEach(x=>{ if(x.stage) by[x.stage]=x; });
   const svc=obj(s.service), live=svc.actif===true, iv=vCnt(by.service).interval_s;
   vBeatSet(svc,by.service);
-  $('#v_pipe').classList.toggle('live',live);  // trait d'accent entre les étapes seulement quand le service tourne
-  $('#v_pipe').innerHTML=STAGES.map(([k,name,role],i)=>(i?'<div class="arrow" aria-hidden="true"></div>':'')+vStage(i+1,name,role,by[k],live,iv)).join('');
+  $('#v_pipe').innerHTML=STAGES.map(([k,name,role],i)=>vStage(i+1,name,role,by[k],live,iv)).join('');  // 1 · 2 · 3 donne l'ordre
   const t=obj(s.totaux);
   $('#v_tot').innerHTML=TOT.map(([k,l])=>`<div><b>${fmt(num(t[k]),0)}</b><span>${l}</span></div>`).join('');
   VEI.empty=!(num(t.docs)>0)&&!(num(t.events)>0);
