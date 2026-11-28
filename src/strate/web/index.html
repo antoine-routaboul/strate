@@ -183,11 +183,22 @@ td a.nm,td .nm{color:var(--text);font-weight:500}
 .cb svg{display:block;width:84px;height:12px;flex:none}
 .cb-ci,.cb-n{color:var(--muted)}
 .cb-note{grid-column:1/-1;color:var(--muted);font-size:12px;line-height:16px}
+/* verdict : un point d'état de 6 px et des mots, jamais une pastille teintée (en colonne, elle ferait des rayures) */
+.cb{grid-template-columns:64px 84px 148px 168px minmax(160px,1fr)}
+.cb-ci,.cb-n{white-space:nowrap}
+.cb .pill{display:inline-flex;height:auto;min-height:0;padding:0;background:none;border-radius:0;font-weight:400;line-height:18px;
+  white-space:normal;align-items:baseline;gap:6px;color:var(--muted);flex:0 1 auto;max-width:100%}
+.cb .pill::before{content:'';flex:none;width:6px;height:6px;border-radius:50%;background:var(--faint);transform:translateY(-1px)}
+.cb .p-pos{color:var(--text)}.cb .p-pos::before{background:var(--positive)}
+.cb .p-acc{color:var(--text);font-weight:600}.cb .p-acc::before{background:var(--accent)}
+.cb .p-warn::before{background:var(--warning)}
+/* dans une cellule de tableau, le verdict passe sous l'intervalle : la colonne reste étroite */
+td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1}
 .cblist{display:flex;flex-direction:column}
 .panel{container-type:inline-size}
 .cbrow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,750px);gap:6px 24px;align-items:center;padding:12px 0;border-bottom:1px solid var(--rule)}
 @container (max-width:1080px){.cbrow{grid-template-columns:1fr}}
-@container (max-width:600px){.cb{display:flex;flex-wrap:wrap}}
+@container (max-width:600px){.cb{display:flex;flex-wrap:wrap}.cb .pill{flex:1 1 100%}}
 .cbrow:last-child{border-bottom:0}
 .cbrow.stack{grid-template-columns:1fr}.cbrow.stack .cb{display:flex;flex-wrap:wrap}.cbrow .rel{min-width:0}.cbrow .rel b{font-weight:500;overflow-wrap:anywhere}
 .cbrow .rel small{display:block;color:var(--muted);font-size:12px}
@@ -340,7 +351,7 @@ a.mine{color:var(--accent)}
   .totals,.kpis{grid-template-columns:1fr 1fr}.kpis>div:nth-child(2n){border-right:0}
   .totals div{border-right:1px solid var(--rule)!important;border-bottom:1px solid var(--rule)!important}
   .kv{grid-template-columns:120px 1fr}.imgs{grid-template-columns:1fr}
-  .cbrow{grid-template-columns:1fr}.cb{display:flex;flex-wrap:wrap}
+  .cbrow{grid-template-columns:1fr}.cb{display:flex;flex-wrap:wrap}.cb .pill{flex:1 1 100%}
   h1,.title{font-size:21px}
 }
 @media (prefers-reduced-motion:reduce){.beat.on i,.vbar i,.fi.fresh,.vev.new::after{animation:none}}
