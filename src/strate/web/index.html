@@ -317,6 +317,8 @@ a.mine{color:var(--accent)}
 .vnote{border-left:1px solid var(--border);padding-left:14px;max-width:920px;margin-top:20px}
 .vsite td{vertical-align:top}.vsite .meta{font-size:12px}
 .vtog{display:inline-flex;gap:6px;align-items:center;cursor:pointer;color:var(--text)}
+/* sous la carte, la case « Actualité » ferme la ligne de légende au lieu d'en ouvrir une seconde */
+.legend .vtogs{margin-left:auto;gap:8px}.legend .vtog input{margin:0}
 .vicon{background:none;border:0}
 .vev{display:block;position:relative;border-radius:50%;background:var(--c);border:1px solid var(--surface)}
 .vev.new::after{content:'';position:absolute;inset:-2px;border-radius:50%;border:2px solid var(--c);animation:ping 1.8s ease-out infinite}
@@ -398,16 +400,15 @@ a.mine{color:var(--accent)}
     <section id="detail" aria-live="polite"><p class="meta">Cliquez une mine sur la carte ou cherchez-la.</p></section>
     <div class="mapcol">
       <div id="map" role="region" aria-label="Carte du monde des sites miniers"></div>
-      <p class="meta legend"><span><i class="dot" style="background:#3f7cc8"></i>mine active (ICMM)</span><span><i class="dot" style="background:#c7832b"></i>usine / fonderie / raffinerie</span><span><i class="dot" style="background:#8b9098"></i>mine Wikidata</span><span><i class="dot" style="background:#6b7078"></i>emprise sans nom</span><span><i class="dot ring" style="border-color:var(--tracked,#ff5d5d)"></i>mine suivie (liste radar)</span></p>
-      <p class="meta"><label class="vtog"><input type="checkbox" id="v_layer">Actualité de la veille (30 jours ; un point par mine, pulsation = moins de 48 h)</label> <span id="v_lmsg"></span></p>
+      <p class="meta legend"><span><i class="dot" style="background:#3f7cc8"></i>mine active (ICMM)</span><span><i class="dot" style="background:#c7832b"></i>usine / fonderie / raffinerie</span><span><i class="dot" style="background:#8b9098"></i>mine Wikidata</span><span><i class="dot" style="background:#6b7078"></i>emprise sans nom</span><span><i class="dot ring" style="border-color:var(--tracked,#ff5d5d)"></i>mine suivie (liste radar)</span><span class="vtogs"><label class="vtog" title="un point par mine ; pulsation = article de moins de 48 h"><input type="checkbox" id="v_layer">Actualité de la veille (30 j)</label><span id="v_lmsg"></span></span></p>
       <p class="meta legend vleg" id="v_legend" hidden></p>
     </div>
     <aside class="radarcol">
       <h2>Radar des mines suivies</h2>
-      <p class="sub" style="margin:-6px 0 12px">Données satellite de moins de 6 mois</p>
-      <div class="tablebox"><table id="radar"><thead><tr><th>Niv.</th><th>Mine</th><th>Mois</th><th>Pourquoi</th></tr></thead><tbody><tr><td colspan="4"><div class="skel" aria-busy="true"><p class="meta">Chargement du radar…</p><i></i><i></i><i></i><i></i></div></td></tr></tbody></table></div>
-      <p class="note" style="margin-top:12px">Niveau 0 = calme · 1 = une famille de signaux anormale · 2 = plusieurs familles indépendantes en même temps.
-        Une alerte satellite signale un changement physique du site, pas un changement de production : ces alertes mensuelles n'ont pas été confrontées à la production réelle.</p>
+      <p class="sub" id="rad_sub" style="margin:-6px 0 12px">Données satellite de moins de 6 mois</p>
+      <div class="tablebox"><table id="radar"><thead><tr><th title="0 = calme · 1 = une famille de signaux anormale · 2 = plusieurs familles indépendantes en même temps">Niv.</th><th>Mine</th></tr></thead><tbody><tr><td colspan="2"><div class="skel" aria-busy="true"><p class="meta">Chargement du radar…</p><i></i><i></i><i></i><i></i></div></td></tr></tbody></table></div>
+      <p class="note" style="margin-top:12px">Niveau 0 = calme · 1 = une famille de signaux anormale · 2 = plusieurs familles indépendantes.
+        Une alerte satellite signale un changement physique du site, pas de production ; non confrontée à la production réelle.</p>
     </aside>
   </div>
 </main>
@@ -594,9 +595,16 @@ async function init(){
   drawRadar(rad);
 }
 function drawRadar(rad){
-  rad=arr(rad).map(obj).filter(r=>r.site);
-  $('#radar tbody').innerHTML=rad.map(r=>`<tr class="row${r.site===CURRENT?' sel':''}" data-id="${esc(r.site)}"><td>${lvl(Math.min(num(r.niveau)??0,2))}</td><td><a class="nm" href="#/site/${esc(enc(r.site))}">${esc(r.nom||r.site)}</a></td><td style="white-space:nowrap">${esc(String(r.date??'—').slice(0,7))}</td><td class="meta">${esc(r.explication)||'—'}</td></tr>`).join('')
-    ||'<tr><td colspan=4 class="meta">Aucune mine suivie n’a de données récentes.</td></tr>';
+  // deux colonnes : niveau, puis la mine ; le mois commun est dit une fois dans le sous-titre, et sous le nom
+  // ne restent que l'explication et un mois qui diffère du mois commun. Tri : niveau décroissant, puis nom.
+  const lv=r=>Math.min(num(r.niveau)??0,2), mo=r=>String(r.date??'').slice(0,7);
+  rad=arr(rad).map(obj).filter(r=>r.site).sort((a,b)=>lv(b)-lv(a)||String(a.nom||a.site).localeCompare(String(b.nom||b.site),'fr'));
+  const cnt={}; rad.forEach(r=>{ const m=mo(r); if(m) cnt[m]=(cnt[m]||0)+1; });
+  const common=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])[0]||'';
+  $('#rad_sub').textContent='Données satellite de moins de 6 mois'+(common?` · mois ${common} sauf mention`:'');
+  $('#radar tbody').innerHTML=rad.map(r=>{ const sub=[r.explication,mo(r)!==common?mo(r):''].filter(Boolean).map(esc).join(' · ');
+    return `<tr class="row${r.site===CURRENT?' sel':''}" data-id="${esc(r.site)}"><td>${lvl(lv(r))}</td><td><a class="nm" href="#/site/${esc(enc(r.site))}">${esc(r.nom||r.site)}</a>${sub?`<div class="meta" style="font-size:12px">${sub}</div>`:''}</td></tr>`; }).join('')
+    ||'<tr><td colspan=2 class="meta">Aucune mine suivie n’a de données récentes.</td></tr>';
   document.querySelectorAll('#radar tr.row').forEach(tr=>tr.onclick=e=>{ if(!e.target.closest?.('a')) open(tr.dataset.id); });
 }
 
