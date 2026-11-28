@@ -23,7 +23,7 @@
   --pos-bg:#dcf3e5;--pos-ink:#0f4a2c;--neg-bg:#fbe9e8;--neg-ink:#8a1d20;
   --warn-bg:#fbf0dc;--warn-ink:#6f4105;--neu-bg:#ebebe7;--neu-ink:#3b3e42;
   --tracked:#c4242a;--grid:#e4e4df;
-  --tiles:grayscale(1) contrast(.9) brightness(1.05);
+  --tiles:grayscale(1) contrast(.8) brightness(1.08);
   --float:0 10px 28px rgba(20,20,20,.14);
   --r-card:6px;--r-ctl:999px;--r-chip:4px;
   --gap:24px;--pad:32px;--ctl:32px;
@@ -38,7 +38,7 @@
   --pos-bg:#1b2828;--pos-ink:#6fcfa8;--neg-bg:#2c1a20;--neg-ink:#f08396;
   --warn-bg:#2a2416;--warn-ink:#e0b25c;--neu-bg:#262529;--neu-ink:#c4c5c9;
   --tracked:#ef6f84;--grid:#2a292e;
-  --tiles:grayscale(1) invert(1) brightness(.82) contrast(.92);
+  --tiles:grayscale(1) invert(1) brightness(.7) contrast(.8);
   --float:0 12px 28px rgba(0,0,0,.45);
 }}
 :root[data-theme="dark"]{
@@ -51,7 +51,7 @@
   --pos-bg:#1b2828;--pos-ink:#6fcfa8;--neg-bg:#2c1a20;--neg-ink:#f08396;
   --warn-bg:#2a2416;--warn-ink:#e0b25c;--neu-bg:#262529;--neu-ink:#c4c5c9;
   --tracked:#ef6f84;--grid:#2a292e;
-  --tiles:grayscale(1) invert(1) brightness(.82) contrast(.92);
+  --tiles:grayscale(1) invert(1) brightness(.7) contrast(.8);
   --float:0 12px 28px rgba(0,0,0,.45);
 }
 *{box-sizing:border-box}
@@ -398,7 +398,7 @@ a.mine{color:var(--accent)}
     <section id="detail" aria-live="polite"><p class="meta">Cliquez une mine sur la carte ou cherchez-la.</p></section>
     <div class="mapcol">
       <div id="map" role="region" aria-label="Carte du monde des sites miniers"></div>
-      <p class="meta legend"><span><i class="dot" style="background:#3f7cc8"></i>mine active (ICMM)</span><span><i class="dot" style="background:#c7832b"></i>usine / fonderie / raffinerie</span><span><i class="dot" style="background:#8b9098"></i>mine Wikidata</span><span><i class="dot" style="background:#5e9c8f"></i>emprise sans nom</span><span><i class="dot ring" style="border-color:var(--tracked,#ff5d5d)"></i>mine suivie (liste radar)</span></p>
+      <p class="meta legend"><span><i class="dot" style="background:#3f7cc8"></i>mine active (ICMM)</span><span><i class="dot" style="background:#c7832b"></i>usine / fonderie / raffinerie</span><span><i class="dot" style="background:#8b9098"></i>mine Wikidata</span><span><i class="dot" style="background:#6b7078"></i>emprise sans nom</span><span><i class="dot ring" style="border-color:var(--tracked,#ff5d5d)"></i>mine suivie (liste radar)</span></p>
       <p class="meta"><label class="vtog"><input type="checkbox" id="v_layer">Actualité de la veille (30 jours ; un point par mine, pulsation = moins de 48 h)</label> <span id="v_lmsg"></span></p>
       <p class="meta legend vleg" id="v_legend" hidden></p>
     </div>
@@ -548,8 +548,9 @@ let charts=[], poll=null, CAL={}, CURRENT=null, OPEN_SEQ=0, VIEW=null, SUB=null;
 // redessine alors ce qui dépend de la calibration.
 let CAL_READY=false, OPEN_CAL=false;
 const LBL={bare_km2:'Surface nue (km²)',water_km2:'Surface en eau (km²)',change_km2:'Empreinte minière modifiée sur 1 an (km²)',new_bare_km2:'Surface nouvellement défrichée sur 1 an (km²)',site_views:'Vues Wikipedia — mine',owner_views:'Vues Wikipedia — propriétaire(s)',activity_db:'Activité radar, mine − environnement (dB) — expérimental, non validé'};
-// catégories de la carte : bleu = mines actives (la donnée principale), puis trois teintes sourdes lisibles sur les deux thèmes
-const COL=['#3f7cc8','#c7832b','#8b9098','#5e9c8f'];
+// catégories de la carte : bleu = mines actives (la donnée principale), orange = usines ; Wikidata et emprises sans nom
+// en deux gris, petits et translucides : à l'échelle du monde ils font un fond, et les anneaux rouges des mines suivies ressortent
+const COL=['#3f7cc8','#c7832b','#8b9098','#6b7078'];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=(v,d=1)=>v==null||!isFinite(v)?'—':Number(v).toLocaleString('fr-FR',{maximumFractionDigits:d});
 // calibration.json évolue avec les recalibrations : chaque champ est lu prudemment (absent → texte sans chiffre)
@@ -565,6 +566,7 @@ const more=(t,h)=>`<details class="more"><summary>${t}</summary>${h}</details>`;
 const lvl=n=>`<span class="lvl ${n>=2?'l2':n===1?'l1':'lz'}">${esc(n)}</span>`;  // niveau d'alerte : 0 neutre, 1 ambre, 2 rouge
 
 const map=L.map('map',{preferCanvas:true,worldCopyJump:true}).setView([20,10],2);
+map.attributionControl?.setPrefix?.(false);  // garde le crédit OpenStreetMap, retire le drapeau et « Leaflet »
 L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:14,attribution:'© contributeurs OpenStreetMap'}).addTo(map);
 const renderer=L.canvas({padding:.5}); let hi=null, STATS={};
 
@@ -585,7 +587,7 @@ async function init(){
   // bindTooltip(chaîne) passe par innerHTML : les noms viennent de Wikidata (éditable par tous), donc esc()
   for(const [id,la,lo] of pts) PTS.set(id,[la,lo]);  // calque veille : position catalogue de la mine citée
   for(const k of [2,3,1,0]) for(const [id,la,lo,kind,name] of pts){ if(kind!==k||num(la)==null||num(lo)==null)continue;
-    L.circleMarker([la,lo],{renderer,radius:k===0?3:2.2,stroke:false,fillColor:COL[kind],fillOpacity:.85}).on('click',()=>open(id)).bindTooltip(esc(name||'Emprise minière sans nom')).addTo(map); }
+    L.circleMarker([la,lo],{renderer,radius:k>=2?1.3:2,stroke:false,fillColor:COL[kind],fillOpacity:k>=2?.45:.8}).on('click',()=>open(id)).bindTooltip(esc(name||'Emprise minière sans nom')).addTo(map); }
   let wl=[]; try{ wl=arr(await api('/api/sites')).map(obj).filter(s=>s.id&&num(s.lat)!=null&&num(s.lon)!=null); }catch(e){ console.error(e); }
   for(const s of wl){ PTS.set(s.id,[s.lat,s.lon]);
     L.circleMarker([s.lat,s.lon],{renderer,radius:6,color:tok('--tracked','#c4242a'),weight:2,fillOpacity:.15}).on('click',()=>open(s.id)).bindTooltip(esc(s.nom)).addTo(map); }
