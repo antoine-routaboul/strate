@@ -325,7 +325,8 @@ a.mine{color:var(--accent)}
 .hm td.nd{color:var(--muted);background:var(--raised);outline:1px dashed var(--control);outline-offset:-1px}.hm td.xp{font-style:italic}
 .hm th.main{color:var(--text);font-weight:600}
 .hm th{font-size:12px;font-weight:400;border:0;text-align:center;padding:2px 4px}.hm th.rl{text-align:right;white-space:nowrap;padding-right:10px}
-.vnote{border-left:1px solid var(--border);padding-left:14px;max-width:920px;margin-top:20px}
+.vmeth{margin-top:20px;max-width:920px}.vnote{margin:0}
+#v_corrmeta{margin:0 0 12px}#v_corrmeta:empty{display:none}
 .vsite td{vertical-align:top}.vsite .meta{font-size:12px}
 .vtog{display:inline-flex;gap:6px;align-items:center;cursor:pointer;color:var(--text)}
 /* sous la carte, la case « Actualité » ferme la ligne de légende au lieu d'en ouvrir une seconde */
@@ -481,10 +482,10 @@ a.mine{color:var(--accent)}
     </div>
   </section>
   <section data-sub="correlations" hidden>
-    <h2 style="margin-top:0">Étude d’événements : actualité ↔ anomalies satellite</h2>
     <p class="meta" id="v_corrmeta"></p>
     <div class="vcorr"><div class="hmwrap" id="v_corr"></div><div class="card" id="v_cdet"></div></div>
     <div id="v_ctop" style="margin-top:12px"></div>
+    <details class="more vmeth"><summary>Méthode : à lire comme une exploration, pas une preuve</summary>
     <p class="meta vnote"><b>À lire comme une exploration, pas une preuve.</b> Chaque case compare, sur les mines suivies
       et analysées, la probabilité d’une anomalie satellite persistante (|z| ≥ 2) les mois où la mine fait l’actualité
       (type donné) à celle des autres mois de la même mine : <b>lift</b> = rapport de risques de Mantel–Haenszel, 1 = aucun
@@ -499,7 +500,7 @@ a.mine{color:var(--accent)}
       l’intervalle exclut 1. Décalages −3 à +3 (−2 : anomalie 2 mois <i>avant</i> l’article ; +2 : 2 mois <i>après</i>),
       en italique : calculés avec leur propre correction, toujours « exploratoire », on n’en conclut rien.
       Hachuré : trop peu de données (moins de 5 mines ou de 10 mois-événements) ; n/d : effet non calculable.
-      Même démontré, un lien est une coïncidence statistique, pas une causalité.</p>
+      Même démontré, un lien est une coïncidence statistique, pas une causalité.</p></details>
   </section>
   <section data-sub="suivies" hidden>
     <h2 style="margin-top:0">Mines suivies par la veille — <span id="v_ntr">…</span></h2>
