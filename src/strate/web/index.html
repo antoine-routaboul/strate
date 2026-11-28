@@ -227,6 +227,7 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 @container (max-width:1080px){.cbrow{grid-template-columns:1fr}}
 @container (max-width:600px){.cb{display:flex;flex-wrap:wrap}.cb .pill{flex:1 1 100%}}
 .cbrow:last-child{border-bottom:0}
+.cbrow.noci .cb-note{display:none}  /* raison de l'IC absent : écrite une fois sous le nom de la relation */
 .cbrow.stack{grid-template-columns:1fr}.cbrow.stack .cb{display:flex;flex-wrap:wrap}.cbrow .rel{min-width:0}.cbrow .rel b{font-weight:500;overflow-wrap:anywhere}
 .cbrow .rel small{display:block;color:var(--muted);font-size:12px}
 /* titre de groupe dans une longue liste (ex. corrélations par domaine) : la source commune dite une fois, en gris */
@@ -1706,14 +1707,24 @@ function ccVerdict(cc,t){
 // une par coefficient (q_r, q_rho) : chaque verdict se lit avec la sienne. q_value est celle de ρ (le serveur la
 // recopie de q_rho ; un serveur plus ancien n'en calcule pas d'autre) : jamais affichée sans le dire.
 const qTxt=q=>q<0.001?'&lt; 0,001':fmt(q,3);
+// Ensemble des sociétés rééchantillonné sur moins de CC_MIN_GRAPPES grappes indépendantes (companies.MIN_GRAPPES) :
+// le bootstrap n'a que quelques rééchantillons distincts (2 grappes : 3), l'« IC » qu'il renvoie n'en est pas un.
+// Il n'est ni écrit ni tracé ; le coefficient reste affiché, dit indicatif. Une fiche (unité : années) n'est pas visée.
+const CC_MIN_GRAPPES=6;
 function ccRow(cc,unit='points'){
   const n=num(cc.n_points)??num(cc.n), ns=num(cc.n_societes), lag=cc.decalage??cc.lag;
+  const nb=num(cc.n_bootstrap_unit)??num(cc.n_grappes), ub=String(cc.unite_bootstrap??(num(cc.n_grappes)!=null?'grappes':''));
+  const few=/grappe/i.test(ub)&&nb!=null&&nb<CC_MIN_GRAPPES;
   const qr=num(cc.q_r), qp=num(cc.q_rho)??num(cc.q_value);
   const qs=[qr!=null?`r ${qTxt(qr)}`:'',qp!=null&&num(cc.rho)!=null?`ρ ${qTxt(qp)}`:''].filter(Boolean).join(', ');
-  const info=[esc(lagY(lag).replace(/^ · /,''))||'même exercice',ns!=null?`IC rééchantillonné sur ${fmt(ns,0)} ${plur(ns,'société')}`:'',
+  // dit une fois par relation (pas sous chaque badge) ; le badge garde la raison dans son aria-label et son title
+  const boot=few?`${ns!=null?`${fmt(ns,0)} ${plur(ns,'société')} · `:''}IC non calculable (${fmt(nb,0)} ${plur(nb,'grappe')}) : il en faut ${CC_MIN_GRAPPES} · coefficients indicatifs`
+    :ns!=null?`IC rééchantillonné sur ${fmt(ns,0)} ${plur(ns,'société')}`:'';
+  const info=[esc(lagY(lag).replace(/^ · /,''))||'même exercice',boot,
     qs?`q (Benjamini-Hochberg) : ${qs}`:''].filter(Boolean).join(' · ');
-  const b=t=>corrBadge({type:t,v:cc[t],lo:cc[t+'_lo'],hi:cc[t+'_hi'],n,nUnit:unit,verdict:ccVerdict(cc,t)});
-  return `<div class="cbrow"><div class="rel"><b>${esc(varL(cc.x))} ↔ ${esc(varL(cc.y))}</b><small>${info}</small></div>
+  const b=t=>corrBadge({type:t,v:cc[t],lo:few?null:cc[t+'_lo'],hi:few?null:cc[t+'_hi'],n,nUnit:unit,verdict:ccVerdict(cc,t),
+    ciNote:few?`IC non calculable (${fmt(nb,0)} ${plur(nb,'grappe')}) · coefficient indicatif`:''});
+  return `<div class="cbrow${few?' noci':''}"><div class="rel"><b>${esc(varL(cc.x))} ↔ ${esc(varL(cc.y))}</b><small>${info}</small></div>
     <div class="cblist">${b('r')}${num(cc.rho)!=null?b('rho'):''}</div></div>`;
 }
 async function coRows(){

@@ -205,6 +205,8 @@ def test_pages_read_only_contract_fields():
     summary = {"domaine", "x", "y", "coefficient", "type", "lo", "hi", "n", "verdict", "source"}
     # contrat partagé de cette révision (producteurs : companies, forecast, api), lu défensivement par la page
     corr |= {"lag"}  # alias de decalage, lu défensivement
+    # unité du bootstrap : renvoyée par api.CO_CORR / _bootstrap_unit (pas encore dans le tableau du doc)
+    corr |= {"n_grappes", "n_bootstrap_unit", "unite_bootstrap"}
     summary |= {"unite_n", "n_bootstrap_unit"}
     backtest |= {"skill_lo", "skill_hi", "note", "r_niveau", "rho_niveau"}
     prev |= {"horizon", "mesure"}
@@ -452,23 +454,35 @@ const done=()=>fetches.forEach(f=>f.done=true);
       {...base,decalage:2,n_societes:40,verdict:'lien positif démontré (IC 90 % de ρ au-dessus de 0)'},
       // q propre à chaque coefficient : q_value (= q_rho) ne doit jamais passer pour la q de r
       {...base,decalage:3,n_societes:40,q_r:0.3,q_rho:0.04,q_value:0.04,
-        verdict_r:'non démontré (q = 0.30 ≥ 0.10)',verdict_rho:'lien positif démontré'}]});
+        verdict_r:'non démontré (q = 0.30 ≥ 0.10)',verdict_rho:'lien positif démontré'},
+      // 2 grappes indépendantes : 3 rééchantillons distincts, l'IC renvoyé n'en est pas un
+      {...base,decalage:4,n_societes:2,n_grappes:2,n_bootstrap_unit:2,
+        unite_bootstrap:'grappes de sociétés sans mine commune',
+        verdict:'trop peu de données (n = 30, sociétés = 2, grappes indépendantes = 2)'}]});
     take('/api/companies?limit=5000').ok({total:0,rows:[]});
     await flush(); const h=$el('#co_capex').innerHTML;
-    const rows=h.split('class="cbrow"').slice(1);
+    const rows=h.split(/class="cbrow[^"]*"/).slice(1);
     const pills=r=>[...r.matchAll(/class="pill ([\w-]+)">([^<]*)</g)].map(m=>[m[1],m[2]]);
-    const [a,b,c,d]=rows.map(pills);
+    const [a,b,c,d,e]=rows.map(pills);
     // ligne 1 : chaque coefficient porte son propre verdict ; ligne 2 (serveur ancien) : « trop peu »
     // vaut pour r ; ligne 3 : le verdict de ρ n'est jamais recopié sur r (verdict calculé, dit comme tel)
-    const ok=rows.length===4&&a[0][1].startsWith('trop peu')&&a[0][0]==='p-warn'
+    const ok=rows.length===5&&a[0][1].startsWith('trop peu')&&a[0][0]==='p-warn'
       &&a[1][1]==='non démontré (q ≥ 0,10)'&&a[1][0]==='p-neu'
       &&b[0][1].startsWith('trop peu')&&b[1][1].startsWith('trop peu')
       &&c[0][1].includes('calculé')&&c[0][0]==='p-pos'&&c[1][0]==='p-acc'
       &&rows[0].includes('q (Benjamini-Hochberg) : ρ 0,04')&&!rows[0].includes('q (Benjamini-Hochberg) : r')
       &&rows[0].includes('rééchantillonné sur 4 sociétés')
       &&rows[3].includes('q (Benjamini-Hochberg) : r 0,3, ρ 0,04')&&d[0][1].startsWith('non démontré')
+      // n compte les points, jamais l'indice de la ligne (rel.map(ccRow) écrivait « n = 30 1 »)
+      &&rows.every(r=>(r.match(/>n = 30 points</g)||[]).length===2)&&!/n = 30 \d/.test(h)
+      // moins de 6 grappes : coefficient affiché, IC ni écrit ni tracé, raison dite, verdict du serveur gardé
+      &&rows[4].includes('IC non calculable (2 grappes)')&&rows[4].includes('coefficients indicatifs')
+      &&(rows[4].match(/>IC 90 % —</g)||[]).length===2
+      &&!rows[4].includes('IC 90 % +0,20')&&!rows[4].includes('height="4"')
+      &&rows[4].includes('+0,50')&&e.every(([k,v])=>k==='p-warn'&&v.startsWith('trop peu'))
+      &&!rows[4].includes('rééchantillonné')&&!rows[0].includes('IC non calculable')
       &&clean(h);
-    return ok||JSON.stringify([a,b,c]);
+    return ok||JSON.stringify([a,b,c,e])+h;
   });
   await check('capex_page_empty',async()=>{
     done(); P.PG.co=null; P.show('societes','capex');
