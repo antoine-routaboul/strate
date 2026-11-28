@@ -295,6 +295,9 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 #view-veille.is-empty .vgrid{grid-template-columns:minmax(0,1fr)}
 #view-veille.is-empty .vgrid>div:last-child,#view-veille.is-empty #vf_box{display:none}
 #v_empty code{white-space:nowrap}
+/* « Confiance min. 0,5 » sur une ligne, curseur à la hauteur des listes : la rangée de filtres garde une ligne de libellés */
+.filters label:has(#vf_conf){display:grid;grid-template-columns:auto 1fr;column-gap:6px;align-items:center}
+#vf_conf{grid-column:1/-1;height:var(--ctl);margin:0}#vf_conf_o{color:var(--text)}
 /* pas d'espace de rangée : chaque titre garde sa marge de 32 px, aussi quand les colonnes s'empilent */
 .vcols{display:grid;grid-template-columns:1fr 1fr;gap:0 var(--gap)}
 .feed{max-height:720px;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card)}
