@@ -369,8 +369,10 @@ a.mine{color:var(--accent)}
 .kpis{display:grid;grid-template-columns:repeat(var(--k,4),minmax(0,1fr));background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);margin-bottom:var(--gap)}
 .kpis>div{padding:14px 18px;border-right:1px solid var(--rule)}.kpis>div:last-child{border-right:0}
 .kpis span{display:block;color:var(--muted);font-size:12px}.kpis b{font-size:20px;font-weight:500}
-.pick{display:flex;flex-wrap:wrap;gap:6px 10px;margin:10px 0 0}
-.pick a{font-size:12px}
+.picks{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 var(--gap);max-width:1100px}
+.picks>div{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:0 12px;align-items:baseline;padding:10px 0;border-bottom:1px solid var(--rule)}
+.picks .pn{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.picks a{color:var(--text);font-weight:500}
+@media (max-width:900px){.picks{grid-template-columns:minmax(0,1fr)}}
 .fcsearch{position:relative;max-width:420px}
 .fcsearch input{width:100%}
 #fc_res{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);
@@ -579,9 +581,9 @@ a.mine{color:var(--accent)}
   <div class="page-head"><div><h1 id="fc_h1">Prévisions par mine</h1><p class="sub" id="fc_sub"></p></div></div>
   <nav class="subtabs" aria-label="Prévisions"><a href="#/previsions" data-sub="mine">Prévisions par mine</a><a href="#/previsions/retro-test" data-sub="retro">Rétro-test : l’outil s’évalue</a></nav>
   <section data-sub="mine">
-    <div class="fcsearch"><label class="meta" for="fc_q" style="display:block;font-size:12px;margin-bottom:4px">Mine à série de production publiée</label>
+    <div class="fcsearch"><label class="meta" for="fc_q" style="display:block;font-size:12px;margin-bottom:4px">Mine à série de production publiée (Jasansky et al. 2023)</label>
       <input type="search" id="fc_q" placeholder="Nom de la mine" autocomplete="off" aria-controls="fc_res"><div id="fc_res" hidden></div></div>
-    <div class="pick" id="fc_pick"></div>
+    <div id="fc_pick"></div>
     <div id="fc_out" style="margin-top:24px"></div>
   </section>
   <section data-sub="retro" hidden><div id="bt_out"></div></section>
@@ -2097,7 +2099,8 @@ async function fcPicks(){
   const el=$('#fc_pick'); if(el.dataset.done) return; el.dataset.done='1';
   try{ const r=obj(await api('/api/screener?'+new URLSearchParams({avec_prod_reelle:'true',sort:'prod_reelle_t',desc:'true',page:'1',per_page:'12'})));
     const rows=arr(r.rows).map(obj).slice(0,12);
-    el.innerHTML=rows.length?'<span class="meta" style="font-size:12px">Plus grosses productions publiées :</span>'+rows.map(x=>`<a href="#/previsions/mine/${esc(enc(x.id))}">${esc(x.nom||x.id)}</a>`).join(''):'';
+    // données de référence plutôt qu'un nuage de liens : nom, pays, dernière production publiée (série, année)
+    el.innerHTML=rows.length?`<h2>Plus grosses productions publiées</h2><div class="picks">${rows.map(x=>`<div><span class="pn" title="${esc(x.nom||x.id)}"><a href="#/previsions/mine/${esc(enc(x.id))}">${esc(x.nom||x.id)}</a> <span class="meta">${esc(x.pays||'')}</span></span><span class="num">${mt(num(x.prod_reelle_t))}<span class="u">${esc(x.prod_reelle_serie||'')}${x.prod_reelle_serie&&x.prod_reelle_annee!=null?', ':''}${esc(x.prod_reelle_annee??'')}</span></span></div>`).join('')}</div>`:'';
   }catch(e){ console.error(e); el.dataset.done=''; }
 }
 function fcSearchArm(){
@@ -2116,8 +2119,8 @@ function fcSearchArm(){
 async function fcPage(id){
   const live=pgSeq('fc'), out=$('#fc_out');
   setHead('previsions',head('Prévisions par mine','Le passé sert à prédire l’année suivante ; un modèle n’est retenu que s’il bat la production de l’an dernier hors échantillon.'));
-  fcSearchArm(); fcPicks();
-  if(!id){ out.innerHTML=box('Choisissez une mine à série de production publiée (Jasansky et al. 2023) pour voir son historique, sa prévision et la qualité mesurée du modèle.'); return; }
+  fcSearchArm(); fcPicks(); $('#fc_pick').hidden=!!id;  // la liste de départ s'efface une fois la mine choisie
+  if(!id){ out.innerHTML=''; return; }  // le champ et la liste disent quoi faire : pas de cadre vide qui le répète
   out.innerHTML=loading();
   let r; try{ r=await fcData(id); }catch(e){ if(live()) out.innerHTML=errBox('Prévision indisponible',e); return; }
   if(!live()) return;
