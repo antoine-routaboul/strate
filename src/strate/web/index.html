@@ -133,6 +133,7 @@ abbr.flag{color:var(--warning);text-decoration:none;cursor:help;margin-left:2px}
 .more>summary:hover{color:var(--text)}
 .more[open]>summary{margin-bottom:8px}
 .more p,.more .note{font-size:13px;line-height:20px}
+.skel i{display:block;height:14px;margin:14px 0;background:var(--raised);border-radius:3px;max-width:880px}.skel i:nth-child(3n){width:60%}
 .notice{border:1px solid var(--border);background:var(--surface);border-radius:var(--r-card);padding:10px 14px;margin:0 0 16px}
 /* un cadre sans données prend la même forme que .empty : bordure pointillée, pas de fond, une phrase */
 .feed.is-empty,.card.is-empty{border:1px dashed var(--control);background:none}
@@ -385,7 +386,7 @@ a.mine{color:var(--accent)}
 </header>
 
 <main id="view-map" class="view">
-  <div class="page-head map-head"><div><h1>Carte des mines</h1><p class="sub" id="count">…</p></div></div>
+  <div class="page-head map-head"><div><h1>Carte des mines</h1><p class="sub" id="count">&nbsp;</p></div></div>
   <div class="mapgrid">
     <section id="detail" aria-live="polite"><p class="meta">Cliquez une mine sur la carte ou cherchez-la.</p></section>
     <div class="mapcol">
@@ -397,7 +398,7 @@ a.mine{color:var(--accent)}
     <aside class="radarcol">
       <h2>Radar des mines suivies</h2>
       <p class="sub" style="margin:-6px 0 12px">Données satellite de moins de 6 mois</p>
-      <div class="tablebox"><table id="radar"><thead><tr><th>Niv.</th><th>Mine</th><th>Mois</th><th>Pourquoi</th></tr></thead><tbody></tbody></table></div>
+      <div class="tablebox"><table id="radar"><thead><tr><th>Niv.</th><th>Mine</th><th>Mois</th><th>Pourquoi</th></tr></thead><tbody><tr><td colspan="4"><div class="skel" aria-busy="true"><p class="meta">Chargement du radar…</p><i></i><i></i><i></i><i></i></div></td></tr></tbody></table></div>
       <p class="note" style="margin-top:12px">Niveau 0 = calme · 1 = une famille de signaux anormale · 2 = plusieurs familles indépendantes en même temps.
         Une alerte satellite signale un changement physique du site, pas un changement de production : ces alertes mensuelles n'ont pas été confrontées à la production réelle.</p>
     </aside>
@@ -405,7 +406,7 @@ a.mine{color:var(--accent)}
 </main>
 
 <div id="view-screener" class="view" style="display:none">
-  <div class="page-head"><div><h1>Screener des mines</h1><p class="sub" id="scr_total">…</p></div>
+  <div class="page-head"><div><h1>Screener des mines</h1><p class="sub" id="scr_total">&nbsp;</p></div>
     <div class="actions"><a class="btn" id="scr_csv" href="#" download>Exporter en CSV</a>
       <button id="scr_go" type="button">Analyser les 10 premières sans analyse récente</button></div></div>
   <p class="meta" id="scr_msg" aria-live="polite"></p>
@@ -427,7 +428,7 @@ a.mine{color:var(--accent)}
   <div class="scrwrap"><table id="scr"><thead><tr>
     <th data-s="nom" scope="col">Mine</th><th data-s="pays" scope="col">Pays</th><th data-s="categorie" scope="col">Catégorie</th><th data-s="commodite_principale" scope="col">Commodités</th>
     <th data-s="emprise_km2" class="n" scope="col">Emprise km²</th><th data-s="prod_estimee_t" class="n s" scope="col">Prod. estimée /an</th><th class="n" scope="col">Intervalle 90 %</th>
-    <th data-s="prod_reelle_t" class="n" scope="col">Prod. réelle publiée</th><th data-s="niveau" scope="col">Alerte</th></tr></thead><tbody></tbody></table></div>
+    <th data-s="prod_reelle_t" class="n" scope="col">Prod. réelle publiée</th><th data-s="niveau" scope="col">Alerte</th></tr></thead><tbody><tr><td colspan="9"><div class="skel" aria-busy="true"><p class="meta">Chargement…</p><i></i><i></i><i></i><i></i><i></i><i></i></div></td></tr></tbody></table></div>
   <div class="pager"><button class="ghost" id="pg_prev" type="button" aria-label="Page précédente">←</button><span id="pg_info" class="meta"></span><button class="ghost" id="pg_next" type="button" aria-label="Page suivante">→</button></div>
   <p class="note" id="scr_note" style="margin-top:16px"></p>
 </div>
@@ -563,7 +564,9 @@ const renderer=L.canvas({padding:.5}); let hi=null, STATS={};
 // Démarrage : chaque route est lue à part (une réponse vide, nulle ou en erreur ne bloque pas les autres) ;
 // arr()/obj() ramènent toute réponse à la forme attendue, jamais d'exception sur une base vide.
 async function init(){
-  const got=await Promise.allSettled([api('/api/catalog/points'),api('/api/catalog/stats'),api('/api/radar'),api('/api/calibration')]);
+  // la calibration (quelques ko) n'attend pas les 80 000 points de la carte : la page Méthode se dessine dès qu'elle arrive
+  const calP=api('/api/calibration').then(c=>{ CAL=obj(c); CAL_READY=true; if(VIEW==='methode') pageRender('methode',SUB); return c; });
+  const got=await Promise.allSettled([api('/api/catalog/points'),api('/api/catalog/stats'),api('/api/radar'),calP]);
   const [ptsR,statsR,radR,calR]=got.map(x=>x.status==='fulfilled'?x.value:null);
   got.filter(x=>x.status==='rejected').forEach(x=>console.error(x.reason));
   const cal=obj(calR), stats=obj(statsR), rad=arr(radR).map(obj), pts=arr(ptsR).filter(Array.isArray);
@@ -1578,7 +1581,8 @@ $('#view-veille').addEventListener('keydown',e=>{
 // /api/correlations/summary). Données absentes → le « message » du serveur, ou une phrase claire, dans le cadre.
 const PG={seq:{},charts:[],co:null,coSort:{k:'n_mines',desc:true},coShown:200,summary:null,corrDom:'tous',fcSeq:0};
 const box=(msg,cls='')=>`<div class="empty${cls?' '+cls:''}">${msg}</div>`;
-const loading=()=>'<p class="meta">Chargement…</p>';
+// chargement : la phrase, puis des barres grises plates à la hauteur des lignes à venir (pas d'animation)
+const loading=(n=5)=>`<div class="skel" aria-busy="true"><p class="meta">Chargement…</p>${'<i></i>'.repeat(n)}</div>`;
 const errBox=(what,e)=>box(`${esc(what)} : ${esc(errTxt(e))}. <button class="btn-text" type="button" data-retry>Réessayer</button>`,'err');
 const pgSeq=k=>{ PG.seq[k]=(PG.seq[k]||0)+1; const n=PG.seq[k]; return ()=>PG.seq[k]===n; };
 function pgCharts(){ PG.charts.forEach(c=>c.destroy?.()); PG.charts=[]; }
