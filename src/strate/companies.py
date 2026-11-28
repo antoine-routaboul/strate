@@ -2111,13 +2111,15 @@ def mine_countries(lk: pd.DataFrame) -> dict[str, str]:
         return {}
     d = _current(lk)
     d = d[d["pays"].notna()]
-    out = {}
-    for cid, g in d.groupby("company_id"):
-        w = g["part"].where(g["part"] > 0, 1.0).fillna(1.0) if "part" in g else pd.Series(1.0, g.index)
-        tab = pd.DataFrame(dict(pays=g["pays"], n=1, w=w)).groupby("pays")[["n", "w"]].sum()
-        tab = tab.reset_index().sort_values(["n", "w", "pays"], ascending=[False, False, True])
-        out[cid] = tab.iloc[0]["pays"]
-    return out
+    if d.empty:
+        return {}
+    # un seul groupby pour toutes les sociétés (une boucle par société prenait ~6 s sur 1 300 sociétés)
+    w = d["part"].where(d["part"] > 0, 1.0).fillna(1.0) if "part" in d else pd.Series(1.0, d.index)
+    tab = (pd.DataFrame(dict(company_id=d["company_id"], pays=d["pays"], n=1, w=w))
+           .groupby(["company_id", "pays"], as_index=False)[["n", "w"]].sum()
+           .sort_values(["company_id", "n", "w", "pays"], ascending=[True, False, False, True]))
+    first = tab.drop_duplicates("company_id")
+    return dict(zip(first["company_id"], first["pays"], strict=True))
 
 
 def _country(cid: str, wd_pays, by_mines: dict[str, str]) -> tuple[str | None, str | None]:
