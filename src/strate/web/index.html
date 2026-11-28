@@ -345,6 +345,9 @@ a.mine{color:var(--accent)}
 .barlist .bl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px}
 .barlist .bl i{grid-column:1/-1;display:block;height:2px;background:var(--muted);border-radius:1px}
 .barlist .bl:first-child i{background:var(--text)}
+/* classements de la page CAPEX et effectifs : deux colonnes côte à côte sur grand écran, une seule sur téléphone */
+#co_capex .barlist,#co_eff .barlist{display:block;columns:2 340px;column-gap:48px}
+#co_capex .barlist .bl,#co_eff .barlist .bl{break-inside:avoid;margin-bottom:10px}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .seg{display:flex;flex-wrap:wrap;gap:0 18px;border-bottom:1px solid var(--border);margin-bottom:16px}
 .seg button{height:auto;padding:6px 0 9px;border:0;border-radius:0;background:none;color:var(--muted);font-weight:400;position:relative}
@@ -1866,8 +1869,9 @@ async function coCorrRows(){
   const d=obj(await api('/api/companies/correlations'));
   return {rows:arr(d.rows).map(obj),methode:typeof d.methode==='string'?d.methode:'',message:typeof d.message==='string'?d.message:''};
 }
+// classement en barres : seules les valeurs > 0 ont une barre (un zéro n'est pas un rang ; 0/0 dessinait une barre pleine)
 function rankList(rows,val,lab,n=15){
-  const top=rows.filter(r=>num(val(r))!=null).sort((a,b)=>val(b)-val(a)).slice(0,n);
+  const top=rows.filter(r=>num(val(r))>0).sort((a,b)=>val(b)-val(a)).slice(0,n);
   if(!top.length) return null; const mx=Math.max(...top.map(val));
   return `<div class="barlist">${top.map(co=>`<div class="bl"><a class="nm" href="#/societe/${esc(enc(co.id))}">${esc(co.nom||co.id)}</a><span class="num">${lab(co)}</span><i style="width:${Math.max(1,Math.round(val(co)/mx*100))}%"></i></div>`).join('')}</div>`;
 }
@@ -1878,7 +1882,7 @@ async function coCapex(){
   const [c,d]=await Promise.allSettled([coCorrRows(),coRows()]); if(!live()) return;
   const C=c.status==='fulfilled'?c.value:null, D=d.status==='fulfilled'?d.value:null;
   const rel=C?C.rows.filter(cc=>/capex|pred_g|act_g|invest/i.test(String(cc.x)+' '+String(cc.y))):[];
-  const corr=!C?errBox('Corrélations indisponibles',c.reason):rel.length?`<div class="panel" style="padding:4px 20px">${rel.map(cc=>ccRow(cc)).join('')}</div>${C.methode?`<p class="note" style="margin-top:10px">${esc(C.methode)}</p>`:''}`
+  const corr=!C?errBox('Corrélations indisponibles',c.reason):rel.length?`<div class="panel" style="padding:4px 20px">${rel.map(cc=>ccRow(cc)).join('')}</div>${C.methode?more('Méthode : variations annuelles, IC par bootstrap sur les grappes de sociétés, seuils d’effectif',`<p class="note">${esc(C.methode)}</p>`):''}`
     :box(esc(C.message||'Aucune corrélation CAPEX calculée.'));
   let rank='', inv='';
   if(!D) rank=errBox('Annuaire indisponible',d.reason);
@@ -1886,10 +1890,10 @@ async function coCapex(){
     const rl=dev?rankList(D.rows.filter(co=>cd(co)===dev),co=>num(co.capex_dernier),co=>`${money(co.capex_dernier,cd(co))}${yr(co.capex_annee)}`):null;
     rank=rl?`${rl}<p class="note" style="margin-top:10px">Dernier exercice déclaré, en ${esc(dev)} seulement (les autres devises ne se comparent pas sans change) ; les exercices diffèrent d’une société à l’autre.</p>`:box(esc(D.message||'Aucun CAPEX déclaré.'));
     const il=rankList(D.rows,co=>cnt12(co.investissements_12m),co=>`${fmt(cnt12(co.investissements_12m),0)} ${plur(cnt12(co.investissements_12m),'annonce')}`,10);
-    inv=il||box('Aucune annonce d’investissement relevée ces 12 derniers mois (la veille extrait montant, devise et catégorie des titres collectés).'); }
+    inv=il?`<div class="panel">${il}</div>`:box('Aucune annonce d’investissement relevée ces 12 derniers mois (la veille extrait montant, devise et catégorie des titres collectés).'); }
   el.innerHTML=`<h2 style="margin-top:0">Le CAPEX annonce-t-il quelque chose ?</h2>${corr}
-    <div class="grid2"><div><h2>Plus gros CAPEX déclarés</h2><div class="panel">${rank}</div></div>
-      <div><h2>Annonces d’investissement, 12 derniers mois</h2><div class="panel">${inv}</div></div></div>`;
+    <h2>Plus gros CAPEX déclarés</h2><div class="panel">${rank}</div>
+    ${inv?`<h2>Annonces d’investissement, 12 derniers mois</h2>${inv}`:''}`;
 }
 async function coEff(){
   const live=pgSeq('co'), el=$('#co_eff');
@@ -1901,7 +1905,7 @@ async function coEff(){
   const corr=!C?errBox('Corrélations indisponibles',c.reason):rel.length?`<div class="panel" style="padding:4px 20px">${rel.map(cc=>ccRow(cc)).join('')}</div>`
     :box('Aucune corrélation effectifs ↔ production calculée : trop peu de sociétés ont des effectifs sur plusieurs exercices.');
   const now=new Date().getFullYear();
-  const rl=D?rankList(D.rows,co=>num(co.effectifs),co=>`${fmt(co.effectifs,0)}${yr(co.effectifs_annee)}${num(co.effectifs_annee)!=null&&now-co.effectifs_annee>5?' <span class="pill p-warn">ancien</span>':''}`,20):null;
+  const rl=D?rankList(D.rows,co=>num(co.effectifs),co=>`${fmt(co.effectifs,0)}${num(co.effectifs_annee)==null?'':`<div class="u">exercice ${esc(co.effectifs_annee)}${now-co.effectifs_annee>5?' · ancien':''}</div>`}`,20):null;
   el.innerHTML=`<h2 style="margin-top:0">Effectifs ↔ production</h2>${corr}
     <h2>Plus gros effectifs déclarés</h2><div class="panel">${!D?errBox('Annuaire indisponible',d.reason):rl?rl+'<p class="note" style="margin-top:10px">Dernier exercice où la société a déclaré ses effectifs ; « ancien » = plus de 5 ans.</p>':box(esc(D.message||'Aucun effectif déclaré.'))}</div>`;
 }
