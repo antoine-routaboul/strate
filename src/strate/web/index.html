@@ -313,6 +313,7 @@ a.mine{color:var(--accent)}
 .tm{padding:5px 0}.tmn{display:flex;justify-content:space-between;gap:8px}.tmn span{color:var(--muted)}
 .tm>i{display:block;height:2px;background:var(--muted);margin-top:4px;border-radius:1px}.tm:first-child>i{background:var(--text)}
 .vnone{margin:6px 0 0}
+.vtrk{max-width:1100px}  /* six colonnes courtes : pas de vide de 450 px entre elles sur grand écran */
 .vcorr{display:grid;grid-template-columns:minmax(0,auto) minmax(300px,1fr);gap:var(--gap);align-items:start}
 .hmwrap{overflow:auto;max-width:100%}
 #v_cdet:empty{display:none}.vcorr:has(#v_cdet:empty){grid-template-columns:minmax(0,1fr)}
@@ -392,6 +393,18 @@ a.mine{color:var(--accent)}
   .kv{grid-template-columns:120px 1fr}.imgs{grid-template-columns:1fr}
   .cbrow{grid-template-columns:1fr}.cb{display:flex;flex-wrap:wrap}.cb .pill{flex:1 1 100%}
   h1,.title{font-size:20px}
+}
+/* téléphone : chaque mine suivie en deux colonnes (nom et compte, détails dessous) au lieu d'un tableau qui défile */
+@media (max-width:640px){
+  #v_tracked thead{display:none}
+  #v_tracked tr{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;padding:10px 14px;border-bottom:1px solid var(--rule)}
+  #v_tracked tr:last-child{border-bottom:0}
+  #v_tracked td{border:0;padding:0!important;text-align:left}
+  #v_tracked td:nth-child(5){grid-column:2;grid-row:1;text-align:right}
+  #v_tracked td:nth-child(6){grid-column:2;grid-row:2;justify-self:end}
+  #v_tracked td:nth-child(2),#v_tracked td:nth-child(3),#v_tracked td:nth-child(4){grid-column:1;font-size:12px;color:var(--muted)}
+  #v_tracked td:nth-child(3)::before{content:'suivie depuis '}#v_tracked td:nth-child(4)::before{content:'dernier événement '}
+  #v_tracked td:nth-child(5)::after{content:' év.';color:var(--muted)}
 }
 @media (prefers-reduced-motion:reduce){.beat.on i,.fi.fresh,.vev.new::after{animation:none}}
 </style>
@@ -503,8 +516,8 @@ a.mine{color:var(--accent)}
       Même démontré, un lien est une coïncidence statistique, pas une causalité.</p></details>
   </section>
   <section data-sub="suivies" hidden>
-    <h2 style="margin-top:0">Mines suivies par la veille — <span id="v_ntr">…</span></h2>
-    <div class="scrwrap" style="max-height:none"><table id="v_tracked"><thead><tr><th>Mine</th><th>Pourquoi</th><th>Suivie depuis</th>
+    <p class="meta" style="margin:0 0 12px"><span id="v_ntr">&nbsp;</span></p>
+    <div class="tablebox vtrk"><table id="v_tracked"><thead><tr><th>Mine</th><th>Pourquoi</th><th class="n">Suivie depuis</th>
       <th>Dernier événement</th><th class="n">Événements</th><th>Analyse satellite</th></tr></thead><tbody></tbody></table></div>
   </section>
   <section data-sub="etat" hidden>
@@ -1504,11 +1517,11 @@ function vCorr(c,er){
 // -- mines suivies -----------------------------------------------------------------------------
 function vTracked(t,er){
   const rows=arr(t).map(obj), tb=$('#v_tracked tbody');
-  $('#v_ntr').textContent=er?'indisponible':fmt(rows.length,0);
+  $('#v_ntr').textContent=er?'':`${fmt(rows.length,0)} ${rows.length>1?'mines suivies':'mine suivie'} par la veille`;
   if(er){ tb.innerHTML=`<tr><td colspan=6 class="meta">Liste ${esc(er)}</td></tr>`; return; }
   tb.innerHTML=rows.slice(0,300).map(tk=>{ const st=String(tk.analysis_status??'');
     const cls=st==='terminé'?'l0':st.startsWith('erreur')?'l2':'l1';
-    return `<tr><td>${mineLink(tk.site_id,tk.site_name)}</td><td class="meta">${esc(tk.reason)}</td><td>${esc(day(tk.since))}</td>
+    return `<tr><td>${mineLink(tk.site_id,tk.site_name)}</td><td class="meta">${esc(tk.reason)}</td><td class="n">${esc(day(tk.since))}</td>
       <td title="${esc(tk.last_event_at)}">${esc(ago(tk.last_event_at))}</td><td class="n">${fmt(num(tk.events_count),0)}</td>
       <td>${st?`<span class="lvl ${cls}">${esc(st)}</span>`:'<span class="meta">—</span>'}</td></tr>`; }).join('')
     ||`<tr><td colspan=6 class="meta">${VEI.empty?EMPTY:'Aucune mine suivie pour l’instant : la veille en ajoute dès qu’une mine fait l’actualité (confiance ≥ 0,5, 30 derniers jours).'}</td></tr>`;
