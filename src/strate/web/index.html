@@ -250,6 +250,7 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 #view-map.is-site #detail{display:block;grid-column:1;grid-row:1}
 #view-map.is-site .mapcol{grid-column:2;grid-row:1;position:sticky;top:76px}
 #view-map.is-site #map{height:340px;min-height:0}
+#view-map.is-site .mapcol>p{display:none}  /* sur une fiche, la carte situe : ni légende ni calque d'actualité */
 .title{font-size:24px;font-weight:600;margin:0}
 .kv{display:grid;grid-template-columns:150px 1fr;gap:6px 16px;margin-top:16px}
 .kv>div{min-width:0;overflow-wrap:anywhere}.kv>div:nth-child(odd){color:var(--muted)}
@@ -379,7 +380,7 @@ a.mine{color:var(--accent)}
   .fbox>summary::-webkit-details-marker{display:none}
   .mapgrid,#view-map.is-site .mapgrid{grid-template-columns:minmax(0,1fr)}
   #view-map.is-site .mapcol{grid-column:1;grid-row:1;position:static}#view-map.is-site #detail{grid-column:1;grid-row:2}
-  #view-map.is-site #map{height:220px}
+  #view-map.is-site #map{height:160px}
   #map{height:58vh}
   .grid2,.vcols,.srclist{grid-template-columns:minmax(0,1fr)}
   .pipe{grid-template-columns:1fr;gap:8px}.pipe .arrow{display:none}
@@ -685,8 +686,8 @@ async function open(id){
 }
 function siteHead(s,src,wiki,wd){
   return `<div class="crumb"><a href="#/carte">Carte</a></div><h1 class="title">${esc(s.nom)}</h1>
-    <p class="sub">${esc(s.pays)}${s.region?', '+esc(s.region):''}${s.metaux?' · '+esc(s.metaux):''}</p>
-    <div class="kv"><div>Type / statut</div><div>${esc(s.type||s.stade)}${s.confiance?' · confiance '+esc(s.confiance):''}</div><div>Propriétaire(s)</div><div>${esc(s.proprietaires)||'—'}</div>
+    <p class="sub">${esc(s.pays)}${s.region?', '+esc(s.region):''}${s.metaux?' · '+esc(String(s.metaux).split(',').map(m=>FR[m.trim().toLowerCase()]||m.trim()).join(', ')):''}</p>
+    <div class="kv"><div>Type / statut</div><div>${esc(s.type||s.stade)}${s.confiance?' · confiance '+esc(({High:'haute',Medium:'moyenne',Low:'faible'})[s.confiance]||s.confiance):''}</div><div>Propriétaire(s)</div><div>${esc(s.proprietaires)||'—'}</div>
     <div>Emprise réelle</div><div>${s.emprise_km2?fmt(s.emprise_km2,2)+' km² (contours satellite Maus 2022)':'non cartographiée'}</div>
     <div>Zone analysée</div><div>${num(s.rayon_m)!=null?`carré de ${fmt(2*s.rayon_m/1000,1)} km de côté`:'—'}</div>
     <div>Coordonnées</div><div>${num(s.lat)!=null&&num(s.lon)!=null?`${s.lat.toFixed(4)}, ${s.lon.toFixed(4)}`:'—'} · ${src}${wiki}${wd}</div>
