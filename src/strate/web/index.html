@@ -127,6 +127,12 @@ abbr.flag{color:var(--warning);text-decoration:none;cursor:help;margin-left:2px}
 .grid-7-5{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,5fr);gap:var(--gap);align-items:start}
 .empty{border:1px dashed var(--control);border-radius:var(--r-card);padding:12px 14px;color:var(--muted);margin:0 0 12px}
 .empty.err{border-style:solid}
+/* note de méthode repliée : une phrase de tête reste visible, le détail s'ouvre à la demande (jamais supprimé) */
+.more{margin-top:16px;max-width:880px}
+.more>summary{cursor:pointer;color:var(--muted);font-size:13px;list-style-position:inside;width:max-content;max-width:100%}
+.more>summary:hover{color:var(--text)}
+.more[open]>summary{margin-bottom:8px}
+.more p,.more .note{font-size:13px;line-height:20px}
 .notice{border:1px solid var(--border);background:var(--surface);border-radius:var(--r-card);padding:10px 14px;margin:0 0 16px}
 
 /* -- contrôles ------------------------------------------------------------------------------------- */
@@ -234,7 +240,7 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);padding:16px}
 .card h3{font-weight:500;color:var(--muted);font-size:12px}
 .estim{font-size:20px;font-weight:600;margin:0 0 6px}
-.calnote{border-left:1px solid var(--accent);padding-left:14px;color:var(--muted);max-width:880px}
+.calnote{border-left:1px solid var(--border);padding-left:14px;color:var(--muted);max-width:880px}
 .imgs{display:grid;grid-template-columns:1fr 1fr;gap:var(--gap)}
 .imgs img{width:100%;aspect-ratio:1;object-fit:cover;background:var(--raised);border-radius:var(--r-card);display:block;margin-top:8px}
 /* le cadre reste positionné quel que soit l'état (wait / none / chargée) : sinon le message se place contre la page */
@@ -301,7 +307,7 @@ a.mine{color:var(--accent)}
 .hm td.nd{color:var(--muted);background:var(--raised);outline:1px dashed var(--control);outline-offset:-1px}.hm td.xp{font-style:italic}
 .hm th.main{color:var(--text);font-weight:600}
 .hm th{font-size:12px;font-weight:400;border:0;text-align:center;padding:2px 4px}.hm th.rl{text-align:right;white-space:nowrap;padding-right:10px}
-.vnote{border-left:1px solid var(--accent);padding-left:14px;max-width:920px;margin-top:20px}
+.vnote{border-left:1px solid var(--border);padding-left:14px;max-width:920px;margin-top:20px}
 .vsite td{vertical-align:top}.vsite .meta{font-size:12px}
 .vtog{display:inline-flex;gap:6px;align-items:center;cursor:pointer;color:var(--text)}
 .vicon{background:none;border:0}
@@ -544,6 +550,8 @@ const errTxt=e=>e instanceof Response?(e.status===404?'introuvable (404)':`erreu
   :e instanceof TypeError&&/fetch|network|load failed/i.test(e.message)?'serveur injoignable':'erreur inattendue (voir la console)';
 const plur=(n,s)=>n>1?s.replace(/(\S+)/g,'$1s'):s;  // « mine mise » → « mines mises »
 const enc=encodeURIComponent;
+// more(titre, html) : <details class="more"> pour une note de méthode longue ; html est déjà échappé par l'appelant
+const more=(t,h)=>`<details class="more"><summary>${t}</summary>${h}</details>`;
 const lvl=n=>`<span class="lvl ${n>=2?'l2':n===1?'l1':'lz'}">${esc(n)}</span>`;  // niveau d'alerte : 0 neutre, 1 ambre, 2 rouge
 
 const map=L.map('map',{preferCanvas:true,worldCopyJump:true}).setView([20,10],2);
