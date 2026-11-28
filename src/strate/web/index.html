@@ -2268,9 +2268,12 @@ function srRow(sr){
   const unit=typeof sr.unite_n==='string'&&sr.unite_n?sr.unite_n:Object.hasOwn(DOM_UNIT,String(sr.domaine))?DOM_UNIT[sr.domaine]:'';
   const nb=num(sr.n_bootstrap_unit), ub0=typeof sr.unite_bootstrap==='string'&&sr.unite_bootstrap?sr.unite_bootstrap:'unités indépendantes';
   const ub=nb===1?ub0.replace(/^(\S+?)s\b/,'$1').replace('indépendantes','indépendante'):ub0;  // « 1 grappe de sociétés… »
-  const boot=nb==null?'':/pas de bootstrap/.test(ub)?`${fmt(nb,0)} ${esc(ub)}`:`IC rééchantillonné sur ${fmt(nb,0)} ${esc(ub)}`;
+  // moins de CC_MIN_GRAPPES grappes indépendantes : même règle que les pages Sociétés, l'« IC » renvoyé n'en est pas un
+  const few=/grappe/i.test(ub0)&&nb!=null&&nb<CC_MIN_GRAPPES, why=few?`IC non calculable (${fmt(nb,0)} ${plur(nb,'grappe')}) · coefficient indicatif`:'';
+  const boot=nb==null?'':few?`${fmt(nb,0)} ${esc(ub)} · IC non calculable : il en faut ${CC_MIN_GRAPPES} · coefficients indicatifs`
+    :/pas de bootstrap/.test(ub)?`${fmt(nb,0)} ${esc(ub)}`:`IC rééchantillonné sur ${fmt(nb,0)} ${esc(ub)}`;
   const info=[rm.diff?esc(rm.diff):'',boot].filter(Boolean).join(' · ');
-  return `<div class="cbrow"><div class="rel"><b>${esc(sr.x)} ↔ ${esc(sr.y)}</b>${info?`<small>${info}</small>`:''}</div><div class="cblist">${cs.map(c=>corrBadge({type:c.type,v:c.coefficient,lo:c.lo,hi:c.hi,n:c.n,nUnit:unit,verdict:c.verdict})).join('')}</div></div>`;
+  return `<div class="cbrow${few?' noci':''}"><div class="rel"><b>${esc(sr.x)} ↔ ${esc(sr.y)}</b>${info?`<small>${info}</small>`:''}</div><div class="cblist">${cs.map(c=>corrBadge({type:c.type,v:c.coefficient,lo:few?null:c.lo,hi:few?null:c.hi,n:c.n,nUnit:unit,verdict:c.verdict,ciNote:why})).join('')}</div></div>`;
 }
 // un bloc par domaine : la source dite une fois dans le titre, sous chaque relation seulement ce qui en diffère ; une
 // précision commune à au moins trois relations qui se suivent (ex. « niveaux : dominés par la taille des mines… »)
