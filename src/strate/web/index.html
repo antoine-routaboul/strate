@@ -843,6 +843,22 @@ function calNote(){
 // marks = repères d'actualité de la veille [{m:'AAAA-MM', c:couleur, t:{type:n}}] : traits verticaux (vMarkPlugin)
 // et ligne de pied de l'infobulle. Rangés sur le graphique ($vmarks) pour être posés après coup si l'actualité
 // arrive après les courbes.
+// axe x : séries mensuelles (AAAA-MM) étiquetées à chaque janvier par l'année seule, un pas régulier (1 an, 2 ans…) ;
+// séries annuelles inchangées. Pas de quadrillage vertical. Axe log : étiquettes 1-2-5 (ou 1…9 sur un rapport
+// max/min de 5 au plus), les traits sans étiquette ne sont pas dessinés.
+function xYears(labels){
+  const L=labels.map(String), monthly=L.length>0&&L.every(l=>/^\d{4}-\d\d$/.test(l));
+  if(!monthly) return {...ax(),grid:{display:false},ticks:{...ax().ticks,maxTicksLimit:7,maxRotation:0}};
+  const years=L.filter(l=>l.endsWith('-01')).map(l=>+l.slice(0,4)), step=Math.max(1,Math.ceil(years.length/6)), y0=years[0];
+  return {...ax(),grid:{display:false},ticks:{...ax().ticks,autoSkip:false,maxRotation:0,
+    callback(v){ const l=String(this.getLabelForValue(v)); return l.endsWith('-01')&&(+l.slice(0,4)-y0)%step===0?l.slice(0,4):''; }}};
+}
+function yAxis(log){
+  if(!log) return {...ax(),type:'linear'};
+  const g=ax().grid.color;
+  return {...ax(),type:'logarithmic',grid:{color:c=>c.tick&&c.tick.label===''?'transparent':g},ticks:{...ax().ticks,autoSkip:false,
+    callback(v){ const s=String(Math.round(v)), dec=this.max/this.min>5; return (dec?/^[125]0*$/:/^[1-9]0*$/).test(s)?fmt(v,0):''; }}};
+}
 function line(el,labels,data,sig,log,marks,color){
   const a=sig?.a, z=sig?.z, alert=v=>v!=null&&Math.abs(v)>=2, c=color||tok('--accent','#1f5fae');
   const ch=new Chart(el,{type:'line',data:{labels,datasets:[{data,borderColor:c,borderWidth:1.6,
@@ -850,7 +866,7 @@ function line(el,labels,data,sig,log,marks,color){
     pointStyle:a?a.map(v=>v>0?'triangle':'circle'):'circle',tension:0,spanGaps:true}]},
     options:{animation:false,aspectRatio:ar(el,200),plugins:{legend:{display:false},tooltip:{callbacks:{afterLabel:c=>{const v=z?.[c.dataIndex];if(v==null)return '';
       return 'z = '+v.toFixed(1)+(alert(v)&&!alert(a?.[c.dataIndex])?' (mois isolé : non retenu comme alerte)':'');},footer:vFooter}}},
-    scales:{x:{...ax(),ticks:{...ax().ticks,maxTicksLimit:7,maxRotation:0}},y:{...ax(),type:log?'logarithmic':'linear'}}},
+    scales:{x:xYears(labels),y:yAxis(log)}},
     plugins:[vMarkPlugin]});
   ch.$vmarks=marks||[];
   return ch;
