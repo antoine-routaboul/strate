@@ -2146,6 +2146,9 @@ function menus(){
   $('#theme').addEventListener('click',()=>{ themeSet(THEMES[(THEMES.indexOf(themeGet())+1)%THEMES.length]); rerender(); });
   window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change',()=>{ if(themeGet()==='auto'){ chartTheme(); rerender(); } });
   $('#theme').setAttribute('aria-label','Thème : '+THEME_L[themeGet()]);
+  // sur téléphone, le champ est trop étroit pour la consigne complète : un mot entier plutôt qu'une phrase coupée
+  const mq=window.matchMedia?.('(max-width:900px)'), ph=()=>{ $('#cmd').placeholder=mq?.matches?'Chercher':'Chercher une mine, une société, une page'; };
+  ph(); mq?.addEventListener?.('change',ph);
 }
 if(document.addEventListener){ try{ menus(); }catch(e){ console.error(e); } }
 chartTheme();
