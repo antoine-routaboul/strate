@@ -207,7 +207,7 @@ def test_pages_read_only_contract_fields():
     corr |= {"lag"}  # alias de decalage, lu défensivement
     # unité du bootstrap : renvoyée par api.CO_CORR / _bootstrap_unit (pas encore dans le tableau du doc)
     corr |= {"n_grappes", "n_bootstrap_unit", "unite_bootstrap"}
-    summary |= {"unite_n", "n_bootstrap_unit"}
+    summary |= {"unite_n", "n_bootstrap_unit", "unite_bootstrap"}  # contrat : docs/previsions-societes.md
     backtest |= {"skill_lo", "skill_hi", "note", "r_niveau", "rho_niveau"}
     prev |= {"horizon", "mesure"}
     for var, allowed in (("co", companies), ("bt", backtest), ("bt2", backtest), ("cc", corr), ("fp", prev),

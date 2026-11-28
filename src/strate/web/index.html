@@ -227,13 +227,19 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 .panel{container-type:inline-size}
 .cbrow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,750px);gap:6px 24px;align-items:center;padding:12px 0;border-bottom:1px solid var(--rule)}
 @container (max-width:1080px){.cbrow{grid-template-columns:1fr}}
-@container (max-width:600px){.cb{display:flex;flex-wrap:wrap}.cb .pill{flex:1 1 100%}}
+@container (max-width:600px){.cb{display:flex;flex-wrap:wrap}.cb .pill{flex:1 1 100%}.cblist{gap:8px}}
 .cbrow:last-child{border-bottom:0}
+/* liste de relations alignée : toutes les lignes d'un cadre partagent la largeur de la colonne des badges (la plus
+   large), le verdict tient sur une ligne et le nom de la relation prend le reste */
+.cbs{display:grid;grid-template-columns:minmax(260px,1fr) max-content;column-gap:24px}.cbs>*{grid-column:1/-1}
+.cbs>.cbrow{grid-template-columns:subgrid}
+@container (max-width:1080px){.cbs{grid-template-columns:minmax(0,1fr)}}
 .cbrow.noci .cb-note{display:none}  /* raison de l'IC absent : écrite une fois sous le nom de la relation */
 .cbrow.stack{grid-template-columns:1fr}.cbrow.stack .cb{display:flex;flex-wrap:wrap}.cbrow .rel{min-width:0}.cbrow .rel b{font-weight:500;overflow-wrap:anywhere}
 .cbrow .rel small{display:block;color:var(--muted);font-size:12px}
 /* titre de groupe dans une longue liste (ex. corrélations par domaine) : la source commune dite une fois, en gris */
 .grp{font-size:13px;font-weight:600;margin:24px 0 8px}.grp .meta{font-weight:400;margin-left:6px}
+.cbcap{margin:0;padding:14px 0 2px;border-top:1px solid var(--rule);color:var(--muted);font-size:12px}.cbcap:first-child{border-top:0}
 
 /* -- carte et fiche d'une mine ---------------------------------------------------------------------- */
 .mapgrid{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:var(--gap);align-items:start}
@@ -2193,8 +2199,8 @@ const calRow=c=>`<div class="cbrow"><div class="rel"><b>${esc(c.x)} ↔ ${esc(c.
 // sous la note de calibration d'une fiche : les mêmes chiffres, avec leur intervalle et leur n
 function calBadges(compact){
   const rs=calRows(); if(!rs.length) return '';
-  return compact?`<details style="margin-top:6px"><summary class="meta" style="cursor:pointer">Corrélations de calibration, avec IC 90 % et n (${rs.length})</summary><div class="panel" style="padding:4px 20px;margin-top:8px">${rs.map(calRow).join('')}</div></details>`
-    :`<div class="panel" style="padding:4px 20px">${rs.map(calRow).join('')}</div>`;
+  return compact?`<details style="margin-top:6px"><summary class="meta" style="cursor:pointer">Corrélations de calibration, avec IC 90 % et n (${rs.length})</summary><div class="panel" style="padding:4px 20px;margin-top:8px"><div class="cbs">${rs.map(calRow).join('')}</div></div></details>`
+    :`<div class="panel" style="padding:4px 20px"><div class="cbs">${rs.map(calRow).join('')}</div></div>`;
 }
 function calPage(){
   setHead('methode',head('Calibration',`Confrontation des signaux satellite à la production publiée${CAL.date?` · calibration du ${esc(CAL.date)}`:''}`));
@@ -2235,21 +2241,49 @@ async function corrFallback(){
 }
 // unité de n quand le serveur ne la donne pas (serveur plus ancien) : celle de chaque domaine
 const DOM_UNIT={calibration:'mines',veille:'mois-événements','sociétés':'points','prévisions':'points'};
+// une relation = mêmes domaine, x, y et source : ses coefficients (r et ρ) sur une ligne, chacun avec son badge complet
+// (les champs calculés vivent dans REL, jamais mêlés aux champs du serveur)
+const REL=new WeakMap();
+function relGroups(rows){ const m=new Map();
+  for(const sr of rows){ const k=[sr.domaine,sr.x,sr.y,sr.source].map(String).join('|');
+    if(!m.has(k)){ const g={...sr}; REL.set(g,{coefs:[],diff:'',cap:''}); m.set(k,g); } REL.get(m.get(k)).coefs.push(sr); }
+  return [...m.values()]; }
+// source d'une ligne moins celle du titre de son groupe : seul ce qui diffère reste sous la relation
+const srcDiff=(src,hdr)=>src===hdr?'':src.startsWith(hdr)?src.slice(hdr.length).replace(/^\s*;?\s*/,'').replace(/^\((.*)\)$/,'$1'):src;
 function srRow(sr){
+  const rm=REL.get(sr)||{}, cs=arr(rm.coefs).length?rm.coefs:[sr];
   const unit=typeof sr.unite_n==='string'&&sr.unite_n?sr.unite_n:Object.hasOwn(DOM_UNIT,String(sr.domaine))?DOM_UNIT[sr.domaine]:'';
-  const nb=num(sr.n_bootstrap_unit), info=[esc(sr.domaine),esc(sr.source||''),nb!=null?`IC rééchantillonné sur ${fmt(nb,0)} unités indépendantes`:''].filter(Boolean).join(' · ');
-  return `<div class="cbrow"><div class="rel"><b>${esc(sr.x)} ↔ ${esc(sr.y)}</b><small>${info}</small></div><div>${corrBadge({type:sr.type,v:sr.coefficient,lo:sr.lo,hi:sr.hi,n:sr.n,nUnit:unit,verdict:sr.verdict})}</div></div>`;
+  const nb=num(sr.n_bootstrap_unit), ub0=typeof sr.unite_bootstrap==='string'&&sr.unite_bootstrap?sr.unite_bootstrap:'unités indépendantes';
+  const ub=nb===1?ub0.replace(/^(\S+?)s\b/,'$1').replace('indépendantes','indépendante'):ub0;  // « 1 grappe de sociétés… »
+  const boot=nb==null?'':/pas de bootstrap/.test(ub)?`${fmt(nb,0)} ${esc(ub)}`:`IC rééchantillonné sur ${fmt(nb,0)} ${esc(ub)}`;
+  const info=[rm.diff?esc(rm.diff):'',boot].filter(Boolean).join(' · ');
+  return `<div class="cbrow"><div class="rel"><b>${esc(sr.x)} ↔ ${esc(sr.y)}</b>${info?`<small>${info}</small>`:''}</div><div class="cblist">${cs.map(c=>corrBadge({type:c.type,v:c.coefficient,lo:c.lo,hi:c.hi,n:c.n,nUnit:unit,verdict:c.verdict})).join('')}</div></div>`;
+}
+// un bloc par domaine : la source dite une fois dans le titre, sous chaque relation seulement ce qui en diffère ; une
+// précision commune à au moins trois relations qui se suivent (ex. « niveaux : dominés par la taille des mines… »)
+// devient la légende de leur sous-groupe au lieu d'être répétée sur chaque ligne
+function corrMark(shown){
+  const hdr={}, M=shown.map(g=>REL.get(g)||{});
+  shown.forEach((g,i)=>{ const dm=String(g.domaine); hdr[dm]??=String(g.source||'').split(' ; ')[0]; M[i].diff=srcDiff(String(g.source||''),hdr[dm]); M[i].cap=''; });
+  for(let i=0;i<shown.length;){ let j=i; while(j<shown.length&&M[j].diff===M[i].diff&&shown[j].domaine===shown[i].domaine) j++;
+    if(M[i].diff&&j-i>=3){ M[i].cap=M[i].diff; for(let k=i;k<j;k++) M[k].diff=''; } i=j; }
+  return hdr;
 }
 function allCorrDraw(){
   const d=PG.summary, el=$('#me_corr'); if(!d) return;
   const rows=arr(d.rows).map(obj), doms=arr(d.domaines).map(obj);
   const names=['tous',...new Set([...doms.map(x=>x.domaine),...rows.map(sr=>sr.domaine)].filter(Boolean))];
   if(!names.includes(PG.corrDom)) PG.corrDom='tous';
-  const shown=rows.filter(sr=>PG.corrDom==='tous'||sr.domaine===PG.corrDom);
-  const nOf=n=>n==='tous'?rows.length:rows.filter(sr=>sr.domaine===n).length;
+  const rels=relGroups(rows), shown=rels.filter(sr=>PG.corrDom==='tous'||sr.domaine===PG.corrDom);
+  const nOf=n=>n==='tous'?rels.length:rels.filter(sr=>sr.domaine===n).length;
   const msgs=doms.filter(x=>x.message&&(PG.corrDom==='tous'||x.domaine===PG.corrDom)).map(x=>`<li>${esc(x.domaine)} : ${esc(x.message)}</li>`).join('');
+  const hdr=corrMark(shown), html=shown.map(srRow);
+  const blocks=Object.keys(hdr).map(dm=>{ const ix=shown.map((g,i)=>String(g.domaine)===dm?i:-1).filter(i=>i>=0), h=hdr[dm];
+    const body=ix.map(i=>{ const c=REL.get(shown[i])?.cap||''; return (c?`<p class="cbcap">${esc(c.charAt(0).toUpperCase()+c.slice(1))}</p>`:'')+html[i]; }).join('');
+    return `<h3 class="grp">${esc(dm)}<span class="meta">${esc(h)}${h?' · ':''}${fmt(ix.length,0)} ${plur(ix.length,'relation')}</span></h3><div class="panel" style="padding:4px 20px"><div class="cbs">${body}</div></div>`; });
   el.innerHTML=`<div class="seg" role="group" aria-label="Domaine">${names.map(n=>`<button type="button" data-dom="${esc(n)}" aria-pressed="${n===PG.corrDom}">${esc(n)} <span class="meta">${fmt(nOf(n),0)}</span></button>`).join('')}</div>
-    ${shown.length?`<div class="panel" style="padding:4px 20px">${shown.map(srRow).join('')}</div>`:box('Aucune corrélation dans ce domaine pour l’instant.')}
+    <p class="note" style="margin:0">Comptes en relations : r et ρ d’une même relation sont sur sa ligne, chacun avec son intervalle, n et son verdict.</p>
+    ${shown.length?blocks.join(''):box('Aucune corrélation dans ce domaine pour l’instant.')}
     ${msgs?`<ul class="note" style="margin-top:12px;padding-left:18px">${msgs}</ul>`:''}`;
   el.querySelectorAll('button[data-dom]').forEach(b=>b.onclick=()=>{ PG.corrDom=b.dataset.dom; allCorrDraw(); });
 }
