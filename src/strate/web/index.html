@@ -255,6 +255,7 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 .kv{display:grid;grid-template-columns:150px 1fr;gap:6px 16px;margin-top:16px}
 .kv>div{min-width:0;overflow-wrap:anywhere}.kv>div:nth-child(odd){color:var(--muted)}
 .charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:var(--gap)}
+.charts.fill{grid-template-columns:repeat(auto-fill,minmax(300px,1fr))}.more.wide{max-width:none}  /* une carte seule garde la largeur d'une colonne */
 .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);padding:16px}
 .card h3{font-weight:500;color:var(--muted);font-size:12px}
 .estim{font-size:20px;font-weight:600;margin:0 0 6px}
@@ -264,7 +265,7 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 /* le cadre reste positionné quel que soit l'état (wait / none / chargée) : sinon le message se place contre la page */
 .imgs>div{position:relative}.imgs .wait::after{content:'Chargement de l’image satellite… (≈ 20 s la première fois)';position:absolute;left:12px;top:52px;color:var(--muted)}
 .imgs .none::after{content:'Pas d’image sans nuages ce mois-là';position:absolute;left:12px;top:52px;color:var(--muted)}
-.alerts td:first-child{white-space:nowrap}
+.alerts td:first-child{white-space:nowrap}.alerts td:nth-child(2),.alerts th:nth-child(2){text-align:center;width:48px}
 .ev{color:var(--accent)}
 .lgd{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin:0 0 8px}
 .lgd i{display:inline-block;width:14px;height:0;border-top:2px solid;vertical-align:middle;margin-right:5px}
@@ -721,15 +722,15 @@ async function renderSite(id,live){
   const vs=veilleOf(s);  // actualité de la mine (veille) : null = serveur sans veille, {fetch:true} = à demander
   const fc=s.production_reelle?fcSiteBlock():'';  // prévision : seulement pour une mine à série de production
   if(!s.analyse&&!s.donnees_anciennes){
-    html+=prodEstimate(s)+analyseBlock(s)+vSiteBlock(vs)+fc;
+    // la production réelle est la ligne « réel » de la prévision : elle n'a sa propre carte que si la prévision manque
+    html+=prodEstimate(s)+analyseBlock(s)+fc;
     html+=`<h2>Image satellite récente</h2><div class="imgs"><div class="wait"><img id="i1" alt="image satellite récente"></div><div class="meta" id="i1m"></div></div>`;
-    if(s.production_reelle) html+=`<h2>Production réelle (Jasansky et al. 2023)</h2><div class="card"><canvas id="prod" height="140"></canvas></div>`;
+    html+=vSiteBlock(vs);
     charts.forEach(c=>c.destroy()); charts=[];
     $('#detail').innerHTML=html;
     tryImg($('#i1'),id,recentMonths(s.lat),$('#i1m'));
-    if(s.production_reelle) prodChart(id,s.metaux,$('#prod'));
     vSiteAfter(vs,id,live);
-    if(fc) fcSiteAfter(id,live);
+    if(fc) fcSiteAfter(id,live,s.metaux);
     armAnalyse(id,busy);
     return;
   }
@@ -742,14 +743,22 @@ async function renderSite(id,live){
   const opt=ms=>ms.map(m=>`<option>${esc(m)}</option>`).join('');
   const alerts=dos.filter(r=>r.level>=1||r.evenement_connu).reverse();
   const marks=vs&&!vs.fetch?vMarks(vs):[];
-  html+=prodEstimate(s)+(block?analyseBlock(s):'')+calNote()+vSiteBlock(vs)+fc;
-  html+=`<h2>Changements physiques du site (satellite)</h2><div class="charts">${Object.keys(LBL).map(k=>`<div class="card"><h3>${LBL[k]}</h3><canvas id="c_${k}" height="150"></canvas></div>`).join('')}</div>
+  // ordre : les chiffres d'abord (estimation, prévision, courbes), puis ce qu'ils valent, les images, les alertes,
+  // l'actualité. La production réelle est la ligne « réel » de la prévision (carte à part seulement sans prévision).
+  // Les six signaux validés remplissent deux rangées de trois ; le signal radar expérimental se replie dessous.
+  const arow=r=>`<tr><td>${esc(r.date.slice(0,7))}</td><td>${lvl(Math.min(r.level,2))}</td><td>${esc(r.explication)}${r.evenement_connu?` <span class="ev">◆ ${esc(r.evenement_connu)}</span>`:''}</td></tr>`;
+  const AMAX=6, main=Object.keys(LBL).filter(k=>k!=='activity_db');
+  html+=prodEstimate(s)+(block?analyseBlock(s):'')+fc;
+  html+=`<h2>Changements physiques du site (satellite)</h2><div class="charts">${main.map(k=>`<div class="card"><h3>${LBL[k]}</h3><canvas id="c_${k}" height="150"></canvas></div>`).join('')}</div>
+    <details class="more wide"><summary>Signal expérimental, non validé : activité radar Sentinel-1</summary><div class="charts fill"><div class="card"><h3>${LBL.activity_db}</h3><canvas id="c_activity_db" height="150"></canvas></div></div></details>
     ${vs?`<p class="meta" id="v_marknote">${marks.length?MARKNOTE:''}</p>`:''}
-    ${s.production_reelle?`<h2>Production réelle (Jasansky et al. 2023)</h2><div class="card"><canvas id="prod" height="140"></canvas></div>`:''}
+    ${calNote()}
     <h2>Avant / après (Sentinel-2, couleurs naturelles)</h2>
     <div class="imgs"><div><select id="m1" aria-label="Mois de l’image avant">${opt(months)}</select><img id="i1" alt="image satellite avant"></div><div><select id="m2" aria-label="Mois de l’image après">${opt(months)}</select><img id="i2" alt="image satellite après"></div></div>
-    <h2>Alertes et événements</h2>
-    <div class="tablebox"><table class="alerts"><thead><tr><th>Mois</th><th>Niv.</th><th>Détail</th></tr></thead><tbody>${alerts.map(r=>`<tr><td>${esc(r.date.slice(0,7))}</td><td>${lvl(Math.min(r.level,2))}</td><td>${esc(r.explication)}${r.evenement_connu?` <span class="ev">◆ ${esc(r.evenement_connu)}</span>`:''}</td></tr>`).join('')||'<tr><td colspan=3 class="meta">Aucune</td></tr>'}</tbody></table></div>
+    <h2>Alertes et événements${alerts.length?` <span class="meta" style="font-size:13px;font-weight:400">${alerts.length}</span>`:''}</h2>
+    <div class="tablebox"><table class="alerts"><thead><tr><th>Mois</th><th>Niv.</th><th>Détail</th></tr></thead><tbody>${alerts.slice(0,AMAX).map(arow).join('')||'<tr><td colspan=3 class="meta">Aucune</td></tr>'}</tbody></table></div>
+    ${alerts.length>AMAX?more(`Voir les ${alerts.length-AMAX} autres alertes (depuis ${esc(alerts.at(-1).date.slice(0,7))})`,`<div class="tablebox"><table class="alerts"><tbody>${alerts.slice(AMAX).map(arow).join('')}</tbody></table></div>`):''}
+    ${vSiteBlock(vs)}
     ${ev.length?`<h2>Contrôle sur événements connus</h2><div class="tablebox"><table><tbody>${ev.map(e=>`<tr><td>${esc(e.date)}</td><td>${esc(e.evenement)}</td><td>${e.detecte?'<span class="lvl l0">détecté</span>':'<span class="lvl l2">manqué</span>'}</td></tr>`).join('')}</tbody></table></div>`:''}
     <p class="note" style="margin-top:16px">Sources : Copernicus Sentinel-2 L2A (Microsoft Planetary Computer), Wikimedia Pageviews. Seuils non encore calibrés : à lire comme des pistes, pas des conclusions.</p>`;
   charts.forEach(c=>c.destroy()); charts=[];
@@ -762,9 +771,8 @@ async function renderSite(id,live){
     const pts=dos.filter(r=>r[k]!=null), sig={a:pts.map(r=>r['a_'+k]??null),z:pts.map(r=>r['z_'+k]??null)};
     charts.push(line($('#c_'+k),pts.map(r=>r.date.slice(0,7)),pts.map(r=>r[k]),sig,k.endsWith('views'),marks));
   }
-  if(s.production_reelle) prodChart(id,s.metaux,$('#prod'));
   vSiteAfter(vs,id,live);
-  if(fc) fcSiteAfter(id,live);
+  if(fc) fcSiteAfter(id,live,s.metaux);
   if(block) armAnalyse(id,busy);
 }
 // Bloc « Analyse » : libellé selon l'état (jamais analysée / signaux anciens / analysée mais relancée ou en
@@ -804,7 +812,7 @@ function prodEstimate(s){
     D'après ${fmt(f.emprise_km2,1)} km² d'emprise réelle (contours satellite Maus, images 2019), modèle calibré sur ${esc(f.mines_calibration??'?')} mines à production connue.
     C'est la taille de l'emprise qui donne l'échelle, pas une mesure Sentinel : très imprécis par nature, la taille d'une mine dit son échelle, pas son rendement.${ch!=null&&ch<0.4?` Pour le charbon, l'estimation varie peu avec la taille (pente ${fmt(ch,2)}) : elle reste proche de la mine de charbon médiane.`:''}</p></div>`;
 }
-function calNote(){
+function calNote(flat=false){
   const n=num(CAL.mines); if(n==null) return '';
   const fw=Array.isArray(CAL.fenetre)&&CAL.fenetre.length===2?` (${esc(CAL.fenetre[0])}–${esc(CAL.fenetre[1])})`:'';
   const me=CAL.modele_emprise||{}, v=CAL.variation||{}, a=CAL.alertes||{}, ta=CAL.taille||{};
@@ -836,7 +844,10 @@ function calNote(){
   if(prec!=null) out.push(`Une variation annuelle de plus de 10 % de la surface nue ne coïncide avec une vraie variation de production (&gt; 20 %) que dans ${pct(prec)} des cas${pci[1]!=null&&pci[2]!=null?` (IC 90 % ${pct(pci[1])} à ${pct(pci[2])})`:''}${base!=null?`, contre ${pct(base)} au hasard`:''}.`);
   out.push(`Les alertes mensuelles affichées ici (z saisonnier ≥ 2, persistant) n'ont <b>pas</b> été confrontées à la production.
     Ces courbes décrivent donc l'évolution physique du site (expansion, résidus, défrichement), pas sa production.`);
-  return `<h2>Ce que valent ces signaux</h2><p class="calnote">${out.join('\n    ')}</p>${calBadges(true)}`;
+  const prose=`<p class="calnote">${out.join('\n    ')}</p>`;
+  // page Calibration : la prose seule, à plat ; fiche d'une mine : repliée sous une phrase, avec les badges
+  if(flat) return prose;
+  return `<h2>Ce que valent ces signaux</h2>${more('Ces courbes décrivent l’évolution physique du site, pas sa production : calibration et limites',prose+calBadges(true))}`;
 }
 // sig = {a, z} : a (z retenu, persistant) place les points d'alerte ; z (brut) s'affiche au survol.
 // Un mois isolé a a = 0 : afficher a ferait lire « z = 0,0 » pour une anomalie réelle mais non confirmée.
@@ -1973,11 +1984,13 @@ function fcMsg(d){ return d==null?'Pas de série de production publiée pour cet
   :typeof d.message==='string'&&d.message?d.message:'Série trop courte pour prévoir.'; }
 // fiche d'une mine : bloc « Prévision » (rempli après coup ; jeton de la fiche respecté)
 function fcSiteBlock(){ return '<h2>Prévision de production</h2><div id="fc_site"><p class="meta">Chargement de la prévision…</p></div>'; }
-async function fcSiteAfter(id,live){
-  let r; try{ r=await fcData(id); }catch(e){ const b=$('#fc_site'); if(live()&&b?.isConnected) b.innerHTML=`<p class="meta">Prévision indisponible : ${esc(errTxt(e))}</p>`; return; }
+// sans prévision dessinable, la série publiée garde sa propre carte (sinon c'est la ligne « réel » de la prévision)
+const prodCard='<h2>Production réelle (Jasansky et al. 2023)</h2><div class="card"><canvas id="prod" height="140"></canvas></div>';
+async function fcSiteAfter(id,live,metaux){
+  let r; try{ r=await fcData(id); }catch(e){ const b=$('#fc_site'); if(live()&&b?.isConnected){ b.innerHTML=`<p class="meta">Prévision indisponible : ${esc(errTxt(e))}</p>`+prodCard; prodChart(id,metaux,$('#prod')); } return; }
   const b=$('#fc_site'); if(!live()||!b?.isConnected) return;
   const d=r.d&&typeof r.d==='object'?r.d:null;
-  if(!d||!arr(d.historique).length&&!arr(d.prevision).length){ b.innerHTML=box(esc(fcMsg(d))); return; }
+  if(!d||!arr(d.historique).length&&!arr(d.prevision).length){ b.innerHTML=box(esc(fcMsg(d)))+prodCard; prodChart(id,metaux,$('#prod')); return; }
   const P=arr(d.prevision);
   b.innerHTML=`<div class="card">${FC_LEGEND}<canvas id="fc_site_c" height="150"></canvas>${fcUnmeasured(d,r.bt)}</div>
     <div style="margin-top:12px">${P.length?fcQuality(d.qualite,r.bt,d.suivi_site):box(esc(fcMsg(d)))}</div>
@@ -2081,7 +2094,7 @@ function calPage(){
   const el=$('#me_cal');
   if(num(CAL.mines)==null){ el.innerHTML=CAL_READY?box('Calibration absente : uv run strate calibrate'):loading(); return; }
   const a=CAL.alertes||{}, prec=Array.isArray(a.precision)?a.precision:[];
-  const p=calNote().replace(/^<h2>[^<]*<\/h2>/,'').replace(/<details[\s\S]*$/,'');
+  const p=calNote(true);
   el.innerHTML=`<h2 style="margin-top:0">Ce que l’on sait</h2>${p}
     <h2>Corrélations mesurées</h2>${calBadges(false)}
     ${num(prec[0])!=null?`<h2>Règle d’alerte annuelle</h2><div class="kpis" style="--k:2"><div><span>Précision (variation &gt; 10 % de la surface nue → vraie variation &gt; 20 %)</span><b>${pct(prec[0])}</b><span>IC 90 % ${pct(num(prec[1]))} à ${pct(num(prec[2]))}</span></div><div><span>Taux de base (au hasard)</span><b>${pct(num(a.taux_de_base))}</b></div></div>`:''}
