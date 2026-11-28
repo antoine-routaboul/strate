@@ -376,9 +376,11 @@ a.mine{color:var(--accent)}
 #fc_res{position:absolute;top:calc(100% + 4px);left:0;right:0;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);
   box-shadow:var(--float);z-index:900;padding:4px}
 #fc_res a{display:block;padding:6px 10px;color:var(--text);border-radius:4px}#fc_res a:hover,#fc_res a:focus-visible{background:var(--raised);text-decoration:none}
-.srclist{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0 var(--gap)}
-.srclist div{padding:12px 0;border-bottom:1px solid var(--rule)}.srclist b{font-weight:500;display:block}
-.srclist span{color:var(--muted);font-size:12px}
+.srclist{display:grid;grid-template-columns:minmax(0,1fr);max-width:880px}
+.srclist div{display:grid;grid-template-columns:300px minmax(0,1fr);gap:2px 24px;align-items:baseline;padding:12px 0;border-bottom:1px solid var(--rule)}
+.srclist b{font-weight:500}.srclist span{color:var(--muted);font-size:13px;overflow-wrap:anywhere}
+#sources .kpis{max-width:880px}
+@media (max-width:640px){.srclist div{grid-template-columns:minmax(0,1fr)}}
 
 @media (max-width:1180px){.mapgrid{grid-template-columns:minmax(0,1fr) 340px}.vgrid,.vcorr,.grid-7-5{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:900px){
@@ -401,7 +403,7 @@ a.mine{color:var(--accent)}
   #view-map.is-site .mapcol{grid-column:1;grid-row:1;position:static}#view-map.is-site #detail{grid-column:1;grid-row:2}
   #view-map.is-site #map{height:160px}
   #map{height:58vh}
-  .grid2,.vcols,.srclist{grid-template-columns:minmax(0,1fr)}
+  .grid2,.vcols{grid-template-columns:minmax(0,1fr)}
   .pipe{grid-template-columns:1fr}
   .fi{grid-template-columns:1fr}.fi .m{grid-column:1}
   .totals,.kpis{grid-template-columns:1fr 1fr}.kpis>div:nth-child(2n){border-right:0}
@@ -590,7 +592,7 @@ a.mine{color:var(--accent)}
   <nav class="subtabs" aria-label="Méthode"><a href="#/methode/calibration" data-sub="calibration">Calibration</a><a href="#/methode/sources" data-sub="sources">Sources &amp; licences</a><a href="#/methode/correlations" data-sub="correlations">Corrélations — toutes</a></nav>
   <section data-sub="calibration"><div id="me_cal"></div></section>
   <section data-sub="sources" hidden>
-    <h2 style="margin-top:0">Catalogue des mines</h2><div class="panel" id="sources"><p class="meta">Chargement…</p></div>
+    <h2 style="margin-top:0">Catalogue des mines</h2><div id="sources"><p class="meta">Chargement…</p></div>
     <h2>Signaux, actualité, sociétés et interface</h2><div class="srclist" id="me_src"></div>
   </section>
   <section data-sub="correlations" hidden><div id="me_corr"></div></section>
@@ -636,9 +638,15 @@ async function init(){
   const cal=obj(calR), stats=obj(statsR), rad=arr(radR).map(obj), pts=arr(ptsR).filter(Array.isArray);
   CAL=cal; CAL_READY=true; STATS=stats;
   $('#count').textContent=`${fmt(stats.total,0)} sites dans ${stats.pays||0} pays · ${fmt(stats.avec_emprise_satellite,0)} avec emprise réelle · ${fmt(stats.avec_production_reelle,0)} avec production publiée`;
-  $('#sources').innerHTML=`<p>${fmt(stats.mines_actives_icmm,0)} mines actives nommées · ${fmt(stats.usines_fonderies_raffineries,0)} usines, fonderies et raffineries · ${fmt(stats.mines_wikidata,0)} mines Wikidata · ${fmt(stats.emprises_sans_nom,0)} emprises satellite sans nom</p>
-    <p class="meta">${fmt(stats.avec_emprise_satellite,0)} avec emprise réelle · ${fmt(stats.avec_production_reelle,0)} avec production réelle · ${fmt(stats.avec_article_wikipedia,0)} avec article Wikipedia</p>
-    <ul style="margin:12px 0 0;padding-left:18px">${arr(stats.sources).map(s=>`<li>${esc(s)}</li>`).join('')}</ul>`;
+  // catalogue : les quatre comptes en bandeau, la couverture en une ligne, puis chaque source en « nom | lien · licence »,
+  // comme la liste des signaux en dessous (un seul traitement pour les deux listes)
+  const kp=[[stats.mines_actives_icmm,'Mines actives nommées'],[stats.usines_fonderies_raffineries,'Usines, fonderies et raffineries'],
+    [stats.mines_wikidata,'Mines Wikidata'],[stats.emprises_sans_nom,'Emprises satellite sans nom']];
+  const srcRow=x=>{ const [t,...l]=String(x).split(' — '), m=t.match(/^(.*?),?\s*(https?:\/\/\S+)$/), u=m?safeUrl(m[2]):null;
+    return `<div><b>${esc(m?m[1]:t)}</b><span>${u?`<a href="${esc(u)}" target="_blank" rel="noopener">${esc(u.replace(/^https?:\/\//,''))}</a> · `:''}${esc(l.join(' — '))}</span></div>`; };
+  $('#sources').innerHTML=`<div class="kpis" style="--k:4">${kp.map(([v,t])=>`<div><span>${t}</span><b>${fmt(num(v),0)}</b></div>`).join('')}</div>
+    <p class="note" style="margin:-8px 0 12px">${fmt(stats.avec_emprise_satellite,0)} avec emprise réelle · ${fmt(stats.avec_production_reelle,0)} avec production réelle · ${fmt(stats.avec_article_wikipedia,0)} avec article Wikipedia</p>
+    <div class="srclist">${arr(stats.sources).map(srcRow).join('')}</div>`;
   // bindTooltip(chaîne) passe par innerHTML : les noms viennent de Wikidata (éditable par tous), donc esc()
   for(const [id,la,lo] of pts) PTS.set(id,[la,lo]);  // calque veille : position catalogue de la mine citée
   for(const k of [2,3,1,0]) for(const [id,la,lo,kind,name] of pts){ if(kind!==k||num(la)==null||num(lo)==null)continue;
