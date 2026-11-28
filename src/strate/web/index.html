@@ -275,7 +275,8 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 /* le cadre reste positionné quel que soit l'état (wait / none / chargée) : sinon le message se place contre la page */
 .imgs>div{position:relative}.imgs .wait::after{content:'Chargement de l’image satellite… (≈ 20 s la première fois)';position:absolute;left:12px;top:52px;color:var(--muted)}
 .imgs .none::after{content:'Pas d’image sans nuages ce mois-là';position:absolute;left:12px;top:52px;color:var(--muted)}
-.alerts td:first-child{white-space:nowrap}.alerts td:nth-child(2),.alerts th:nth-child(2){text-align:center;width:48px}
+/* colonnes fixes : la suite repliée des alertes (sans en-tête) garde les colonnes du tableau du haut */
+table.alerts{table-layout:fixed}.alerts td:first-child,.alerts th:first-child{white-space:nowrap;width:96px}.alerts td:nth-child(2),.alerts th:nth-child(2){text-align:center;width:48px}
 .ev{color:var(--accent)}
 .lgd{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--muted);margin:0 0 8px}
 .lgd i{display:inline-block;width:14px;height:0;border-top:2px solid;vertical-align:middle;margin-right:5px}
@@ -811,7 +812,7 @@ async function renderSite(id,live){
     <div class="imgs"><div><select id="m1" aria-label="Mois de l’image avant">${opt(months)}</select><img id="i1" alt="image satellite avant"></div><div><select id="m2" aria-label="Mois de l’image après">${opt(months)}</select><img id="i2" alt="image satellite après"></div></div>
     <h2>Alertes et événements${alerts.length?` <span class="meta" style="font-size:13px;font-weight:400">${alerts.length}</span>`:''}</h2>
     <div class="tablebox"><table class="alerts"><thead><tr><th>Mois</th><th>Niv.</th><th>Détail</th></tr></thead><tbody>${alerts.slice(0,AMAX).map(arow).join('')||'<tr><td colspan=3 class="meta">Aucune</td></tr>'}</tbody></table></div>
-    ${alerts.length>AMAX?more(`Voir les ${alerts.length-AMAX} autres alertes (depuis ${esc(alerts.at(-1).date.slice(0,7))})`,`<div class="tablebox"><table class="alerts"><tbody>${alerts.slice(AMAX).map(arow).join('')}</tbody></table></div>`):''}
+    ${alerts.length>AMAX?`<details class="more wide"><summary>Voir les ${alerts.length-AMAX} autres alertes (depuis ${esc(alerts.at(-1).date.slice(0,7))})</summary><div class="tablebox"><table class="alerts"><tbody>${alerts.slice(AMAX).map(arow).join('')}</tbody></table></div></details>`:''}
     ${vSiteBlock(vs)}
     ${ev.length?`<h2>Contrôle sur événements connus</h2><div class="tablebox"><table><tbody>${ev.map(e=>`<tr><td>${esc(e.date)}</td><td>${esc(e.evenement)}</td><td>${e.detecte?'<span class="lvl l0">détecté</span>':'<span class="lvl l2">manqué</span>'}</td></tr>`).join('')}</tbody></table></div>`:''}
     <p class="note" style="margin-top:16px">Sources : Copernicus Sentinel-2 L2A (Microsoft Planetary Computer), Wikimedia Pageviews. Seuils non encore calibrés : à lire comme des pistes, pas des conclusions.</p>`;
