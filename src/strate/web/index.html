@@ -275,10 +275,6 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 .beat{display:inline-flex;align-items:center;gap:7px}.beat i{width:8px;height:8px;border-radius:50%;background:var(--faint)}
 .beat.on i{background:var(--positive);animation:beat 2s ease-in-out infinite}.beat.off i{background:var(--negative)}
 @keyframes beat{50%{opacity:.35}}
-/* barre de 60 s : montre sans minuteur JS quand arrive la prochaine actualisation */
-.vbar{height:1px;background:var(--border);position:relative;overflow:hidden;margin:-8px 0 20px}
-.vbar i{position:absolute;inset:0;background:var(--accent);transform-origin:left;animation:vbar 60s linear forwards}
-@keyframes vbar{from{transform:scaleX(0)}to{transform:scaleX(1)}}
 .pipe{display:grid;grid-template-columns:1fr 28px 1fr 28px 1fr;margin-bottom:8px}
 .pipe .arrow{position:relative}
 .pipe .arrow::before{content:'';position:absolute;left:4px;right:6px;top:50%;height:1px;background:var(--control)}
@@ -392,7 +388,7 @@ a.mine{color:var(--accent)}
   .cbrow{grid-template-columns:1fr}.cb{display:flex;flex-wrap:wrap}.cb .pill{flex:1 1 100%}
   h1,.title{font-size:20px}
 }
-@media (prefers-reduced-motion:reduce){.beat.on i,.vbar i,.fi.fresh,.vev.new::after{animation:none}}
+@media (prefers-reduced-motion:reduce){.beat.on i,.fi.fresh,.vev.new::after{animation:none}}
 </style>
 </head>
 <body>
@@ -453,10 +449,8 @@ a.mine{color:var(--accent)}
 
 <div id="view-veille">
   <div class="page-head"><div><h1 id="v_h1">Flux d’actualité</h1>
-    <p class="sub">Veille 24 h/24, sans IA : actualité minière mondiale (GDELT, ~65 langues) → rattachement aux mines → signaux satellite</p></div>
-    <div class="actions"><span class="beat" id="v_beat"><i></i><span id="v_beat_t">…</span></span><span class="meta" id="v_upd"></span></div></div>
-  <div class="vbar" id="v_bar"><i></i></div>
-  <nav class="subtabs" aria-label="Veille"><a href="#/veille/flux" data-sub="flux">Flux d’actualité</a><a href="#/veille/correlations" data-sub="correlations">Corrélations événements ↔ satellite</a><a href="#/veille/suivies" data-sub="suivies">Mines suivies</a><a href="#/veille/etat" data-sub="etat">État du service</a></nav>
+    <p class="sub"><span class="beat" id="v_beat"><i></i><span id="v_beat_t">…</span></span><span id="v_upd"></span></p></div></div>
+  <nav class="subtabs" aria-label="Veille"><a href="#/veille/flux" data-sub="flux">Flux d’actualité</a><a href="#/veille/correlations" data-sub="correlations">Corrélations</a><a href="#/veille/suivies" data-sub="suivies">Mines suivies</a><a href="#/veille/etat" data-sub="etat">État du service</a></nav>
   <p class="notice" id="v_empty" hidden></p>
   <section data-sub="flux">
     <div class="vgrid">
@@ -510,6 +504,7 @@ a.mine{color:var(--accent)}
   </section>
   <section data-sub="etat" hidden>
     <h2 style="margin-top:0">Chaîne de traitement</h2>
+    <p class="sub" style="margin:-4px 0 12px">Veille 24 h/24, sans IA : actualité minière mondiale (GDELT, ~65 langues) → rattachement aux mines → signaux satellite</p>
     <div class="pipe" id="v_pipe"><p class="meta">Chargement…</p></div>
     <h2>Contenu de la base</h2>
     <div class="totals" id="v_tot"></div>
@@ -1241,8 +1236,7 @@ async function vLoad(){
   const safe=f=>{try{f();}catch(e){console.error(e);}};
   safe(()=>vStatus(st.v,st.er)); safe(()=>vFeed(ev.v,ev.er)); safe(()=>vStats(sta.v,sp.v,sta.er));
   safe(()=>vCorr(co.v,co.er)); safe(()=>vTracked(tr.v,tr.er));
-  $('#v_upd').textContent=`mis à jour à ${new Date().toLocaleTimeString('fr-FR')} · toutes les 60 s`;
-  $('#v_bar').innerHTML='<i></i>';  // relance l'animation de 60 s
+  $('#v_upd').textContent=` · mis à jour à ${new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})}, toutes les 60 s`;
 }
 const vTab=()=>$('#view-veille').style.display==='block';
 const vMapShown=()=>$('#view-map').style.display!=='none';
@@ -1268,7 +1262,7 @@ function vBeatSet(svc,sx){
   if(!svc){ b.className='beat'; t.textContent='service : état inconnu'; return; }
   const on=svc.actif===true; b.className='beat '+(on?'on':'off'); d.className='tdot '+(on?'on':'off');
   t.textContent=(on?'service actif':'service arrêté')+(svc.dernier_cycle?` · dernier cycle ${ago(svc.dernier_cycle)}`:' · aucun cycle')
-    +(sx?.message?` · ${sx.message}`:'');
+    +(sx?.message&&!(!on&&/^arrêt/.test(sx.message))?` · ${sx.message}`:'');  // « arrêté après n cycle(s) » redit l'état
 }
 // compteurs d'une ligne pipeline_status : objet, ou texte JSON (base lue directement)
 function vCnt(x){ let c=obj(x).counters; if(typeof c==='string'){ try{c=JSON.parse(c);}catch{c={};} } return obj(c); }
