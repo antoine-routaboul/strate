@@ -93,7 +93,7 @@ abbr.flag{color:var(--faint);text-decoration:none;cursor:help;margin-left:2px}
 .menu-list a[aria-current="page"]{text-decoration:underline 1px var(--accent);text-underline-offset:5px}
 .menu-list a small{display:block;color:var(--muted);font-size:12px}
 .tdot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--faint)}
-.tdot.on{background:var(--positive)}.tdot.off{background:var(--negative)}
+.tdot.on{background:var(--positive)}.tdot.off{background:var(--faint)}  /* arrêté : éteint, pas en erreur ; le rouge reste aux étapes en erreur */
 .search{position:relative;flex:1;min-width:0;max-width:460px;margin-left:auto}
 .search input{width:100%;min-width:0;height:var(--ctl);padding:0 34px 0 12px;border:1px solid var(--control);border-radius:var(--r-ctl);
   background:var(--surface);color:var(--text);font:inherit}
@@ -273,7 +273,7 @@ td .cb{grid-template-columns:64px 84px 148px 168px}td .cb .pill{grid-column:3/-1
 
 /* -- veille --------------------------------------------------------------------------------------- */
 .beat{display:inline-flex;align-items:center;gap:7px}.beat i{width:8px;height:8px;border-radius:50%;background:var(--faint)}
-.beat.on i{background:var(--positive);animation:beat 2s ease-in-out infinite}.beat.off i{background:var(--negative)}
+.beat.on i{background:var(--positive);animation:beat 2s ease-in-out infinite}.beat.off i{background:var(--faint)}
 @keyframes beat{50%{opacity:.35}}
 .pipe{display:grid;grid-template-columns:1fr 28px 1fr 28px 1fr;margin-bottom:8px}
 .pipe .arrow{position:relative}
