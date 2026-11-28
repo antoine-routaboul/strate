@@ -73,11 +73,15 @@ def _z(x: float, hist: np.ndarray, floor: float = 1e-6) -> float:
 def seasonal_z(s: pd.Series, floor: float = MIN_EFFECT_KM2) -> pd.Series:
     """z du mois t contre les mêmes saisons (mois ±1) des SEASON_YEARS années précédentes."""
     s = s.dropna()
-    dates, vals = s.index, s.to_numpy(dtype=float)
+    vals = s.to_numpy(dtype=float)
+    # année et mois en entiers une fois pour toutes : les relire sur l'index à chaque tour coûtait
+    # l'essentiel du temps du radar (des centaines de milliers d'opérations pandas)
+    years = np.asarray(s.index.year, dtype=int)
+    months = np.asarray(s.index.month, dtype=int)
     z = np.full(len(vals), np.nan)
-    for i, d in enumerate(dates):
-        ago = (d.year - dates.year) * 12 + (d.month - dates.month)  # mois écoulés
-        moy = np.abs(((dates.month - d.month) + 6) % 12 - 6)  # distance circulaire entre mois
+    for i in range(len(vals)):
+        ago = (years[i] - years) * 12 + (months[i] - months)  # mois écoulés
+        moy = np.abs(((months - months[i]) + 6) % 12 - 6)  # distance circulaire entre mois
         mask = (ago >= 11) & (ago <= 12 * SEASON_YEARS + 1) & (moy <= 1)
         hist = vals[mask]
         if len(hist) >= SEASON_MIN:
@@ -102,9 +106,11 @@ def persistent(z: pd.Series) -> pd.Series:
     return z.where(keep, 0.0).where(z.notna())
 
 
-def dossier(site_id: str) -> pd.DataFrame:
-    """Table mensuelle : valeur et z de chaque signal, niveau de convergence, explication."""
-    df = signals(site_id)
+def dossier(site_id: str, df: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Table mensuelle : valeur et z de chaque signal, niveau de convergence, explication.
+
+    `df` : signaux déjà lus (le radar les lit d'abord pour écarter les sites sans mois récent)."""
+    df = signals(site_id) if df is None else df
     if df.empty:
         return pd.DataFrame()
     wide = df.pivot_table(index="date", columns="signal", values="value").sort_index()
@@ -177,12 +183,18 @@ def radar(month: str | None = None) -> pd.DataFrame:
     rows = []
     g = entities.load()
     ids = list(dict.fromkeys([*g.sites, *analysed("optical")]))
+    cutoff = pd.Timestamp.today() - pd.Timedelta(days=183)
     for sid in ids:
         try:
             site = g.site(sid)
         except KeyError:
             continue
-        d = dossier(sid)
+        sig = signals(sid)
+        # sans mois récent, le site sera écarté plus bas : inutile de calculer tout son dossier (les
+        # ~150 mines de calibration 2016–2019 coûtaient l'essentiel du temps du radar)
+        if sig.empty or (not month and pd.to_datetime(sig["date"]).max() < cutoff):
+            continue
+        d = dossier(sid, sig)
         if d.empty:
             continue
         if month:
@@ -190,7 +202,7 @@ def radar(month: str | None = None) -> pd.DataFrame:
         if d.empty:
             continue
         last = d.iloc[-1]
-        if not month and last["date"] < pd.Timestamp.today() - pd.Timedelta(days=183):
+        if not month and last["date"] < cutoff:
             continue  # pas de données récentes (ex. mines analysées seulement pour la calibration 2016–2019)
         rows.append(dict(site=sid, nom=site.name, pays=site.country, date=last["date"],
                          niveau=int(last["level"]), explication=last["explication"],
