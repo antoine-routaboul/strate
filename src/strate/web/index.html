@@ -139,8 +139,9 @@ button:disabled{opacity:.6;cursor:wait}
 .btn-text{height:auto;padding:0;border:0;background:none;color:var(--accent);font-weight:500}
 .ghost{background:var(--surface)}
 input,select{font:inherit;color:var(--text)}
-select,input[type=text],input[type=number],input[type=search]{height:var(--ctl);padding:0 10px;border:1px solid var(--control);
-  border-radius:var(--r-chip);background:var(--surface)}
+/* une seule forme de contrôle : champs et listes prennent l'arrondi des boutons et des cases à cocher voisins */
+select,input[type=text],input[type=number],input[type=search]{height:var(--ctl);padding:0 12px;border:1px solid var(--control);
+  border-radius:var(--r-ctl);background:var(--surface)}
 .filters{display:flex;flex-wrap:wrap;gap:12px 14px;align-items:flex-end;margin-bottom:16px}
 .filters label{display:flex;flex-direction:column;gap:4px;color:var(--muted);font-size:12px}
 .filters input[type=number]{width:104px}.filters input[type=text],.filters input[type=search]{width:190px}
