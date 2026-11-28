@@ -159,8 +159,9 @@ td a.nm,td .nm{color:var(--text);font-weight:500}
 .tablebox{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);overflow:auto}
 .tablebox td:first-child,.tablebox th:first-child{padding-left:14px}.tablebox td:last-child,.tablebox th:last-child{padding-right:14px}
 .tablebox tr:last-child td{border-bottom:0}
-.scrwrap{max-height:calc(100vh - 330px);min-height:240px;overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card)}
+.scrwrap{max-height:calc(100vh - 330px);overflow:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card)}
 .scrwrap th{position:sticky;top:0;background:var(--surface);z-index:1}
+#view-screener .scrwrap{min-height:240px}  /* le cadre ne saute pas pendant le chargement ; ailleurs il se resserre sur ses lignes */
 #scr th[data-s]{cursor:pointer}#scr th[data-s]:hover{color:var(--text)}
 #scr th.s{color:var(--text)}#scr th.s::after{content:' ↓'}#scr th.s.asc::after{content:' ↑'}
 .pager{display:flex;gap:10px;align-items:center;margin-top:12px}
@@ -310,7 +311,9 @@ a.mine{color:var(--accent)}
 .vpop ul{margin:6px 0 0;padding:0;list-style:none}.vpop li{padding:4px 0;border-top:1px solid var(--rule)}
 
 /* -- sociétés, prévisions, méthode ------------------------------------------------------------------- */
-.barlist{display:flex;flex-direction:column;gap:10px}
+.barlist{display:flex;flex-direction:column;gap:8px}
+/* une ligne par société : nom à l'encre (pas de colonne de liens bleus), valeur et exercice sur la même ligne */
+.barlist a.nm{color:var(--text);font-weight:500}.barlist .num div.u{display:inline;margin-left:6px}.barlist .num div.u::before{content:'· '}
 .barlist .bl{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px}
 .barlist .bl i{grid-column:1/-1;display:block;height:2px;background:var(--muted);border-radius:1px}
 .barlist .bl:first-child i{background:var(--text)}
