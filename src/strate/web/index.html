@@ -1796,7 +1796,7 @@ async function coCapex(){
   const [c,d]=await Promise.allSettled([coCorrRows(),coRows()]); if(!live()) return;
   const C=c.status==='fulfilled'?c.value:null, D=d.status==='fulfilled'?d.value:null;
   const rel=C?C.rows.filter(cc=>/capex|pred_g|act_g|invest/i.test(String(cc.x)+' '+String(cc.y))):[];
-  const corr=!C?errBox('Corrélations indisponibles',c.reason):rel.length?`<div class="panel" style="padding:4px 20px">${rel.map(ccRow).join('')}</div>${C.methode?`<p class="note" style="margin-top:10px">${esc(C.methode)}</p>`:''}`
+  const corr=!C?errBox('Corrélations indisponibles',c.reason):rel.length?`<div class="panel" style="padding:4px 20px">${rel.map(cc=>ccRow(cc)).join('')}</div>${C.methode?`<p class="note" style="margin-top:10px">${esc(C.methode)}</p>`:''}`
     :box(esc(C.message||'Aucune corrélation CAPEX calculée.'));
   let rank='', inv='';
   if(!D) rank=errBox('Annuaire indisponible',d.reason);
@@ -1816,7 +1816,7 @@ async function coEff(){
   const [c,d]=await Promise.allSettled([coCorrRows(),coRows()]); if(!live()) return;
   const C=c.status==='fulfilled'?c.value:null, D=d.status==='fulfilled'?d.value:null;
   const rel=C?C.rows.filter(cc=>/effectif|employ|salari/i.test(String(cc.x)+' '+String(cc.y))):[];
-  const corr=!C?errBox('Corrélations indisponibles',c.reason):rel.length?`<div class="panel" style="padding:4px 20px">${rel.map(ccRow).join('')}</div>`
+  const corr=!C?errBox('Corrélations indisponibles',c.reason):rel.length?`<div class="panel" style="padding:4px 20px">${rel.map(cc=>ccRow(cc)).join('')}</div>`
     :box('Aucune corrélation effectifs ↔ production calculée : trop peu de sociétés ont des effectifs sur plusieurs exercices.');
   const now=new Date().getFullYear();
   const rl=D?rankList(D.rows,co=>num(co.effectifs),co=>`${fmt(co.effectifs,0)}${yr(co.effectifs_annee)}${num(co.effectifs_annee)!=null&&now-co.effectifs_annee>5?' <span class="pill p-warn">ancien</span>':''}`,20):null;
