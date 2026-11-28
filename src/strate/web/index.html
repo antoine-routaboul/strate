@@ -183,6 +183,7 @@ td a.nm,td .nm{color:var(--text);font-weight:500}
 #view-screener .scrwrap{min-height:240px}  /* le cadre ne saute pas pendant le chargement ; ailleurs il se resserre sur ses lignes */
 /* deuxième ligne d'une cellule : catégorie rare, intervalle, série et année ; même bord droit que le chiffre */
 #scr .sl{color:var(--muted);font-size:12px;white-space:nowrap}
+#co_tab .tk{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
 #scr th[data-s]{cursor:pointer}#scr th[data-s]:hover{color:var(--text)}
 #scr th.s{color:var(--text)}#scr th.s::after{content:' ↓'}#scr th.s.asc::after{content:' ↑'}
 .pager{display:flex;gap:10px;align-items:center;margin-top:12px}
@@ -397,6 +398,10 @@ a.mine{color:var(--accent)}
   .kv{grid-template-columns:120px 1fr}.imgs{grid-template-columns:1fr}
   .cbrow{grid-template-columns:1fr}.cb{display:flex;flex-wrap:wrap}.cb .pill{flex:1 1 100%}
   h1,.title{font-size:20px}
+  /* annuaire : la page défile seule (pas de second défilement vertical), la colonne Société reste visible en défilant de côté */
+  #co_list .scrwrap{max-height:none}
+  #co_tab th:first-child,#co_tab td:first-child{position:sticky;left:0;background:var(--surface);z-index:2;min-width:150px;max-width:170px}
+  #co_tab .tk{max-width:150px}
 }
 /* téléphone : chaque mine suivie en deux colonnes (nom et compte, détails dessous) au lieu d'un tableau qui défile */
 @media (max-width:640px){
@@ -1749,7 +1754,15 @@ function coDevOrder(rows,k){
   const c={}; rows.forEach(co=>{ const d=coDev(co,k); if(num(co[k])!=null&&d) c[d]=(c[d]||0)+1; });
   return Object.entries(c).sort((a,b)=>b[1]-a[1]||String(a[0]).localeCompare(String(b[0]))).map(x=>String(x[0]));
 }
+// exercice le plus fréquent du CAPEX : écrit une fois dans le sous-titre, et sous un montant seulement s'il en diffère
+function coModeYear(rows){
+  const c=new Map(); rows.forEach(co=>{ const y=num(co.capex_annee); if(y!=null) c.set(y,(c.get(y)||0)+1); });
+  return [...c].sort((a,b)=>b[1]-a[1]||b[0]-a[0])[0]?.[0]??null;
+}
+const coAnyInv=rows=>rows.some(co=>cnt12(co.investissements_12m)>0);
 function coTable(rows){
+  const all=(PG.co||{}).rows||rows, yM=coModeYear(all), inv=coAnyInv(all);  // colonne des annonces seulement s'il y en a une
+  const dash='<span class="meta">—</span>', m=(v,d)=>num(v)==null?dash:money(v,d);
   const S=PG.coSort, k=S.k, txt=new Set(['nom','pays']), byDev=CO_MONEY.has(k), devs=byDev?coDevOrder(rows,k):[];
   const key=co=>k==='investissements_12m'?cnt12(co[k]):byDev?num(co[k]):co[k];
   const dr=co=>{ const i=devs.indexOf(String(coDev(co,k))); return i<0?devs.length:i; };
@@ -1760,12 +1773,13 @@ function coTable(rows){
   const th=(kk,l,n)=>`<th class="${n?'n':''}" data-k="${kk}" tabindex="0" aria-sort="${k===kk?(S.desc?'descending':'ascending'):'none'}" style="cursor:pointer">${l}${k===kk?(S.desc?' ↓':' ↑'):''}</th>`;
   const shown=sorted.slice(0,PG.coShown);
   const note=byDev&&devs.length?`<p class="note" style="margin:0 0 8px">Tri par montant à l’intérieur de chaque devise (${devs.slice(0,6).map(esc).join(', ')}${devs.length>6?'…':''}, puis montant sans devise) : les devises ne se comparent pas sans change.</p>`:'';
-  return `${note}<div class="scrwrap"><table id="co_tab"><thead><tr>${th('nom','Société')}${th('pays','Pays')}${th('n_mines','Mines',1)}${th('capex_dernier','CAPEX dernier',1)}${th('effectifs','Effectifs',1)}${th('ca_dernier','Chiffre d’affaires',1)}${th('investissements_12m','Annonces 12 mois',1)}</tr></thead><tbody>${
-    shown.map(co=>`<tr class="row" data-href="#/societe/${esc(enc(co.id))}"><td><a class="nm" href="#/societe/${esc(enc(co.id))}">${esc(co.nom||co.id)}</a>${tickers(co.tickers).length?`<div class="meta" style="font-size:12px">${esc(tickers(co.tickers).slice(0,3).join(' · '))}${co.cik?` · CIK ${esc(co.cik)}`:''}</div>`:co.cik?`<div class="meta" style="font-size:12px">CIK ${esc(co.cik)}</div>`:''}</td>
-      <td>${esc(co.pays||'—')}</td><td class="n">${fmt(num(co.n_mines),0)}</td><td class="n">${money(co.capex_dernier,coDev(co,'capex_dernier'))}${yr(co.capex_annee)}</td>
-      <td class="n">${num(co.effectifs)==null?'—':fmt(co.effectifs,0)+yr(co.effectifs_annee)}</td><td class="n">${money(co.ca_dernier,coDev(co,'ca_dernier'))}</td>
-      <td class="n">${cnt12(co.investissements_12m)==null?'—':fmt(cnt12(co.investissements_12m),0)}</td></tr>`).join('')
-    ||'<tr><td colspan=7 class="meta">Aucune société ne correspond.</td></tr>'}</tbody></table></div>
+  return `${note}<div class="scrwrap"><table id="co_tab"><thead><tr>${th('nom','Société')}${th('pays','Pays')}${th('n_mines','Mines',1)}${th('capex_dernier','CAPEX dernier',1)}${th('effectifs','Effectifs',1)}${th('ca_dernier','Chiffre d’affaires',1)}${inv?th('investissements_12m','Annonces 12 mois',1):''}</tr></thead><tbody>${
+    // identité sur une ligne : premier ticker seulement (les autres et le CIK sont sur la fiche, et restent cherchables)
+    shown.map(co=>`<tr class="row" data-href="#/societe/${esc(enc(co.id))}"><td><a class="nm" href="#/societe/${esc(enc(co.id))}">${esc(co.nom||co.id)}</a>${tickers(co.tickers).length?`<div class="meta tk">${esc(tickers(co.tickers)[0])}</div>`:''}</td>
+      <td>${co.pays?esc(co.pays):dash}</td><td class="n">${num(co.n_mines)==null?dash:fmt(co.n_mines,0)}</td><td class="n">${m(co.capex_dernier,coDev(co,'capex_dernier'))}${num(co.capex_annee)!==yM?yr(co.capex_annee):''}</td>
+      <td class="n">${num(co.effectifs)==null?dash:fmt(co.effectifs,0)+yr(co.effectifs_annee)}</td><td class="n">${m(co.ca_dernier,coDev(co,'ca_dernier'))}</td>
+      ${inv?`<td class="n">${cnt12(co.investissements_12m)==null?dash:fmt(cnt12(co.investissements_12m),0)}</td>`:''}</tr>`).join('')
+    ||`<tr><td colspan=${inv?7:6} class="meta">Aucune société ne correspond.</td></tr>`}</tbody></table></div>
     ${sorted.length>shown.length?`<div class="pager"><button type="button" id="co_more">Afficher 200 de plus</button><span class="meta">${fmt(shown.length,0)} sur ${fmt(sorted.length,0)}</span></div>`:''}`;
 }
 function coFilter(rows){
@@ -1788,7 +1802,8 @@ async function coList(){
   $('#co_list').innerHTML=loading();
   let d; try{ d=await coRows(); }catch(e){ if(live()) $('#co_list').innerHTML=errBox('Annuaire indisponible',e); return; }
   if(!live()) return;
-  $('#co_sub').innerHTML=`${fmt(d.total,0)} sociétés · ${fmt(d.rows.filter(co=>num(co.capex_dernier)!=null).length,0)} avec un CAPEX déclaré · ${fmt(d.rows.filter(co=>num(co.effectifs)!=null).length,0)} avec des effectifs`;
+  const yM=coModeYear(d.rows);
+  $('#co_sub').innerHTML=`${fmt(d.total,0)} sociétés · ${fmt(d.rows.filter(co=>num(co.capex_dernier)!=null).length,0)} avec un CAPEX déclaré${yM!=null?` (exercice ${esc(yM)} sauf mention)`:''} · ${fmt(d.rows.filter(co=>num(co.effectifs)!=null).length,0)} avec des effectifs${d.rows.length&&!coAnyInv(d.rows)?' · aucune annonce d’investissement relevée sur 12 mois':''}`;
   let t; const re=()=>{ clearTimeout(t); t=setTimeout(()=>{ PG.coShown=200; coDraw(); },200); };
   $('#co_q').oninput=re; $('#co_pays').oninput=re;
   coDraw();
