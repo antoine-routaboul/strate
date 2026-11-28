@@ -407,6 +407,17 @@ a.mine{color:var(--accent)}
   #co_tab th:first-child,#co_tab td:first-child{position:sticky;left:0;background:var(--surface);z-index:2;min-width:150px;max-width:170px}
   #co_tab .tk{max-width:150px}
 }
+/* rétro-test sur tablette et téléphone : chaque modèle en lignes (nom, badges, puis les cinq chiffres étiquetés) au lieu
+   d'un tableau à sept colonnes qui défile de côté ; aucun champ retiré, l'en-tête est porté par chaque chiffre */
+@media (max-width:900px){
+  #bt_out .tablebox{overflow:visible}
+  #bt_out table,#bt_out tbody,#bt_out tr,#bt_out td{display:block}#bt_out thead{display:none}
+  #bt_out tr{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px 16px;align-items:start;padding:12px 14px;border-bottom:1px solid var(--rule)}
+  #bt_out tr:last-child{border-bottom:0}#bt_out td:not(.n){grid-column:1/-1}
+  #bt_out td,#bt_out .tablebox td:first-child,#bt_out .tablebox td:last-child{border:0;padding:0}
+  #bt_out td.n{text-align:left;white-space:normal}
+  #bt_out td.n::before{content:attr(data-l);display:block;color:var(--muted);font-size:12px}
+}
 /* téléphone : chaque mine suivie en deux colonnes (nom et compte, détails dessous) au lieu d'un tableau qui défile */
 @media (max-width:640px){
   #v_tracked thead{display:none}
